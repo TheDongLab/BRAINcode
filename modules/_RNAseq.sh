@@ -1,6 +1,6 @@
 ###########################################
 # bash script for running paired-end RNAseq
-# author: Xianjun Dong (modified)
+# author: Xianjun Dong and Zachery Wolfe (modified)
 # email: xdong@rics.bwh.harvard.edu
 # date: 1/8/2026
 # version: 2.1
@@ -19,13 +19,13 @@ SCRIPT_DIR=~/donglab/pipelines/scripts/rnaseq
 # CPU threads to use
 CPU=8
 
-# Genome references
-GENOME=~/donglab/pipelines/genomes/hg19
-GENOME_FASTA=$GENOME/Sequence/WholeGenomeFasta/genome.fa
-GENOME_STAR_INDEX=$GENOME/STAR_index
-GENOME_GTF=$GENOME/Annotation/Genes/gencode.v19.annotation.gtf
-GENOME_REF_FLAT=$GENOME/Annotation/Genes/gencode.v19.annotation.refFlat
-GENOME_BED12=$GENOME/Annotation/Genes/gencode.v19.annotation.bed12
+# Genome references (using initialized STAR hg38)
+GENOME_DIR=/home/zw529/donglab/pipelines/genome
+GENOME_FASTA=$GENOME_DIR/hg38.fa
+GENOME_STAR_INDEX=$GENOME_DIR
+GENOME_GTF=$GENOME_DIR/hg38.ncbiRefSeq.gtf
+GENOME_REF_FLAT=$GENOME_DIR/refFlat.txt
+GENOME_BED12=""
 
 # Optional mask GTF for cufflinks
 MASK_GTF=""
