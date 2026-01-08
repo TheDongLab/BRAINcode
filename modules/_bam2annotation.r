@@ -3,7 +3,7 @@
 # Usage:
 # Rscript $pipeline_path/modules/_bam2annotation.r accepted_hits.bam.bam2annotation accepted_hits.bam.bam2annotation.pdf
 
-#if(!(require('plotrix'))) install.packages('plotrix')  # not working for Rscript
+if(!(require('plotrix'))) install.packages('plotrix', repos='https://cloud.r-project.org')
 library('plotrix')
 
 args<-commandArgs(TRUE)
