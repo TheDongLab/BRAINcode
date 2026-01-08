@@ -16,8 +16,9 @@ echo "["`date`"] STEP 0. define paths & inputs"
 BIN_DIR=~/donglab/pipelines/modules/rnaseq/bin
 SCRIPT_DIR=~/donglab/pipelines/scripts/rnaseq
 
-# CPU threads to use
-CPU=8
+outputdir="$3"      # third argument from run_RNAseq.txt
+samplename=$(basename "$R1" | sed 's/_1\.fastq\.gz//')  # extract sample name from FASTQ1
+CPU=8               # or pass as arg
 
 # Genome references (using initialized STAR hg38)
 GENOME_DIR=/home/zw529/donglab/pipelines/genome
