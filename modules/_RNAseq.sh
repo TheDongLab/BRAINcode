@@ -3,7 +3,7 @@
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
 # Date: 1/27/2026
-# Version: 3.11 (CE2-compatible awk line, fully safe annotations, fixed Kent_tools path)
+# Version: 3.12 (CE2-compatible awk line, fixed htseq sorting .bam)
 ###########################################
 
 set -euo pipefail
@@ -231,9 +231,12 @@ fi
 # STEP 9: gene counting (htseq-count)
 ###########################################
 if [ ! -f .status.RNAseq.htseqcount ]; then
+    samtools sort -n -o Aligned.sortedByName.bam Aligned.sortedByCoord.out.bam
+    samtools index Aligned.sortedByName.bam
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
-        Aligned.sortedByCoord.out.bam /home/zw529/donglab/pipelines/genome/hg38.primary.with_chr.gtf \
+        Aligned.sortedByName.bam /home/zw529/donglab/pipelines/genome/hg38.primary.with_chr.gtf \
         > hgseqcount.by.gene.tab 2> hgseqcount.by.gene.tab.stderr
+
     touch .status.RNAseq.htseqcount
 fi
 
