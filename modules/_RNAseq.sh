@@ -232,7 +232,6 @@ fi
 ###########################################
 if [ ! -f .status.RNAseq.htseqcount ]; then
     samtools sort -n -o Aligned.sortedByName.bam Aligned.sortedByCoord.out.bam
-    samtools index Aligned.sortedByName.bam
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
         Aligned.sortedByName.bam /home/zw529/donglab/pipelines/genome/hg38.primary.with_chr.gtf \
         > hgseqcount.by.gene.tab 2> hgseqcount.by.gene.tab.stderr
