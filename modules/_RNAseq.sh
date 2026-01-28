@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 1/27/2026
-# Version: 3.12 (CE2-compatible awk line, fixed htseq sorting .bam)
+# Date: 1/28/2026
+# Version: 3.12 (added leafcutter junction-counting and clustering scripts)
 ###########################################
 
 set -euo pipefail
@@ -237,6 +237,48 @@ if [ ! -f .status.RNAseq.htseqcount ]; then
         > hgseqcount.by.gene.tab 2> hgseqcount.by.gene.tab.stderr
 
     touch .status.RNAseq.htseqcount
+fi
+
+###########################################
+# STEP 10: LeafCutter junction quantification & clustering
+###########################################
+
+LEAFCUTTER_BASE="/home/zw529/donglab/pipelines/modules/rnaseq/bin/leafcutter"
+LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
+JUNC_DIR="$LEAFCUTTER_OUT/juncs"
+CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
+
+export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
+
+if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
+    echo "[`date`] STEP 10. LeafCutter junction quantification & clustering"
+
+    mkdir -p "$JUNC_DIR" "$CLUSTER_DIR"
+
+    # Generate .junc file from BAM
+    "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
+        Aligned.sortedByCoord.out.bam \
+        "$JUNC_DIR/${samplename}.junc"
+
+    # Quantify junctions per sample
+    python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
+        -j "$JUNC_DIR"/*.junc \
+        -o "$LEAFCUTTER_OUT/${samplename}"
+
+    # Prepare a text file listing all .junc files for clustering
+    JUNC_LIST="$JUNC_DIR/juncfile_list.txt"
+    ls "$JUNC_DIR"/*.junc > "$JUNC_LIST"
+
+    # Cluster junctions across shared splice sites
+    RUNDIR="$CLUSTER_DIR"
+    PREFIX="leafcutter_clusters"
+
+    python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
+        -j "$JUNC_LIST" \
+        -o "$PREFIX" \
+        -r "$RUNDIR"
+
+    touch "$SAMPLE_DIR/.status.RNAseq.leafcutter"
 fi
 
 echo "[`date`] RNAseq pipeline finished successfully."
