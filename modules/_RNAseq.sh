@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 1/28/2026
-# Version: 3.12 (added leafcutter junction-counting and clustering scripts)
+# Date: 1/30/2026
+# Version: 3.14 (perfected CIRCexplorer2 steps and PSI steps in leafcutter, including sorting by highest PSI)
 ###########################################
 
 set -euo pipefail
@@ -59,39 +59,10 @@ R1="$SAMPLE_DIR/$(basename "$R1" .fastq.gz)_val_1.fq.gz"
 R2="$SAMPLE_DIR/$(basename "$R2" .fastq.gz)_val_2.fq.gz"
 
 ###########################################
-# STEP 3: Paired-end filtering
+# STEP 3: (REMOVED)
+# No manual FASTQ rewriting.
+# Trust Trim Galore + aligner invariants.
 ###########################################
-R1_FIXED="$SAMPLE_DIR/$(basename "$R1" .fq.gz)_fixed.fq.gz"
-R2_FIXED="$SAMPLE_DIR/$(basename "$R2" .fq.gz)_fixed.fq.gz"
-
-if [ ! -f "$SAMPLE_DIR/.status.RNAseq.paired_filter" ]; then
-    TMP_R1="$SAMPLE_DIR/tmp_R1.fq"
-    TMP_R2="$SAMPLE_DIR/tmp_R2.fq"
-
-    paste <(zcat "$R1") <(zcat "$R2") | \
-    awk -F'\t' -v r1="$TMP_R1" -v r2="$TMP_R2" '
-        BEGIN {passed=0; failed=0}
-        NR%4==1 {h1=$1; h2=$2; gsub(/[^ -~]/,"",h1); gsub(/[^ -~]/,"",h2)}
-        NR%4==2 {s1=$1; s2=$2; gsub(/[^ACGTNacgtn]/,"",s1); gsub(/[^ACGTNacgtn]/,"",s2)}
-        NR%4==3 {p1=$1; p2=$2}
-        NR%4==0 {
-            q1=$1; q2=$2; gsub(/[^ -~]/,"",q1); gsub(/[^ -~]/,"",q2)
-            if(length(s1)==length(q1) && length(s2)==length(q2) && length(s1)>0) {
-                print h1"\n"s1"\n"p1"\n"q1 >> r1
-                print h2"\n"s2"\n"p2"\n"q2 >> r2
-                passed++
-            } else {failed++}
-        }
-        END {print "Passed:", passed > "/dev/stderr"; print "Failed:", failed > "/dev/stderr"}'
-
-    gzip -c "$TMP_R1" > "$R1_FIXED"
-    gzip -c "$TMP_R2" > "$R2_FIXED"
-    rm -f "$TMP_R1" "$TMP_R2"
-    touch "$SAMPLE_DIR/.status.RNAseq.paired_filter"
-fi
-
-R1="$R1_FIXED"
-R2="$R2_FIXED"
 
 ###########################################
 # STEP 4: kPAL contamination check
@@ -130,34 +101,42 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
 fi
 
 ###########################################
-# STEP 6: circRNA calling (CIRCexplorer2)
+# STEP 6: circRNA calling
 ###########################################
 cd "$SAMPLE_DIR"
 if [ ! -f .status.RNAseq.circRNA ]; then
     echo "[STEP 6] circRNA calling start"
 
-    echo "[STEP 6] running CIRCexplorer2 parse"
-    CIRCexplorer2 parse -t STAR Chimeric.out.junction > circ.parse.txt
+    # 6.1 Create the compatible bubble.junction
+    # This version correctly handles coordinate logic and naming requirements
+    awk 'BEGIN{OFS="\t"} ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){
+        s = ($2 < $5) ? $2 : $5;
+        e = ($2 < $5) ? $5 : $2;
+        if ((e - s) <= 1000000) {
+            print $1, s-1, e, "JUNC/"NR"/1", 0, $3
+        }
+    }' Chimeric.out.junction | sort -k1,1 -k2,2n > bubble.junction
 
-    echo "[STEP 6] building BSJ BED (CE2-compatible)"
-    awk '$1==$4 && $2>$5 && ($2-$5)<=1e6 {
-        OFS="\t";
-        print $1,$5-1,$2,"BSJ_"NR"/1",0,$3
-    }' Chimeric.out.junction > back_spliced_junction.bed
+    echo "[STEP 6] Manual BSJ count = $(wc -l < bubble.junction)"
 
-    echo "[STEP 6] BSJ count = $(wc -l < back_spliced_junction.bed)"
-
-    echo "[STEP 6] running CIRCexplorer2 annotate"
+    # 6.2 Run annotation using the proven refFlat reference
     CIRCexplorer2 annotate \
-        -r /home/zw529/donglab/pipelines/genome/hg38.primary.with_chr.ce2.clean.txt \
+        -r /home/zw529/donglab/pipelines/genome/refFlat.txt \
         -g /home/zw529/donglab/pipelines/genome/hg38.fa.with_chrM \
-        -b back_spliced_junction.bed \
+        -b bubble.junction \
         -o circularRNA_known.txt \
-        --low-confidence \
-        > .CIRCexplorer2_annotate.log 2>&1
+        --low-confidence
 
-    touch .status.RNAseq.circRNA
-    echo "[STEP 6] circRNA calling complete"
+    # 6.3 Validation
+    if [ -s circularRNA_known.txt ]; then
+        touch .status.RNAseq.circRNA
+        echo "[STEP 6] SUCCESS: Annotated $(wc -l < circularRNA_known.txt) circRNAs."
+        echo "--- TOP RESULTS ---"
+        head -n 5 circularRNA_known.txt
+    else
+        echo "[STEP 6] ERROR: Final validation failed. circularRNA_known.txt is empty."
+        exit 1
+    fi
 fi
 
 ###########################################
@@ -240,36 +219,37 @@ if [ ! -f .status.RNAseq.htseqcount ]; then
 fi
 
 ###########################################
-# STEP 10: LeafCutter junction quantification & clustering
+# STEP 10: LeafCutter junction quantification, clustering, and PSI
 ###########################################
 
 LEAFCUTTER_BASE="/home/zw529/donglab/pipelines/modules/rnaseq/bin/leafcutter"
 LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
 JUNC_DIR="$LEAFCUTTER_OUT/juncs"
 CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
+PSI_DIR="$LEAFCUTTER_OUT/psi"
 
 export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
 
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
-    echo "[`date`] STEP 10. LeafCutter junction quantification & clustering"
+    echo "[`date`] STEP 10. LeafCutter junction quantification, clustering, and PSI"
 
-    mkdir -p "$JUNC_DIR" "$CLUSTER_DIR"
+    mkdir -p "$JUNC_DIR" "$CLUSTER_DIR" "$PSI_DIR"
 
-    # Generate .junc file from BAM
+    # 10.1 Generate .junc from BAM:
     "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
         Aligned.sortedByCoord.out.bam \
         "$JUNC_DIR/${samplename}.junc"
 
-    # Quantify junctions per sample
+    # 10.2 Quantify junctions (per-sample counts):
     python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
         -j "$JUNC_DIR"/*.junc \
         -o "$LEAFCUTTER_OUT/${samplename}"
 
-    # Prepare a text file listing all .junc files for clustering
+    # 10.3 Prepare junction list for clustering:
     JUNC_LIST="$JUNC_DIR/juncfile_list.txt"
     ls "$JUNC_DIR"/*.junc > "$JUNC_LIST"
 
-    # Cluster junctions across shared splice sites
+    # 10.4 Cluster junctions (strand-aware):
     RUNDIR="$CLUSTER_DIR"
     PREFIX="leafcutter_clusters"
 
@@ -277,6 +257,19 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
         -j "$JUNC_LIST" \
         -o "$PREFIX" \
         -r "$RUNDIR"
+
+    # 10.5 Compute PSI per junction (strand from .junc):
+    # uses refined clusters by default
+    python "$LEAFCUTTER_BASE/scripts/leafcutter_psi.py" \
+        "$CLUSTER_DIR/leafcutter_clusters_refined" \
+        "$JUNC_DIR/${samplename}.junc" \
+        "$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
+        
+    # 10.6 Sort PSI highest → lowest (keep header)
+    PSI_IN="$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
+    PSI_OUT="$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv"
+
+    { head -n 1 "$PSI_IN" && tail -n +2 "$PSI_IN" | sort -k7,7nr; } > "$PSI_OUT"
 
     touch "$SAMPLE_DIR/.status.RNAseq.leafcutter"
 fi
