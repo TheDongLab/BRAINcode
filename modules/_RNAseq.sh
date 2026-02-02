@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 1/30/2026
-# Version: 3.14 (perfected CIRCexplorer2 steps and PSI steps in leafcutter, including sorting by highest PSI)
+# Date: 2/2/2026
+# Version: 3.15 (added splice-site PSI steps in leafcutter, added circ percentage calculation in CIRCexplorer2 step)
 ###########################################
 
 set -euo pipefail
@@ -108,7 +108,6 @@ if [ ! -f .status.RNAseq.circRNA ]; then
     echo "[STEP 6] circRNA calling start"
 
     # 6.1 Create the compatible bubble.junction
-    # This version correctly handles coordinate logic and naming requirements
     awk 'BEGIN{OFS="\t"} ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){
         s = ($2 < $5) ? $2 : $5;
         e = ($2 < $5) ? $5 : $2;
@@ -133,6 +132,13 @@ if [ ! -f .status.RNAseq.circRNA ]; then
         echo "[STEP 6] SUCCESS: Annotated $(wc -l < circularRNA_known.txt) circRNAs."
         echo "--- TOP RESULTS ---"
         head -n 5 circularRNA_known.txt
+
+    # 6.4 Calculate circRNA percentage
+    python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
+        "$SAMPLE_DIR/circularRNA_known.txt"
+    echo "[STEP 6] circRNA percentages calculated."
+
     else
         echo "[STEP 6] ERROR: Final validation failed. circularRNA_known.txt is empty."
         exit 1
@@ -224,6 +230,7 @@ fi
 
 LEAFCUTTER_BASE="/home/zw529/donglab/pipelines/modules/rnaseq/bin/leafcutter"
 LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
+
 JUNC_DIR="$LEAFCUTTER_OUT/juncs"
 CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
 PSI_DIR="$LEAFCUTTER_OUT/psi"
@@ -231,45 +238,52 @@ PSI_DIR="$LEAFCUTTER_OUT/psi"
 export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
 
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
-    echo "[`date`] STEP 10. LeafCutter junction quantification, clustering, and PSI"
+    echo "[`date`] STEP 10. LeafCutter junction processing"
 
     mkdir -p "$JUNC_DIR" "$CLUSTER_DIR" "$PSI_DIR"
 
-    # 10.1 Generate .junc from BAM:
+    # 10.1 Generate junctions from BAM
     "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
         Aligned.sortedByCoord.out.bam \
         "$JUNC_DIR/${samplename}.junc"
 
-    # 10.2 Quantify junctions (per-sample counts):
+    # 10.2 Quantify junctions (per-sample)
     python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
         -j "$JUNC_DIR"/*.junc \
         -o "$LEAFCUTTER_OUT/${samplename}"
 
-    # 10.3 Prepare junction list for clustering:
+    # 10.3 Prepare junction list for clustering
     JUNC_LIST="$JUNC_DIR/juncfile_list.txt"
     ls "$JUNC_DIR"/*.junc > "$JUNC_LIST"
 
-    # 10.4 Cluster junctions (strand-aware):
-    RUNDIR="$CLUSTER_DIR"
-    PREFIX="leafcutter_clusters"
-
+    # 10.4 LeafCutter clustering (exon-centric)
     python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
         -j "$JUNC_LIST" \
-        -o "$PREFIX" \
-        -r "$RUNDIR"
+        -o leafcutter_clusters \
+        -r "$CLUSTER_DIR"
 
-    # 10.5 Compute PSI per junction (strand from .junc):
-    # uses refined clusters by default
+    # 10.5 Exon-centric PSI (LeafCutter default)
+    LC_PSI="$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
+
     python "$LEAFCUTTER_BASE/scripts/leafcutter_psi.py" \
         "$CLUSTER_DIR/leafcutter_clusters_refined" \
         "$JUNC_DIR/${samplename}.junc" \
-        "$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
-        
-    # 10.6 Sort PSI highest → lowest (keep header)
-    PSI_IN="$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
-    PSI_OUT="$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv"
+        "$LC_PSI"
 
-    { head -n 1 "$PSI_IN" && tail -n +2 "$PSI_IN" | sort -k7,7nr; } > "$PSI_OUT"
+    # 10.6 Sort exon-centric PSI (desc)
+    { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } \
+        > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv"
+
+    # 10.7 Splice-site–centric PSI (NEW)
+    SS_PSI="$PSI_DIR/${samplename}.splice_site.PSI.tsv"
+
+    python "$LEAFCUTTER_BASE/scripts/splice_site_psi.py" \
+        "$JUNC_DIR/${samplename}.junc" \
+        "$SS_PSI"
+
+    # 10.8 Sort splice-site PSI (desc)
+    { head -n 1 "$SS_PSI" && tail -n +2 "$SS_PSI" | sort -k9,9nr; } \
+        > "$PSI_DIR/${samplename}.splice_site.PSI.sorted.tsv"
 
     touch "$SAMPLE_DIR/.status.RNAseq.leafcutter"
 fi
