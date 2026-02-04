@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 2/3/2026
-# Version: 3.16 (re-run after regenerating genome from UCSC and iGenomes)
+# Date: 2/4/2026
+# Version: 3.17 (added --no-fix to CIRCexplorer2 parsing in order to extract unannotated regions)
 ###########################################
 
 set -euo pipefail
@@ -143,7 +143,8 @@ if [ ! -f .status.RNAseq.circRNA ]; then
         -g "$GENOME_FA" \
         -b bubble.junction \
         -o circularRNA_known.txt \
-        --low-confidence
+        --low-confidence \
+        --no-fix
     
     # 5.3 Validation
     if [ -s circularRNA_known.txt ]; then
