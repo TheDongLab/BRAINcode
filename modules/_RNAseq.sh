@@ -145,14 +145,19 @@ if [ ! -f .status.RNAseq.circRNA ]; then
     
     # 5.4 Validation & Percent Calculation
     if [ -s circularRNA_known.txt ]; then
-        touch .status.RNAseq.circRNA
-        echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs."
-        
-        # Calculate circRNA percentages using ORIGINAL (unsnapped) coordinates
-        python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
-            "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
-            "$SAMPLE_DIR/circularRNA_known.txt" \
-            "$SAMPLE_DIR/bubble.junction.raw"
+    touch .status.RNAseq.circRNA
+    echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs."
+    
+    # Index BAM if not already indexed
+    if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then
+        samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
+    fi
+    
+    # Calculate circRNA percentages using ORIGINAL (unsnapped) coordinates
+    python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
+        "$SAMPLE_DIR/circularRNA_known.txt" \
+        "$SAMPLE_DIR/bubble.junction.raw"
     else
         echo "[STEP 5] ERROR: No circRNAs annotated."
         exit 1
@@ -178,8 +183,10 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
         fi
     done
     
-    # Index BAM
-    samtools index Aligned.sortedByCoord.out.bam
+    # Index BAM if not already indexed
+    if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then
+        samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
+    fi
     
     # Generate BAM stats
     echo "$(samtools view -cF 0x100 Aligned.sortedByCoord.out.bam) primary alignments" > Aligned.sortedByCoord.out.bam.stat
