@@ -3,7 +3,7 @@
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
 # Date: 2/4/2026
-# Version: 3.17 (added --no-fix to CIRCexplorer2 parsing in order to extract unannotated regions)
+# Version: 3.17 (added --no-fix to CIRCexplorer2 parsing in order to extract unannotated regions, kept original junction file for circ percentage calling)
 ###########################################
 
 set -euo pipefail
@@ -118,26 +118,59 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
 fi
 
 ###########################################
-# STEP 5: circRNA calling
+# STEP 5: circRNA calling (Global Recovery)
 ###########################################
 cd "$SAMPLE_DIR"
 
 if [ ! -f .status.RNAseq.circRNA ]; then
     echo "[STEP 5] circRNA calling start"
     
-    # 5.1 Create the compatible bubble.junction
-    awk 'BEGIN{OFS="\t"} 
-        ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){
-            s = ($2 < $5) ? $2 : $5;
-            e = ($2 < $5) ? $5 : $2;
-            if ((e - s) <= 1000000) {
-                print $1, s-1, e, "JUNC/"NR"/1", 0, $3
-            }
-        }' Chimeric.out.junction | sort -k1,1 -k2,2n > bubble.junction
+    # 5.1 Extract raw junctions
+    awk 'BEGIN{OFS="\t"} ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){s=($2<$5)?$2:$5; e=($2<$5)?$5:$2; if((e-s)<=1000000) print $1,s-1,e,"JUNC/"NR"/1",0,$3}' Chimeric.out.junction | sort -k1,1 -k2,2n > bubble.junction.raw
     
-    echo "[STEP 5] Manual BSJ count = $(wc -l < bubble.junction)"
-    
-    # 5.2 Run annotation using the proven refFlat reference
+    # 5.2 VECTORIZED SNAPPER: Standardize all junctions globally
+    # This uses binary search (bisect) to make the snap fast
+    python3 - <<EOF
+import sys
+from bisect import bisect_left
+
+def get_closest(sorted_list, val):
+    pos = bisect_left(sorted_list, val)
+    if pos == 0: return sorted_list[0]
+    if pos == len(sorted_list): return sorted_list[-1]
+    before, after = sorted_list[pos-1], sorted_list[pos]
+    return before if after - val > val - before else after
+
+ref_bounds = {}
+with open("$REFFLAT", 'r') as f:
+    for line in f:
+        cols = line.strip().split('\t')
+        if len(cols) < 11: continue
+        chrom = cols[2]
+        if chrom not in ref_bounds: ref_bounds[chrom] = set()
+        for s in cols[9].split(','): 
+            if s: ref_bounds[chrom].add(int(s))
+        for e in cols[10].split(','): 
+            if e: ref_bounds[chrom].add(int(e))
+
+# Sort sets for binary search efficiency
+sorted_ref = {k: sorted(list(v)) for k, v in ref_bounds.items()}
+
+with open("bubble.junction.raw", 'r') as fin, open("bubble.junction", 'w') as fout:
+    for line in fin:
+        cols = line.strip().split('\t')
+        chrom, s, e = cols[0], int(cols[1]), int(cols[2])
+        if chrom in sorted_ref:
+            # Snap start/end to nearest known exon boundary within 500bp
+            snap_s = get_closest(sorted_ref[chrom], s)
+            snap_e = get_closest(sorted_ref[chrom], e)
+            if abs(snap_s - s) < 500: s = snap_s
+            if abs(snap_e - e) < 500: e = snap_e
+        cols[1], cols[2] = str(s), str(e)
+        fout.write("\t".join(cols) + "\n")
+EOF
+
+    # 5.3 Run annotation (Now boundaries match the refFlat perfectly)
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
         -g "$GENOME_FA" \
@@ -146,21 +179,18 @@ if [ ! -f .status.RNAseq.circRNA ]; then
         --low-confidence \
         --no-fix
     
-    # 5.3 Validation
+    # 5.4 Validation & Percent Calculation
     if [ -s circularRNA_known.txt ]; then
         touch .status.RNAseq.circRNA
-        echo "[STEP 5] SUCCESS: Annotated $(wc -l < circularRNA_known.txt) circRNAs."
-        echo "--- TOP RESULTS ---"
-        head -n 5 circularRNA_known.txt
+        echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs."
         
-        # 5.4 Calculate circRNA percentage
+        # KEY FIX: Use the ORIGINAL (unsnapped) coordinates for linear read counting
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
             "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
-            "$SAMPLE_DIR/circularRNA_known.txt"
-        
-        echo "[STEP 5] circRNA percentages calculated."
+            "$SAMPLE_DIR/circularRNA_known.txt" \
+            "$SAMPLE_DIR/bubble.junction.raw"
     else
-        echo "[STEP 5] ERROR: Final validation failed. circularRNA_known.txt is empty."
+        echo "[STEP 5] ERROR: No circRNAs annotated."
         exit 1
     fi
 fi
