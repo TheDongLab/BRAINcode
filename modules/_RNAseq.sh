@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 2/4/2026
-# Version: 3.17 (added --no-fix to CIRCexplorer2 parsing in order to extract unannotated regions, kept original junction file for circ percentage calling)
+# Date: 2/5/2026
+# Version: 3.18 (separated snap_junctions script into its own python script, called it within CIRCexplorer2 step)
 ###########################################
 
 set -euo pipefail
@@ -125,51 +125,15 @@ cd "$SAMPLE_DIR"
 if [ ! -f .status.RNAseq.circRNA ]; then
     echo "[STEP 5] circRNA calling start"
     
-    # 5.1 Extract raw junctions
+    # 5.1 Extract raw junctions (Proven fast method)
     awk 'BEGIN{OFS="\t"} ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){s=($2<$5)?$2:$5; e=($2<$5)?$5:$2; if((e-s)<=1000000) print $1,s-1,e,"JUNC/"NR"/1",0,$3}' Chimeric.out.junction | sort -k1,1 -k2,2n > bubble.junction.raw
     
     # 5.2 VECTORIZED SNAPPER: Standardize all junctions globally
-    # This uses binary search (bisect) to make the snap fast
-    python3 - <<EOF
-import sys
-from bisect import bisect_left
-
-def get_closest(sorted_list, val):
-    pos = bisect_left(sorted_list, val)
-    if pos == 0: return sorted_list[0]
-    if pos == len(sorted_list): return sorted_list[-1]
-    before, after = sorted_list[pos-1], sorted_list[pos]
-    return before if after - val > val - before else after
-
-ref_bounds = {}
-with open("$REFFLAT", 'r') as f:
-    for line in f:
-        cols = line.strip().split('\t')
-        if len(cols) < 11: continue
-        chrom = cols[2]
-        if chrom not in ref_bounds: ref_bounds[chrom] = set()
-        for s in cols[9].split(','): 
-            if s: ref_bounds[chrom].add(int(s))
-        for e in cols[10].split(','): 
-            if e: ref_bounds[chrom].add(int(e))
-
-# Sort sets for binary search efficiency
-sorted_ref = {k: sorted(list(v)) for k, v in ref_bounds.items()}
-
-with open("bubble.junction.raw", 'r') as fin, open("bubble.junction", 'w') as fout:
-    for line in fin:
-        cols = line.strip().split('\t')
-        chrom, s, e = cols[0], int(cols[1]), int(cols[2])
-        if chrom in sorted_ref:
-            # Snap start/end to nearest known exon boundary within 500bp
-            snap_s = get_closest(sorted_ref[chrom], s)
-            snap_e = get_closest(sorted_ref[chrom], e)
-            if abs(snap_s - s) < 500: s = snap_s
-            if abs(snap_e - e) < 500: e = snap_e
-        cols[1], cols[2] = str(s), str(e)
-        fout.write("\t".join(cols) + "\n")
-EOF
-
+    python3 ~/donglab/pipelines/scripts/rnaseq/snap_junctions_to_exons.py \
+        "$REFFLAT" \
+        bubble.junction.raw \
+        bubble.junction
+    
     # 5.3 Run annotation (Now boundaries match the refFlat perfectly)
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
@@ -184,7 +148,7 @@ EOF
         touch .status.RNAseq.circRNA
         echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs."
         
-        # KEY FIX: Use the ORIGINAL (unsnapped) coordinates for linear read counting
+        # Calculate circRNA percentages using ORIGINAL (unsnapped) coordinates
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
             "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
             "$SAMPLE_DIR/circularRNA_known.txt" \
