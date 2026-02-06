@@ -183,11 +183,6 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
         fi
     done
     
-    # Index BAM if not already indexed
-    if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then
-        samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
-    fi
-    
     # Generate BAM stats
     echo "$(samtools view -cF 0x100 Aligned.sortedByCoord.out.bam) primary alignments" > Aligned.sortedByCoord.out.bam.stat
     samtools flagstat Aligned.sortedByCoord.out.bam >> Aligned.sortedByCoord.out.bam.stat
