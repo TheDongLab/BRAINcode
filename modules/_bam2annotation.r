@@ -1,76 +1,91 @@
-## Rscript to draw the venPier plot
-# see http://onetipperday.blogspot.com/2014/09/vennpier-combination-of-venn-diagram.html
-# Usage:
-# Rscript $pipeline_path/modules/_bam2annotation.r accepted_hits.bam.bam2annotation accepted_hits.bam.bam2annotation.pdf
+#!/usr/bin/env Rscript
+# _bam2annotation.r
+# prettier donut plot with external labels + legend + sample name in title
 
-if(!(require('plotrix'))) install.packages('plotrix', repos='https://cloud.r-project.org')
-library('plotrix')
+if(!require('ggplot2')) install.packages('ggplot2', repos='https://cloud.r-project.org')
+if(!require('scales')) install.packages('scales', repos='https://cloud.r-project.org')
+library(ggplot2)
+library(scales)
 
-args<-commandArgs(TRUE)
+args <- commandArgs(TRUE)
+if(length(args) < 2) {
+  stop("Usage: Rscript bam2annotation_pretty.r <Aligned.sortedByCoord.out.summary.txt> <output.pdf>")
+}
 
-stat_file=args[1]  # for example: stat_file="/PHShome/xd010/neurogen/rnaseq_PD/run_output/PD_BN13-18_SNDA_5_rep1/uniq/accepted_hits.bam.bam2annotation"
-pdf_file=args[2]
+input_file <- args[1]
+pdf_file <- args[2]
 
-if(!file.exists(stat_file)) quit(save = 'no')
+if(!file.exists(input_file)) {
+  stop(paste("Input file not found:", input_file))
+}
 
-df=read.table(stat_file)
-d=as.list(df[,2]); names(d)=gsub(":.*","", gsub("-","_",df[,1])); attach(d);
+# infer sample name from directory
+sample_name <- basename(dirname(normalizePath(input_file)))
 
-## internal variables: exons, intergenic, intergenic_notneargene, introns, LINE, mtRNA, rRNA, SINE, total, utr3, utr5, total_non_rRNA_mt
-intergenic_not_near_genes=intergenic_notneargene
+# read summary
+df <- read.table(input_file, header=TRUE, sep="\t", stringsAsFactors=FALSE)
 
-rest=total_non_rRNA_mt
-genic=rest-intergenic
-introns_and_exons=introns+exons-genic
-intergenic_near_genes = intergenic - intergenic_not_near_genes
- 
-# parameter for pie chart
-iniR=0.2 # initial radius
-colors=list(NO='white',total='black', mtRNA='#e5f5e0',rRNA='#a1d99b',genic='#3182bd',exons='#9ecae1',introns='#fc9272',intergenic='#fec44f',intergenic_near_genes='#fee0d2',intergenic_not_near_genes='#d95f0e')
- 
-pdf(pdf_file, width=12, height=6)
-par(mfrow=c(1,2))
-# from outer circle to inner circle
-#0 circle: blank
-pie(1, radius=iniR, init.angle=90, col=c('white'), border = NA, labels='')
- 
-#4 circle: show genic:exons and intergenic:downstream
-floating.pie(0,0,c(exons, total-exons),radius=5*iniR, startpos=pi/2, col=as.character(colors[c('exons','NO')]),border=NA)
- 
-#3 circle: show genic:introns and intergenic:intergenic_notneargene | upstream
-floating.pie(0,0,c(genic-introns, introns, intergenic_not_near_genes, intergenic_near_genes, mtRNA+rRNA),radius=4*iniR, startpos=pi/2, col=as.character(colors[c('NO','introns','intergenic_not_near_genes','intergenic_near_genes','NO')]),border=NA)
- 
-#2 circle: divide the rest into genic and intergenic
-floating.pie(0,0,c(genic, intergenic, rRNA, total-rest-rRNA),radius=3*iniR, startpos=pi/2, col=as.character(colors[c('genic','intergenic','rRNA','NO')]),border=NA)
- 
-#1 circle: for rRNA+mtRNA+rest
-floating.pie(0,0, c(total-mtRNA,mtRNA), radius=2*iniR, startpos=pi/2, col=as.character(colors[c('NO','mtRNA')]), border = NA)
- 
-#legend(0, 5*iniR, gsub("intergenic ", "--", gsub("_"," ",names(colors)[-1])), col=as.character(colors[-1]), pch=19,bty='n', ncol=2, cex=0.6)
+# extract values
+exons <- df$exons[1]
+introns <- df$introns[1]
+rRNA <- df$rRNA[1]
+mtRNA <- df$mtRNA[1]
+intergenic_near_genes <- df$intergenic_near_genes[1]
+intergenic_not_near_genes <- df$intergenic_not_near_genes[1]
 
-names=gsub("intergenic ", "--", gsub("_"," ",names(colors)[-1]))
-values = sapply(names(colors)[-1], get)
-percent=format(100*values/total, digits=2, trim=T)
-values = format(values, big.mark=",", scientific=FALSE, trim=T)
-cl=as.character(colors[-1])
-pchs=rep(19, length(cl)); pchs[1]=1;
-legend(0, 5*iniR, paste(names," (",values,", ", percent,"%)", sep=""), col=cl, pch=pchs,bty='n', ncol=1, cex=0.6)
+# build tidy plotting table
+plot_df <- data.frame(
+  category=c(
+    "Exons",
+    "Introns",
+    "Intergenic (near genes)",
+    "Intergenic (not near genes)",
+    "mtRNA",
+    "rRNA"
+  ),
+  reads=c(
+    exons,
+    introns,
+    intergenic_near_genes,
+    intergenic_not_near_genes,
+    mtRNA,
+    rRNA
+  )
+)
 
+plot_df$frac <- plot_df$reads / sum(plot_df$reads)
+plot_df$label <- paste0(plot_df$category, "  ", percent(plot_df$frac, accuracy=0.1))
 
-## a sub vennpieR plot only for the rest reads
-# =========================================
-pie(1, radius=iniR, init.angle=90, col=c('white'), border = NA, labels='')
-floating.pie(0,0,c(exons, rest-exons),radius=3*iniR, startpos=pi/2, col=as.character(colors[c('exons','NO')]),border=NA)
-floating.pie(0,0,c(genic-introns, introns, intergenic_not_near_genes, intergenic_near_genes),radius=2*iniR, startpos=pi/2, col=as.character(colors[c('NO','introns','intergenic_not_near_genes','intergenic_near_genes')]),border=NA)
-floating.pie(0,0,c(genic, intergenic),radius=iniR, startpos=pi/2, col=as.character(colors[c('genic','intergenic')]),border=NA)
+# color palette (colorblind-safe)
+cols <- c(
+  "Exons"="#4E79A7",
+  "Introns"="#E15759",
+  "Intergenic (near genes)"="#F28E2B",
+  "Intergenic (not near genes)"="#EDC948",
+  "mtRNA"="#59A14F",
+  "rRNA"="#76B7B2"
+)
 
-colors=c(rest="black", colors[-(1:4)])
-names=gsub("intergenic ", "--", gsub("_"," ",names(colors)))
-values = sapply(names(colors), get)
-percent=format(100*values/rest, digits=2, trim=T)
-values = format(values, big.mark=",", scientific=FALSE, trim=T)
-cl=as.character(colors)
-pchs=rep(19, length(cl)); pchs[1]=1;
-legend(0, 5*iniR, paste(names," (",values,", ", percent,"%)", sep=""), col=cl, pch=pchs,bty='n', ncol=1, cex=0.6)
+pdf(pdf_file, width=9, height=7)
+
+ggplot(plot_df, aes(x=2, y=reads, fill=category)) +
+  geom_col(width=1, color="white") +
+  coord_polar(theta="y") +
+  xlim(0.5, 2.5) +
+  scale_fill_manual(values=cols) +
+  geom_text(
+    aes(x=2, label=label),
+    position=position_stack(vjust=0.5),
+    hjust=0.5,
+    size=3
+  ) +
+  ggtitle("Read Annotation Composition", subtitle=sample_name) +
+  theme_void(base_size=12) +
+  theme(
+    legend.position="right",
+    legend.title=element_blank(),
+    plot.title=element_text(face="bold", hjust=0.5),
+    plot.subtitle=element_text(face="italic", hjust=0.5)
+  )
 
 dev.off()
