@@ -26,7 +26,7 @@ set -u
 export PATH="$HOME/.conda/envs/RNAseq/bin:/apps/software/2022b/software/Kent_tools/468-GCC-13.3.0/bin:/opt/slurm/current/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$SCRIPT_DIR"/{_callSNP.sh,bam2bigwig.sh,_bam2annotation.sh,_bam2annotation.r,_sam2variation.awk}
+chmod +x "$SCRIPT_DIR"/{bam2bigwig.sh,_bam2annotation.r}
 
 ###########################################
 # Reference paths
@@ -289,7 +289,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
     { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } \
         > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv"
     
-    # 9.7 Splice-site–centric PSI (NEW)
+    # 9.7 Splice-site–centric PSI
     SS_PSI="$PSI_DIR/${samplename}.splice_site.PSI.tsv"
     python "$LEAFCUTTER_BASE/scripts/splice_site_psi.py" \
         "$JUNC_DIR/${samplename}.junc" \
