@@ -1,70 +1,40 @@
 #!/bin/bash
-# _bam2annotation.sh: simplified but fully compatible read-counts for _bam2annotation.R
-# usage: ./_bam2annotation.sh accepted_hits.bam
+###########################################
+# _bam2annotation.sh
+# Use safe annotation folder
+###########################################
 
-if [ $# -ne 1 ]; then
-    echo "Usage: $0 accepted_hits.bam"
-    exit 1
-fi
+set -euo pipefail
 
-INPUT_BAM=$1
-ANNOTATION=/home/zw529/donglab/pipelines/genome
-GENOME_BED12=$ANNOTATION/hg38.bed12   # generated from GTF
-RRNA_BED=$ANNOTATION/rRNA.bed
-MT_BED=$ANNOTATION/chrM.bed
+BAM_FILE=$1
+OUT_PREFIX=$2
+GENOME_DIR=/home/zw529/donglab/pipelines/genome/annotation_safe
+CHROMSIZES="$GENOME_DIR/chromsizes.safe.txt"
 
-test -e $INPUT_BAM || { echo "$INPUT_BAM not found"; exit 1; }
+BED_DIR="${OUT_PREFIX}_beds"
+mkdir -p "$BED_DIR"
 
-# convert BAM to BED once
-BAM_BED=$INPUT_BAM.bed
-bedtools bamtobed -i $INPUT_BAM > $BAM_BED
+BAM_BED="$BED_DIR/$(basename "$BAM_FILE" .bam).bed"
+bedtools bamtobed -bed12 -i "$BAM_FILE" > "$BAM_BED"
 
-# total reads
-TOTAL_CNT=$(wc -l < $BAM_BED)
-echo "total: $TOTAL_CNT"
-
-# rRNA reads
-RRNA_CNT=$(bedtools intersect -a $BAM_BED -b $RRNA_BED -u | wc -l)
-echo "rRNA: $RRNA_CNT"
-
-# mtRNA reads
-MT_CNT=$(bedtools intersect -a $BAM_BED -b $MT_BED -u | wc -l)
-echo "mtRNA: $MT_CNT"
-
-# Make exons, introns, genic, intergenic dynamically
-EXON_BED=$ANNOTATION/exons.bed
-cut -f1-3 $GENOME_BED12 > $EXON_BED
-sortBed -i $EXON_BED | mergeBed > $EXON_BED.merged
-
-INTRON_BED=$ANNOTATION/introns.bed
-bedtools subtract -a $GENOME_BED12 -b $EXON_BED.merged > $INTRON_BED
-
-GENIC_BED=$ANNOTATION/genic.bed
-cat $EXON_BED.merged $INTRON_BED | sortBed | mergeBed > $GENIC_BED
-
-# intergenic
-GENOME_SIZE=$ANNOTATION/ChromInfo.txt
-INTERGENIC_BED=$ANNOTATION/intergenic.bed
-bedtools complement -i $GENIC_BED -g $GENOME_SIZE > $INTERGENIC_BED
-
-# intergenic_notneargene: intergenic at least 5kb from genes
-INTERGENIC_NOTNEAR_BED=$ANNOTATION/intergenic_notneargene.bed
-bedtools slop -i $GENIC_BED -g $GENOME_SIZE -b 5000 | sortBed | mergeBed \
-    | bedtools complement -i - -g $GENOME_SIZE > $INTERGENIC_NOTNEAR_BED
-
-# total_non_rRNA_mt reads
-NON_RRNA_MT_BED=$ANNOTATION/non_rRNA_mt.bed
-cat $MT_BED $RRNA_BED | sortBed | mergeBed | bedtools complement -i - -g $GENOME_SIZE > $NON_RRNA_MT_BED
-NON_RRNA_MT_BAM=$INPUT_BAM.non-rRNA-mt.bam
-samtools view -b -L $NON_RRNA_MT_BED $INPUT_BAM > $NON_RRNA_MT_BAM
-samtools index $NON_RRNA_MT_BAM
-NON_RRNA_MT_CNT=$(samtools view -c $NON_RRNA_MT_BAM)
-echo "total_non_rRNA_mt: $NON_RRNA_MT_CNT"
-
-# count reads in all relevant regions
-for REGION in intergenic intergenic_notneargene introns exons utr5 utr3 LINE SINE; do
-    BED=$ANNOTATION/${REGION}.bed
-    CNT=0
-    [ -f $BED ] && CNT=$(bedtools intersect -a $BAM_BED -b $BED -u | wc -l)
-    echo "$REGION: $CNT"
+# Intersections with safe BEDs
+for f in exons introns genes genic intergenic intergenic_notneargene rRNA non_rRNA_mt; do
+    bedtools intersect -s -wa -a "$BAM_BED" -b "$GENOME_DIR/$f.sorted.bed" > "$BED_DIR/$f.bed"
 done
+
+# mtRNA
+grep -P '^chrM\t' "$BAM_BED" > "$BED_DIR/mtRNA.bed"
+
+# Summary
+SUMMARY="${OUT_PREFIX}.summary.txt"
+{
+  echo -e "category\tcount"
+  for f in exons introns rRNA mtRNA LINE SINE intergenic intergenic_notneargene; do
+      case $f in
+          LINE|SINE) echo -e "$f\t0" ;;
+          *) echo -e "$f\t$(wc -l < "$BED_DIR/$f.bed")" ;;
+      esac
+  done
+} > "$SUMMARY"
+
+echo "[`date`] Annotation summary written to $SUMMARY"
