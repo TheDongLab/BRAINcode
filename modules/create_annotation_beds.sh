@@ -2,14 +2,14 @@
 #SBATCH --job-name=make_annotation_beds
 #SBATCH --output=make_annotation_beds.out
 #SBATCH --error=make_annotation_beds.err
-#SBATCH --time=6-00:00:00
-#SBATCH -p week
+#SBATCH --time=23:59:00
+#SBATCH -p day
 #SBATCH --mem=100G
 #SBATCH --cpus-per-task=6
 
 ######################
-# Date: 2/16/2026
-# Version: 1.2
+# Date: 2/17/2026
+# Version: 1.3
 ######################
 
 set -euo pipefail
@@ -33,79 +33,75 @@ mkdir -p "${STAR_DIR}"
 cut -f1,2 "${FAI}" | sort -k1,1V > "${STAR_DIR}/genome.sizes"
 
 # ----------------------------
-# Genes BED6 with geneID__symbol__biotype
+# Genes BED6
 # ----------------------------
 awk 'BEGIN{OFS="\t"}
-    $3=="gene"{
-        gene_id=""; symbol=""; biotype="";
-        match($0,/gene_id "([^"]+)"/,gid); gene_id=gid[1]
-        match($0,/gene_name "([^"]+)"/,gn); symbol=gn[1]
-        match($0,/gene_type "([^"]+)"/,gt); biotype=gt[1]
-        label=gene_id"__"symbol"__"biotype
-        print $1,$4-1,$5,label,0,$7
-    }' "${GTF}" \
-    | sort -k1,1V -k2,2n \
-    > "${STAR_DIR}/genes.sorted.bed"
+$3=="gene"{
+    match($0,/gene_id "([^"]+)"/,gid)
+    match($0,/gene_name "([^"]+)"/,gn)
+    match($0,/gene_type "([^"]+)"/,gt)
+    label=gid[1]"__"gn[1]"__"gt[1]
+    print $1,$4-1,$5,label,0,$7
+}' "${GTF}" \
+| sort -k1,1V -k2,2n -k3,3n -k6,6 \
+> "${STAR_DIR}/genes.sorted.bed"
 
 # ----------------------------
-# Exons BED6 (unmerged) with exon IDs
+# Exons BED6 (unmerged)
 # ----------------------------
 awk 'BEGIN{OFS="\t"}
-    $3=="exon"{
-        gene_id=""; symbol=""; biotype=""; exon_id=""
-        match($0,/gene_id "([^"]+)"/,gid); gene_id=gid[1]
-        match($0,/gene_name "([^"]+)"/,gn); symbol=gn[1]
-        match($0,/gene_type "([^"]+)"/,gt); biotype=gt[1]
-        match($0,/exon_id "([^"]+)"/,eid); exon_id=eid[1]
-        label=gene_id"__"symbol"__"biotype"__"exon_id
-        print $1,$4-1,$5,label,0,$7
-    }' "${GTF}" \
-    | sort -k1,1V -k2,2n -k3,3n -k4,4 -k6,6 \
-    | uniq \
-    > "${STAR_DIR}/exons.unmerged.bed"
+$3=="exon"{
+    match($0,/gene_id "([^"]+)"/,gid)
+    match($0,/gene_name "([^"]+)"/,gn)
+    match($0,/gene_type "([^"]+)"/,gt)
+    match($0,/exon_id "([^"]+)"/,eid)
+    label=gid[1]"__"gn[1]"__"gt[1]"__"eid[1]
+    print $1,$4-1,$5,label,0,$7
+}' "${GTF}" \
+| sort -k1,1V -k2,2n -k3,3n -k6,6 \
+| uniq \
+> "${STAR_DIR}/exons.unmerged.bed"
 
 # ----------------------------
-# Exons merged per gene
+# Exons merged per gene (correct connectivity)
 # ----------------------------
-sort -k1,1V -k6,6 -k2,2n "${STAR_DIR}/exons.unmerged.bed" \
+
+# add gene_id as column 7
+awk 'BEGIN{OFS="\t"}{
+    split($4,a,"__")
+    print $0,a[1]
+}' "${STAR_DIR}/exons.unmerged.bed" \
+| sort -k1,1V -k6,6 -k7,7 -k2,2n \
+| bedtools cluster -s -i - \
 | awk 'BEGIN{OFS="\t"}
 {
-    split($4,a,"__")
-    gene=a[1]
-    key=$1 FS gene FS $6
+    # columns:
+    # 1 chr
+    # 2 start
+    # 3 end
+    # 4 label
+    # 5 score
+    # 6 strand
+    # 7 gene_id
+    # 8 cluster_id
 
-    if(!(key in current_end)){
-        cid[key]=1
-        cluster_start[key,1]=$2
-        cluster_end[key,1]=$3
-    }
+    key=$1 FS $6 FS $7 FS $8
 
-    if($2 <= cluster_end[key,cid[key]]){
-        if($3 > cluster_end[key,cid[key]])
-            cluster_end[key,cid[key]]=$3
-    } else {
-        cid[key]++
-        cluster_start[key,cid[key]]=$2
-        cluster_end[key,cid[key]]=$3
-    }
+    if(!(key in min) || $2 < min[key]) min[key]=$2
+    if(!(key in max) || $3 > max[key]) max[key]=$3
 
-    # enforce unique labels per cluster
-    label_key=key SUBSEP cid[key] SUBSEP $4
-    if(!(label_key in seen)){
-        seen[label_key]=1
-        labels[key,cid[key]] = (labels[key,cid[key]] ?
-                                labels[key,cid[key]]","$4 : $4)
+    if(!(key SUBSEP $4 in seen)){
+        seen[key SUBSEP $4]=1
+        labels[key]=(labels[key]?labels[key]","$4:$4)
     }
 }
 END{
     for(k in labels){
-        split(k,a,SUBSEP)
-        split(a[1],b,FS)
-        chr=b[1]; gene=b[2]; strand=b[3]
-        c=a[2]
-        print chr, cluster_start[a[1],c],
-              cluster_end[a[1],c],
-              labels[k], 0, strand
+        split(k,a,FS)
+        chr=a[1]
+        strand=a[2]
+        gene=a[3]
+        print chr,min[k],max[k],labels[k],0,strand
     }
 }' \
 | sort -k1,1V -k2,2n -k3,3n -k6,6 \
@@ -117,60 +113,52 @@ END{
 bedtools subtract \
     -a "${STAR_DIR}/genes.sorted.bed" \
     -b "${STAR_DIR}/exons.unmerged.bed" \
-    > "${STAR_DIR}/introns.unmerged.tmp.bed"
+    -s \
+> "${STAR_DIR}/introns.unmerged.tmp.bed"
 
-# Add transcript label placeholder (use geneID__transcriptX)
 awk 'BEGIN{OFS="\t"}{
-    label=$4"_intron"
-    print $1,$2,$3,label,0,$6
+    print $1,$2,$3,$4"_intron",0,$6
 }' "${STAR_DIR}/introns.unmerged.tmp.bed" \
-    | sort -k1,1V -k2,2n -k3,3n -k4,4 -k6,6 \
-    | uniq \
-    > "${STAR_DIR}/introns.unmerged.bed"
+| sort -k1,1V -k2,2n -k3,3n -k6,6 \
+| uniq \
+> "${STAR_DIR}/introns.unmerged.bed"
 
 rm -f "${STAR_DIR}/introns.unmerged.tmp.bed"
 
 # ----------------------------
-# Introns merged per gene
+# Introns merged across genes (retain gene + biotype)
 # ----------------------------
+
 sort -k1,1V -k6,6 -k2,2n "${STAR_DIR}/introns.unmerged.bed" \
+| bedtools cluster -s -i - \
 | awk 'BEGIN{OFS="\t"}
 {
-    split($4,a,"__")
-    gene=a[1]
-    key=$1 FS gene FS $6
+    # columns:
+    # 1 chr
+    # 2 start
+    # 3 end
+    # 4 geneID__symbol__biotype_intron
+    # 5 score
+    # 6 strand
+    # 7 clusterID
 
-    if(!(key in current_end)){
-        cid[key]=1
-        cluster_start[key,1]=$2
-        cluster_end[key,1]=$3
-    }
+    key=$1 FS $6 FS $7   # chr + strand + cluster
 
-    if($2 <= cluster_end[key,cid[key]]){
-        if($3 > cluster_end[key,cid[key]])
-            cluster_end[key,cid[key]]=$3
-    } else {
-        cid[key]++
-        cluster_start[key,cid[key]]=$2
-        cluster_end[key,cid[key]]=$3
-    }
+    if(!(key in min) || $2 < min[key]) min[key]=$2
+    if(!(key in max) || $3 > max[key]) max[key]=$3
 
-    label_key=key SUBSEP cid[key] SUBSEP $4
-    if(!(label_key in seen)){
-        seen[label_key]=1
-        labels[key,cid[key]] = (labels[key,cid[key]] ?
-                                labels[key,cid[key]]","$4 : $4)
+    # preserve full label including biotype
+    if(!(key SUBSEP $4 in seen)){
+        seen[key SUBSEP $4]=1
+        labels[key]=(labels[key] ? labels[key]","$4 : $4)
     }
 }
 END{
     for(k in labels){
-        split(k,a,SUBSEP)
-        split(a[1],b,FS)
-        chr=b[1]; gene=b[2]; strand=b[3]
-        c=a[2]
-        print chr, cluster_start[a[1],c],
-              cluster_end[a[1],c],
-              labels[k], 0, strand
+        split(k,a,FS)
+        chr=a[1]
+        strand=a[2]
+        print chr,min[k],max[k],labels[k],0,strand
     }
 }' \
 | sort -k1,1V -k2,2n -k3,3n -k6,6 \
@@ -228,67 +216,3 @@ bedtools sort -g "${STAR_DIR}/genome.sizes" -i "${STAR_DIR}/non_rRNA_mt.tmp.bed"
     > "${STAR_DIR}/non_rRNA_mt.sorted.bed"
 
 rm -f "${STAR_DIR}/non_rRNA_mt.tmp.bed"
-
-# -----------------------------
-# OLD LINE and SINE extraction (obsoleted 2-9)
-# -----------------------------
-# # Extract LINE elements (repClass contains "LINE")
-# zcat "${RMSK}" \
-#     | awk 'BEGIN{OFS="\t"} $12 ~ /^LINE/ {print $6, $7, $8}' \
-#     | sort -k1,1V -k2,2n \
-#     | bedtools merge -i - \
-#     > "${STAR_DIR}/LINE.sorted.bed"
-# 
-# # Extract SINE elements (repClass contains "SINE")
-# zcat "${RMSK}" \
-#     | awk 'BEGIN{OFS="\t"} $12 ~ /^SINE/ {print $6, $7, $8}' \
-#     | sort -k1,1V -k2,2n \
-#     | bedtools merge -i - \
-#     > "${STAR_DIR}/SINE.sorted.bed"
-
-# -----------------------------
-# Dfam download
-# -----------------------------
-# # Download and combine Dfam HMMs (~90GB compressed → ~900GB uncompressed)
-# echo "Downloading Dfam HMM chunks..."
-# BASE="https://dfam.org/releases/current/families"
-# mkdir -p "${STAR_DIR}/dfam_tmp"
-# cd "${STAR_DIR}/dfam_tmp"
-# for i in {1..10}; do
-#   wget -q "$BASE/Dfam-$i.hmm.gz"
-# done
-#
-# echo "Combining Dfam HMMs into dfam_all.hmm..."
-# zcat Dfam-*.hmm.gz > "${DFAM_HMM}"
-#
-# echo "Cleaning up temporary files..."
-# cd "${STAR_DIR}"
-# rm -rf dfam_tmp
-
-# -----------------------------
-# Scan genome with Dfam HMMs (nhmmer)
-# -----------------------------
-# mkdir -p "${OUTPUT_DIR}/dfam_hits"
-
-# for cls in LINE SINE ERV; do
-#     /home/zw529/donglab/pipelines/modules/hmmer-3.4/bin/nhmmer \
-#         --tblout "${OUTPUT_DIR}/${cls}.tbl" \
-#         --noali \
-#         --dna \
-#         --incE 0.01 \
-#         "${DFAM_HMM}" \
-#         "${HG38_FA}" \
-#         | tee "${OUTPUT_DIR}/${cls}.nhmmer.log"
-# done
-
-#     # Convert nhmmer --tblout to BED
-#     awk 'BEGIN{OFS="\t"}
-#          !/^#/ {
-#             start=$8-1; end=$9
-#             strand=($9>$8)?"+":"-"
-#             print $1, start, end, $4, $7, strand
-#          }' "${OUTPUT_DIR}/${cls}.tbl" \
-#          | sort -k1,1V -k2,2n \
-#          | bedtools merge -i - \
-#          > "${STAR_DIR}/${cls}.dfam.sorted.bed"
-# done
