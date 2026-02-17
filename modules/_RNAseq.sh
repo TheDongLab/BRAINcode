@@ -1,9 +1,9 @@
 #!/bin/bash
 ###########################################
-# RNAseq pipeline (paired-end)
+# RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 2/9/2026
-# Version: 4.0 (removed cufflinks step, added bigWig generation step, added && to ensure that an error will stop the entire script)
+# Date: 2/12/2026
+# Version: 4.1 (added --quantMode parameter to STAR, modified htseq to produce 2 separate outputs for comparison to --quantMode, referenced annotation .beds instead of duplicating them)
 ###########################################
 
 set -euo pipefail
@@ -26,7 +26,7 @@ set -u
 export PATH="$HOME/.conda/envs/RNAseq/bin:/apps/software/2022b/software/Kent_tools/468-GCC-13.3.0/bin:/opt/slurm/current/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$SCRIPT_DIR"/{bam2bigwig.sh,_bam2annotation.r}
+chmod +x "$SCRIPT_DIR/bam2bigwig.sh" "$SCRIPT_DIR/_bam2annotation.r"
 
 ###########################################
 # Reference paths
@@ -95,7 +95,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.kpal" ]; then
 fi
 
 ###########################################
-# STEP 4: STAR mapping — modified for standard junctions
+# STEP 4: STAR mapping - modified for standard junctions
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
     echo "[STEP 4] STAR mapping starting..."
@@ -112,6 +112,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
         --chimJunctionOverhangMin 10 \
         --chimOutType Junctions \
         --outSAMstrandField intronMotif \
+        --quantMode GeneCounts TranscriptomeSAM \
         --outTmpDir "$STAR_TMP_DIR" && \
     touch "$SAMPLE_DIR/.status.RNAseq.mapping" && \
     rm -rf "$STAR_TMP_DIR" && \
@@ -157,44 +158,54 @@ fi
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
     echo "[STEP 6] BAM post-processing and annotation starting..."
-    BEDS_DIR="$SAMPLE_DIR/Aligned.sortedByCoord.out_beds"
-    mkdir -p "$BEDS_DIR" && \
-    for bed in exons genes genic intergenic intergenic_notneargene introns mtRNA non_rRNA_mt rRNA LINE SINE; do \
-        src="${ANNOT_BEDS}/${bed}.sorted.bed"; \
-        dest="$BEDS_DIR/${bed}.bed"; \
-        if [ -f "$src" ]; then cp "$src" "$dest"; else echo "[STEP 6] WARNING: $src missing, creating empty file"; touch "$dest"; fi; \
-    done && \
-    echo "$(samtools view -cF 0x100 Aligned.sortedByCoord.out.bam) primary alignments" > Aligned.sortedByCoord.out.bam.stat && \
-    samtools flagstat Aligned.sortedByCoord.out.bam >> Aligned.sortedByCoord.out.bam.stat && \
-    SUMMARY=Aligned.sortedByCoord.out.summary.txt && \
-    echo -e "total_non_rRNA_mt\texons\tintrons\trRNA\tmtRNA\tLINE\tSINE\tintergenic\tintergenic_near_genes\tintergenic_not_near_genes\ttotal" > $SUMMARY && \
-    count() { samtools view -c -F 0x100 -L "$1" Aligned.sortedByCoord.out.bam; } && \
-    total_non_rRNA_mt=$(count "$BEDS_DIR/non_rRNA_mt.bed") && \
-    exons=$(count "$BEDS_DIR/exons.bed") && \
-    introns=$(count "$BEDS_DIR/introns.bed") && \
-    rRNA=$(count "$BEDS_DIR/rRNA.bed") && \
-    mtRNA=$(count "$BEDS_DIR/mtRNA.bed") && \
-    LINE=$(count "$BEDS_DIR/LINE.bed") && \
-    SINE=$(count "$BEDS_DIR/SINE.bed") && \
-    intergenic=$(count "$BEDS_DIR/intergenic.bed") && \
-    intergenic_not_near_genes=$(count "$BEDS_DIR/intergenic_notneargene.bed") && \
-    intergenic_near_genes=$((intergenic - intergenic_not_near_genes)) && \
-    total=$(samtools view -c -F 0x100 Aligned.sortedByCoord.out.bam) && \
-    echo -e "${total_non_rRNA_mt}\t${exons}\t${introns}\t${rRNA}\t${mtRNA}\t${LINE}\t${SINE}\t${intergenic}\t${intergenic_near_genes}\t${intergenic_not_near_genes}\t${total}" >> $SUMMARY && \
-    Rscript "$SCRIPT_DIR/_bam2annotation.r" "$SUMMARY" "Aligned.sortedByCoord.out.bam2annotation.pdf" && \
-    touch "$SAMPLE_DIR/.status.RNAseq.bam2annotation" && \
+
+    SUMMARY=Aligned.sortedByCoord.out.summary.txt
+    echo -e "total_non_rRNA_mt\texons\tintrons\trRNA\tmtRNA\tLINE\tSINE\tintergenic\tintergenic_near_genes\tintergenic_not_near_genes\ttotal" > $SUMMARY
+
+    count() { samtools view -c -F 0x100 -L "$1" Aligned.sortedByCoord.out.bam; }
+
+    total_non_rRNA_mt=$(count "${ANNOT_BEDS}/non_rRNA_mt.sorted.bed")
+    exons=$(count "${ANNOT_BEDS}/exons.sorted.bed")
+    introns=$(count "${ANNOT_BEDS}/introns.sorted.bed")
+    rRNA=$(count "${ANNOT_BEDS}/rRNA.sorted.bed")
+    mtRNA=$(count "${ANNOT_BEDS}/mtRNA.sorted.bed")
+    LINE=$(count "${ANNOT_BEDS}/LINE.sorted.bed")
+    SINE=$(count "${ANNOT_BEDS}/SINE.sorted.bed")
+    intergenic=$(count "${ANNOT_BEDS}/intergenic.sorted.bed")
+    intergenic_not_near_genes=$(count "${ANNOT_BEDS}/intergenic_notneargene.sorted.bed")
+    intergenic_near_genes=$((intergenic - intergenic_not_near_genes))
+    total=$(samtools view -c -F 0x100 Aligned.sortedByCoord.out.bam)
+
+    echo -e "${total_non_rRNA_mt}\t${exons}\t${introns}\t${rRNA}\t${mtRNA}\t${LINE}\t${SINE}\t${intergenic}\t${intergenic_near_genes}\t${intergenic_not_near_genes}\t${total}" >> $SUMMARY
+
+    samtools view -cF 0x100 Aligned.sortedByCoord.out.bam > Aligned.sortedByCoord.out.bam.stat
+    samtools flagstat Aligned.sortedByCoord.out.bam >> Aligned.sortedByCoord.out.bam.stat
+
+    Rscript "$SCRIPT_DIR/_bam2annotation.r" "$SUMMARY" "Aligned.sortedByCoord.out.bam2annotation.pdf"
+
+    touch "$SAMPLE_DIR/.status.RNAseq.bam2annotation"
     echo "[STEP 6] BAM annotation completed successfully."
 fi
 
 ###########################################
-# STEP 7: gene counting (htseq-count)
+# STEP 7: Gene counting (HTSeq) - both modes
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
-    samtools sort -n -o Aligned.sortedByName.bam Aligned.sortedByCoord.out.bam && \
+    
+    # Sort by name once for both HTSeq runs
+    samtools sort -n -o "$SAMPLE_DIR/Aligned.sortedByName.bam" "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" && \
+    
+    # Run HTSeq with intersection-strict mode
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
-        Aligned.sortedByName.bam "$GTF" \
-        > hgseqcount.by.gene.tab 2> hgseqcount.by.gene.tab.stderr && \
+        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
+        > "$SAMPLE_DIR/htseqcount.intersection-strict.tab" 2> "$SAMPLE_DIR/htseqcount.intersection-strict.stderr" && \
+    
+    # Run HTSeq with union mode
+    htseq-count -m union -t exon -i gene_id -s yes -q -f bam \
+        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
+        > "$SAMPLE_DIR/htseqcount.union.tab" 2> "$SAMPLE_DIR/htseqcount.union.stderr" && \
+    
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
     echo "[STEP 7] Gene counting completed successfully."
 fi
@@ -212,7 +223,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
     export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH" && \
     mkdir -p "$JUNC_DIR" "$CLUSTER_DIR" "$PSI_DIR" && \
     "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
-        Aligned.sortedByCoord.out.bam \
+        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
         "$JUNC_DIR/${samplename}.junc" && \
     python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
         -j "$JUNC_DIR"/*.junc \
@@ -229,11 +240,11 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
         "$JUNC_DIR/${samplename}.junc" \
         "$LC_PSI" && \
     { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv" && \
-    SS_PSI="$PSI_DIR/${samplename}.splice_site.PSI.tsv" && \
-    python "$LEAFCUTTER_BASE/scripts/splice_site_psi.py" \
-        "$JUNC_DIR/${samplename}.junc" \
-        "$SS_PSI" && \
-    { head -n 1 "$SS_PSI" && tail -n +2 "$SS_PSI" | sort -k9,9nr; } > "$PSI_DIR/${samplename}.splice_site.PSI.sorted.tsv" && \
+#    SS_PSI="$PSI_DIR/${samplename}.splice_site.PSI.tsv" && \
+#    python "$LEAFCUTTER_BASE/scripts/splice_site_psi.py" \
+#        "$JUNC_DIR/${samplename}.junc" \
+#        "$SS_PSI" && \
+#    { head -n 1 "$SS_PSI" && tail -n +2 "$SS_PSI" | sort -k9,9nr; } > "$PSI_DIR/${samplename}.splice_site.PSI.sorted.tsv" && \
     touch "$SAMPLE_DIR/.status.RNAseq.leafcutter" && \
     echo "[STEP 8] LeafCutter processing completed successfully."
 fi
@@ -243,7 +254,7 @@ fi
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     echo "[STEP 9] bigWig generation starting..."
-    BED="$SAMPLE_DIR/Aligned.sortedByCoord.out.bed"
+    BED="$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bed"
     if [ ! -s "$BED" ]; then
         bedtools bamtobed -bed12 -i Aligned.sortedByCoord.out.bam > "$BED"
     fi && \
