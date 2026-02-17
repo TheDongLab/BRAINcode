@@ -27,21 +27,21 @@ mkdir -p "${OUTPUT_DIR}"
 # -----------------------------
 # Dfam download
 # -----------------------------
-# # Download and combine Dfam HMMs (~90GB compressed → ~900GB uncompressed)
-# echo "Downloading Dfam HMM chunks..."
-# BASE="https://dfam.org/releases/current/families"
-# mkdir -p "${STAR_DIR}/dfam_tmp"
-# cd "${STAR_DIR}/dfam_tmp"
-# for i in {1..10}; do
-#   wget -q "$BASE/Dfam-$i.hmm.gz"
-# done
-#
-# echo "Combining Dfam HMMs into dfam_all.hmm..."
-# zcat Dfam-*.hmm.gz > "${DFAM_HMM}"
-#
-# echo "Cleaning up temporary files..."
-# cd "${STAR_DIR}"
-# rm -rf dfam_tmp
+# Download and combine Dfam HMMs (~90GB compressed → ~900GB uncompressed)
+echo "Downloading Dfam HMM chunks..."
+BASE="https://dfam.org/releases/current/families"
+mkdir -p "${STAR_DIR}/dfam_tmp"
+cd "${STAR_DIR}/dfam_tmp"
+for i in {1..10}; do
+  wget -q "$BASE/Dfam-$i.hmm.gz"
+done
+
+echo "Combining Dfam HMMs into dfam_all.hmm..."
+zcat Dfam-*.hmm.gz > "${DFAM_HMM}"
+
+echo "Cleaning up temporary files..."
+cd "${STAR_DIR}"
+rm -rf dfam_tmp
 
 # -----------------------------
 # Map SLURM array ID to repeat class
