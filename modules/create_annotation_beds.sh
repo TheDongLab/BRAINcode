@@ -9,7 +9,7 @@
 
 ######################
 # Date: 2/17/2026
-# Version: 1.3
+# Version: 1.4
 ######################
 
 set -euo pipefail
@@ -21,9 +21,7 @@ FASTA_DIR=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/
 
 GTF=${ANNOT_DIR}/gencode.v49.annotation.gtf
 FAI=${FASTA_DIR}/genome.fa.fai
-DFAM_HMM=${STAR_DIR}/dfam_all.hmm
 HG38_FA=${FASTA_DIR}/genome.fa
-OUTPUT_DIR=${STAR_DIR}/RepeatMasker_output
 
 mkdir -p "${STAR_DIR}"
 
