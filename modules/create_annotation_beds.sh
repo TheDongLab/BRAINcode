@@ -5,7 +5,7 @@
 #SBATCH --time=23:59:00
 #SBATCH -p day
 #SBATCH --mem=100G
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task=2
 
 ######################
 # Date: 2/17/2026
@@ -164,6 +164,19 @@ END{
 | sort -k1,1V -k2,2n -k3,3n -k6,6 \
 > "${STAR_DIR}/introns.merged.bed"
 
+# ----------------------------
+# Remove ANY intron overlapping ANY exon isoform
+# ----------------------------
+
+bedtools subtract \
+    -a "${STAR_DIR}/introns.merged.bed" \
+    -b "${STAR_DIR}/exons.unmerged.bed" \
+    -s \
+> "${STAR_DIR}/introns.merged.clean.bed"
+
+mv "${STAR_DIR}/introns.merged.clean.bed" \
+   "${STAR_DIR}/introns.merged.bed"
+   
 # -----------------------------
 # Intergenic regions
 # -----------------------------
