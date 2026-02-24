@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 2/12/2026
-# Version: 4.1 (added --quantMode parameter to STAR, modified htseq to produce 2 separate outputs for comparison to --quantMode, referenced annotation .beds instead of duplicating them)
+# Date: 2/24/2026
+# Version: 4.2 (removed TranscriptomeSAM from --quantMode in STAR, removed htseq union mode, removed custom leafcutter PSI scripts)
 ###########################################
 
 set -euo pipefail
@@ -112,7 +112,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
         --chimJunctionOverhangMin 10 \
         --chimOutType Junctions \
         --outSAMstrandField intronMotif \
-        --quantMode GeneCounts TranscriptomeSAM \
+        --quantMode GeneCounts \
         --outTmpDir "$STAR_TMP_DIR" && \
     touch "$SAMPLE_DIR/.status.RNAseq.mapping" && \
     rm -rf "$STAR_TMP_DIR" && \
@@ -201,11 +201,6 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
         "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.intersection-strict.tab" 2> "$SAMPLE_DIR/htseqcount.intersection-strict.stderr" && \
     
-    # Run HTSeq with union mode
-    htseq-count -m union -t exon -i gene_id -s yes -q -f bam \
-        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
-        > "$SAMPLE_DIR/htseqcount.union.tab" 2> "$SAMPLE_DIR/htseqcount.union.stderr" && \
-    
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
     echo "[STEP 7] Gene counting completed successfully."
 fi
@@ -240,11 +235,6 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
         "$JUNC_DIR/${samplename}.junc" \
         "$LC_PSI" && \
     { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv" && \
-#    SS_PSI="$PSI_DIR/${samplename}.splice_site.PSI.tsv" && \
-#    python "$LEAFCUTTER_BASE/scripts/splice_site_psi.py" \
-#        "$JUNC_DIR/${samplename}.junc" \
-#        "$SS_PSI" && \
-#    { head -n 1 "$SS_PSI" && tail -n +2 "$SS_PSI" | sort -k9,9nr; } > "$PSI_DIR/${samplename}.splice_site.PSI.sorted.tsv" && \
     touch "$SAMPLE_DIR/.status.RNAseq.leafcutter" && \
     echo "[STEP 8] LeafCutter processing completed successfully."
 fi
