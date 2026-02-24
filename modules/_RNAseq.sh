@@ -188,12 +188,12 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
 fi
 
 ###########################################
-# STEP 7: Gene counting (HTSeq) - both modes
+# STEP 7: Gene counting (HTSeq)
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
     
-    # Sort by name once for both HTSeq runs
+    # Sort .bam by name for HTSeq
     samtools sort -n -o "$SAMPLE_DIR/Aligned.sortedByName.bam" "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" && \
     
     # Run HTSeq with intersection-strict mode
