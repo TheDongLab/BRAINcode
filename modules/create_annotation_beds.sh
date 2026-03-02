@@ -5,12 +5,7 @@
 #SBATCH --time=23:59:00
 #SBATCH -p day
 #SBATCH --mem=100G
-#SBATCH --cpus-per-task=2
-
-######################
-# Date: 2/17/2026
-# Version: 1.4
-######################
+#SBATCH --cpus-per-task=6
 
 set -euo pipefail
 module load BEDTools
@@ -21,6 +16,7 @@ FASTA_DIR=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/
 
 GTF=${ANNOT_DIR}/gencode.v49.annotation.gtf
 FAI=${FASTA_DIR}/genome.fa.fai
+RMSK=${STAR_DIR}/rmskJoinedCurrent.txt.gz
 HG38_FA=${FASTA_DIR}/genome.fa
 
 mkdir -p "${STAR_DIR}"
@@ -174,7 +170,7 @@ bedtools subtract \
 
 mv "${STAR_DIR}/introns.merged.clean.bed" \
    "${STAR_DIR}/introns.merged.bed"
-   
+
 # -----------------------------
 # Intergenic regions
 # -----------------------------
@@ -227,3 +223,34 @@ bedtools sort -g "${STAR_DIR}/genome.sizes" -i "${STAR_DIR}/non_rRNA_mt.tmp.bed"
     > "${STAR_DIR}/non_rRNA_mt.sorted.bed"
 
 rm -f "${STAR_DIR}/non_rRNA_mt.tmp.bed"
+
+# -----------------------------
+# LINE, SINE, and ERV extraction with updated RepeatMasker (https://hgdownload.cse.ucsc.edu/goldenpath/hg38/database/rmskJoinedCurrent.txt.gz)
+# -----------------------------
+
+# -----------------------------
+# LINE
+# -----------------------------
+gunzip -c "${RMSK}" \
+  | awk 'BEGIN{OFS="\t"} $5 ~ /#LINE\// {print $2,$3,$4}' \
+  | sort -k1,1V -k2,2n \
+  | bedtools merge -i - \
+  > "${STAR_DIR}/LINE.sorted.bed"
+
+# -----------------------------
+# SINE
+# -----------------------------
+gunzip -c "${RMSK}" \
+  | awk 'BEGIN{OFS="\t"} $5 ~ /#SINE\// {print $2,$3,$4}' \
+  | sort -k1,1V -k2,2n \
+  | bedtools merge -i - \
+  > "${STAR_DIR}/SINE.sorted.bed"
+
+# -----------------------------
+# ERV (LTR/ERV*)
+# -----------------------------
+gunzip -c "${RMSK}" \
+  | awk 'BEGIN{OFS="\t"} $5 ~ /#LTR\/ERV/ {print $2,$3,$4}' \
+  | sort -k1,1V -k2,2n \
+  | bedtools merge -i - \
+  > "${STAR_DIR}/ERV.sorted.bed"
