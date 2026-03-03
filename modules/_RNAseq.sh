@@ -152,7 +152,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
             "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
             "$SAMPLE_DIR/circularRNA_known.txt" \
-            "$SAMPLE_DIR/back_spliced_junction.txt" && \
+            "$SAMPLE_DIR/back_spliced_junction.bed" && \
 
         echo "[STEP 5] circRNA calling completed successfully."
     else
@@ -195,7 +195,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
 fi
 
 ###########################################
-# STEP 7: Gene counting (HTSeq) - both modes
+# STEP 7: Gene counting (HTSeq)
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
@@ -206,12 +206,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     # Run HTSeq with intersection-strict mode
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
         "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
-        > "$SAMPLE_DIR/htseqcount.intersection-strict.tab" 2> "$SAMPLE_DIR/htseqcount.intersection-strict.stderr" && \
-    
-    # Run HTSeq with union mode
-    htseq-count -m union -t exon -i gene_id -s yes -q -f bam \
-        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
-        > "$SAMPLE_DIR/htseqcount.union.tab" 2> "$SAMPLE_DIR/htseqcount.union.stderr" && \
+        > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr" && \
     
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
     echo "[STEP 7] Gene counting completed successfully."
