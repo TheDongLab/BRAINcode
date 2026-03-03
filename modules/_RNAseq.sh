@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 2/24/2026
-# Version: 4.2 (removed TranscriptomeSAM from --quantMode in STAR, removed htseq union mode, removed custom leafcutter PSI scripts)
+# Date: 3/3/2026
+# Version: 4.3 (used --alignEndsType Local in STAR, updated circ calling step to account for Local alignment in STAR, updated bigWig generation script)
 ###########################################
 
 set -euo pipefail
@@ -107,7 +107,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
         --outSAMtype BAM SortedByCoordinate \
         --outSAMattrRGline ID:$samplename SM:$samplename LB:$samplename PL:ILLUMINA PU:$samplename \
         --outFilterMultimapNmax 10 \
-        --alignEndsType EndToEnd \
+        --alignEndsType Local \
         --chimSegmentMin 10 \
         --chimJunctionOverhangMin 10 \
         --chimOutType Junctions \
@@ -124,32 +124,39 @@ fi
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     echo "[STEP 5] circRNA calling starting..."
+
     cd "$SAMPLE_DIR" && \
-    awk 'BEGIN{OFS="\t"} ($1==$4 && ($3=="+" || $3=="-") && $1!~/^#/){s=($2<$5)?$2:$5; e=($2<$5)?$5:$2; if((e-s)<=1000000) print $1,s-1,e,"JUNC/"NR"/1",0,$3}' Chimeric.out.junction | sort -k1,1 -k2,2n > bubble.junction.raw && \
-    python3 ~/donglab/pipelines/scripts/rnaseq/snap_junctions_to_exons.py \
-        "$REFFLAT" \
-        bubble.junction.raw \
-        bubble.junction && \
+
+    # Parse STAR chimeric junctions (Local alignment; default CIRCexplorer2 behavior)
+    CIRCexplorer2 parse \
+        -t STAR \
+        Chimeric.out.junction \
+        > back_splice_junction.txt && \
+
+    # Annotate with default autofix
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
         -g "$GENOME_FA" \
-        -b bubble.junction \
+        -b back_splice_junction.txt \
         -o circularRNA_known.txt \
-        --low-confidence \
-        --no-fix && \
-    if [ -s circularRNA_known.txt ]; then \
+        --low-confidence && \
+
+    if [ -s circularRNA_known.txt ]; then
         touch "$SAMPLE_DIR/.status.RNAseq.circRNA" && \
         echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs." && \
-        if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then \
-            samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"; \
+
+        if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then
+            samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
         fi && \
+
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
             "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
             "$SAMPLE_DIR/circularRNA_known.txt" \
-            "$SAMPLE_DIR/bubble.junction.raw" && \
-        echo "[STEP 5] circRNA calling completed successfully."; \
-    else \
-        echo "[STEP 5] ERROR: No circRNAs annotated." && exit 1; \
+            "$SAMPLE_DIR/back_splice_junction.txt" && \
+
+        echo "[STEP 5] circRNA calling completed successfully."
+    else
+        echo "[STEP 5] ERROR: No circRNAs annotated." && exit 1
     fi
 fi
 
@@ -188,18 +195,23 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
 fi
 
 ###########################################
-# STEP 7: Gene counting (HTSeq)
+# STEP 7: Gene counting (HTSeq) - both modes
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
     
-    # Sort .bam by name for HTSeq
+    # Sort by name once for both HTSeq runs
     samtools sort -n -o "$SAMPLE_DIR/Aligned.sortedByName.bam" "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" && \
     
     # Run HTSeq with intersection-strict mode
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
         "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.intersection-strict.tab" 2> "$SAMPLE_DIR/htseqcount.intersection-strict.stderr" && \
+    
+    # Run HTSeq with union mode
+    htseq-count -m union -t exon -i gene_id -s yes -q -f bam \
+        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
+        > "$SAMPLE_DIR/htseqcount.union.tab" 2> "$SAMPLE_DIR/htseqcount.union.stderr" && \
     
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
     echo "[STEP 7] Gene counting completed successfully."
@@ -240,19 +252,20 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
 fi
 
 ###########################################
-# STEP 9: bigWig generation
+# STEP 9: bigWig generation (+ / - split)
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     echo "[STEP 9] bigWig generation starting..."
-    BED="$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bed"
-    if [ ! -s "$BED" ]; then
-        bedtools bamtobed -bed12 -i Aligned.sortedByCoord.out.bam > "$BED"
-    fi && \
-    PRIMARY_READS=$(samtools view -c -F 0x100 Aligned.sortedByCoord.out.bam) && \
+
+    BAM="$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
+
+    # ensure BAM index exists (required by genomecov)
+    [ -f "${BAM}.bai" ] || samtools index "$BAM"
+
     "$SCRIPT_DIR/bam2bigwig.sh" \
-        "$BED" \
-        -split \
-        "$PRIMARY_READS" && \
+        "$BAM" \
+        -split && \
+
     touch "$SAMPLE_DIR/.status.RNAseq.bigwig" && \
     echo "[STEP 9] bigWig generation completed successfully."
 fi
