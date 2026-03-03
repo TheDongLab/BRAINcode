@@ -36,7 +36,7 @@ STAR_GENOME="${GENOME_BASE}/Sequence/STAR"
 GENOME_FA="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa"
 GENOME_FAI="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa.fai"
 GTF="${GENOME_BASE}/Annotation/gencode/gencode.v49.annotation.gtf"
-REFFLAT="${GENOME_BASE}/Annotation/gencode/refFlat.txt"
+REFFLAT="${GENOME_BASE}/Annotation/gencode/refFlat_cIRS7.txt"
 ANNOT_BEDS="${STAR_GENOME}"
 
 ###########################################
@@ -137,7 +137,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
         -g "$GENOME_FA" \
-        -b back_splice_junction.txt \
+        -b back_splice_junction.bed \
         -o circularRNA_known.txt \
         --low-confidence && \
 
