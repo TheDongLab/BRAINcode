@@ -6,7 +6,7 @@ import pysam
 import sys
 
 if len(sys.argv) != 4:
-    print("Usage: python circ_percent_calculation.py <sample_bam> <circularRNA_known.txt> <bubble.junction.raw>")
+    print("Usage: python circ_percent_calculation.py <sample_bam> <circularRNA_known.txt> <back_spliced_junction.bed>")
     sys.exit(1)
 
 bam_file = sys.argv[1]
