@@ -1,125 +1,97 @@
 #!/bin/bash
 #############################################
 # Author: Xianjun Dong & Zachery Wolfe
-# Version: 0.7 (deeptools-based, strand-aware, auto-indexing)
-# bam2bigwig — robust, normalized, chr-safe, tmp cleanup
+# Email: xdong@rics.bwh.harvard.edu 
+# Version: 0.8
+
+# Fixed bam2bigwig.sh
+# - removes neurogen TMPDIR
+# - removes config file dependency
+# - hardcodes hg38 ChromInfo path
+# - keeps original logic intact
+# - adds strand logic (i.e., Gene "+"  =  (read2 & forward)  OR  (read1 & reverse) and Gene "-"  =  (read1 & forward)  OR  (read2 & reverse)) for + and - bigWig creation
 #############################################
 
 set -euo pipefail
 
-# ----------------------------
-# Genome / chrom sizes (hg38 STAR)
-# ----------------------------
-GENOME_DIR=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR
-CHROMSIZES="$GENOME_DIR/genome.sizes"
+# -------- HARD-CODED PATHS (hg38) --------
+CHROMINFO="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR/genome.sizes"
 
-# ----------------------------
-# Hard requirements
-# ----------------------------
-req=(samtools bedtools awk sort module)
-for x in "${req[@]}"; do
-    command -v "$x" >/dev/null || { echo "MISSING: $x"; exit 1; }
-done
+# use system temp instead of non-existent /data/neurogen
+export TMPDIR=/tmp
 
-module load deepTools
+inputfile=$1   # bam or cram
+split=${2:--nosplit}
 
-# ----------------------------
-# Inputs
-# ----------------------------
-inputfile="$1"         # BAM, SAM, or BED
-split="${2:--split}"   # -split or -nosplit
-norm_reads="${3:-0}"   # optional: primary reads for normalization
-region=""              # optional region can remain empty
-
-SAMPLE_DIR="$(cd "$(dirname "$inputfile")" && pwd)"
-TMPDIR="$SAMPLE_DIR/tmp"
-mkdir -p "$TMPDIR"
-
-bname="$(basename "$inputfile")"
-bname="${bname%.bam}"
-bname="${bname%.sam}"
-bname="${bname%.bed}"
-
-export LC_COLLATE=C
-export TMPDIR
-
-# ----------------------------
-# Convert input -> BED12 if needed
-# ----------------------------
-BED="$SAMPLE_DIR/$bname.bed"
-
-if [[ "${inputfile##*.}" =~ ^bam|BAM$ ]]; then
-    samtools view -h "$inputfile" | bedtools bamtobed -bed12 -i stdin > "$BED"
-elif [[ "${inputfile##*.}" =~ ^sam|SAM$ ]]; then
-    samtools view -h "$inputfile" | bedtools bamtobed -bed12 -i stdin > "$BED"
-elif [[ "${inputfile##*.}" =~ ^bed|BED$ ]]; then
-    [[ "$inputfile" != "$BED" ]] && cp "$inputfile" "$BED"
-else
-    echo "Unsupported input: $inputfile"
+[ -e "$inputfile" ] || {
+    echo "Usage: bam2bigwig.sh <in.bam|cram> <-split|-nosplit>"
     exit 1
-fi
-
-[[ -s "$BED" ]] || { echo "BED empty after conversion"; exit 1; }
-
-# ----------------------------
-# Normalize chr naming
-# ----------------------------
-chr_mode=$(awk 'NR==1{print ($1 ~ /^chr/)}' "$CHROMSIZES")
-if [[ "$chr_mode" == 1 ]]; then
-    awk 'BEGIN{OFS="\t"}{$1=($1 ~ /^chr/)?$1:"chr"$1; print}' "$BED" > "$BED.tmp"
-else
-    awk 'BEGIN{OFS="\t"}{$1=gensub(/^chr/,"","",$1); print}' "$BED" > "$BED.tmp"
-fi
-mv "$BED.tmp" "$BED"
-
-# ----------------------------
-# Sort BED
-# ----------------------------
-sort -k1,1 -k2,2n "$BED" > "$BED.sorted"
-mv "$BED.sorted" "$BED"
-
-# ----------------------------
-# Coverage helper via deepTools
-# ----------------------------
-bam_to_bw () {
-    local infile="$1"
-    local outfile="$2"
-
-    [[ -f "$infile.bai" ]] || samtools index "$infile"
-
-    bamCoverage -b "$infile" -o "$outfile" \
-        --binSize 50 \
-        --normalizeUsing RPGC \
-        --effectiveGenomeSize 2913022398 \
-        --ignoreDuplicates \
-        --extendReads 150 \
-        --numberOfProcessors 8
 }
 
-# ----------------------------
-# Split by strand if requested
-# ----------------------------
-if [[ "$split" == "-split" ]]; then
-    awk '$6=="+"' "$BED" > "$BED.plus"
-    awk '$6=="-"' "$BED" > "$BED.minus"
+ext=${inputfile##*.}
+bname=${inputfile%.*}
 
-    BEDTOOLS_BAM_PLUS="$TMPDIR/$bname.plus.bam"
-    BEDTOOLS_BAM_MINUS="$TMPDIR/$bname.minus.bam"
-    bedtools bedtobam -i "$BED.plus" -g "$CHROMSIZES" > "$BEDTOOLS_BAM_PLUS"
-    bedtools bedtobam -i "$BED.minus" -g "$CHROMSIZES" > "$BEDTOOLS_BAM_MINUS"
+case $ext in
+    bam)
+        echo "Input is BAM. Converting bam → bedGraph → bigWig..."
+        ;;
+    cram)
+        echo "Input is CRAM. Converting cram → bam → bedGraph → bigWig..."
+        ;;
+    *)
+        echo "Unsupported input format: $ext"
+        exit 1
+        ;;
+esac
 
-    bam_to_bw "$BEDTOOLS_BAM_PLUS" "$SAMPLE_DIR/$bname.plus.bw"
-    bam_to_bw "$BEDTOOLS_BAM_MINUS" "$SAMPLE_DIR/$bname.minus.bw"
-else
-    # Use original BAM if available, else convert BED -> BAM
-    if [[ "${inputfile##*.}" =~ ^bam|BAM$ ]]; then
-        bam_to_bw "$inputfile" "$SAMPLE_DIR/$bname.bw"
-    else
-        BEDTOOLS_BAM="$TMPDIR/$bname.tmp.bam"
-        bedtools bedtobam -i "$BED" -g "$CHROMSIZES" > "$BEDTOOLS_BAM"
-        bam_to_bw "$BEDTOOLS_BAM" "$SAMPLE_DIR/$bname.bw"
-    fi
+# RPM normalization (primary reads only, unchanged logic)
+RPMscale=$(bc <<< "scale=6;1000000/$(samtools view -F 0x100 -c "$inputfile")")
+
+if [ "$split" == "-split" ]; then
+    echo "bam → bw (strand-aware, fr-firststrand)"
+
+    # PLUS transcription strand
+    samtools view -bh \
+        -f 0x80 -F 0x10 "$inputfile" \
+        "$inputfile" |
+    samtools view -bh \
+        -f 0x40 -f 0x10 "$inputfile" > /tmp/plus.part2.bam
+
+    samtools view -bh -f 0x80 -F 0x10 "$inputfile" > /tmp/plus.part1.bam
+    samtools view -bh -f 0x40 -f 0x10 "$inputfile" > /tmp/plus.part2.bam
+
+    samtools merge -f /tmp/plus.bam /tmp/plus.part1.bam /tmp/plus.part2.bam
+
+    bedtools genomecov -ibam /tmp/plus.bam -bg -scale "$RPMscale" -split |
+    LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.plus.normalized.bedGraph"
+
+    bedGraphToBigWig "$bname.plus.normalized.bedGraph" "$CHROMINFO" "$bname.plus.normalized.bw"
+
+    # MINUS transcription strand
+    samtools view -bh -f 0x40 -F 0x10 "$inputfile" > /tmp/minus.part1.bam
+    samtools view -bh -f 0x80 -f 0x10 "$inputfile" > /tmp/minus.part2.bam
+
+    samtools merge -f /tmp/minus.bam /tmp/minus.part1.bam /tmp/minus.part2.bam
+
+    bedtools genomecov -ibam /tmp/minus.bam -bg -scale "$RPMscale" -split |
+    LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.minus.normalized.bedGraph"
+
+    bedGraphToBigWig "$bname.minus.normalized.bedGraph" "$CHROMINFO" "$bname.minus.normalized.bw"
+
+    rm -f /tmp/plus.* /tmp/minus.*
 fi
 
-rm -rf "$TMPDIR"
-echo "OK: $bname bigWig(s) created"
+if [ "$split" == "-nosplit" ]; then
+    echo "bam → bw (no strand split)"
+
+    if [ "$ext" == "cram" ]; then
+        samtools view -b "$inputfile" |
+        bedtools genomecov -ibam stdin -bg -scale "$RPMscale" -split |
+        LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.normalized.bedGraph"
+    else
+        bedtools genomecov -ibam "$inputfile" -bg -scale "$RPMscale" -split |
+        LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.normalized.bedGraph"
+    fi
+
+    bedGraphToBigWig "$bname.normalized.bedGraph" "$CHROMINFO" "$bname.normalized.bw"
+fi
