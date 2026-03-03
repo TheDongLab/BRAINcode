@@ -131,13 +131,13 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     CIRCexplorer2 parse \
         -t STAR \
         Chimeric.out.junction \
-        > back_splice_junction.txt && \
+        > back_spliced_junction.txt && \
 
     # Annotate with default autofix
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
         -g "$GENOME_FA" \
-        -b back_splice_junction.bed \
+        -b back_spliced_junction.bed \
         -o circularRNA_known.txt \
         --low-confidence && \
 
@@ -152,7 +152,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
             "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
             "$SAMPLE_DIR/circularRNA_known.txt" \
-            "$SAMPLE_DIR/back_splice_junction.txt" && \
+            "$SAMPLE_DIR/back_spliced_junction.txt" && \
 
         echo "[STEP 5] circRNA calling completed successfully."
     else
