@@ -203,6 +203,9 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     # Sort by name once for both HTSeq runs
     samtools sort -n -o "$SAMPLE_DIR/Aligned.sortedByName.bam" "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" && \
     
+    # Index the name-sorted BAM
+    samtools index "$SAMPLE_DIR/Aligned.sortedByName.bam" && \
+    
     # Run HTSeq with intersection-strict mode
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
         "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
