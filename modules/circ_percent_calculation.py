@@ -2,23 +2,22 @@
 # ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py
 #
 # FIXES vs previous version:
-#   - circ_reads now correctly parsed from FUSIONJUNC_XXXXX/N in back_spliced_junction.bed
-#     (previously was summing exon index numbers from circ_exon_nums column — WRONG)
-#   - linear_reads now excludes SA-tagged and supplementary reads
-#     (previously counted ALL reads in flanking window including chimeric — WRONG)
+#   1. circ_reads: parsed from FUSIONJUNC_XXXXX/N in back_spliced_junction.bed
+#      (previously summed exon index numbers from circ_exon_nums — WRONG)
+#   2. linear_reads: summed from junction_reads col 11 in circularRNA_known.txt
+#      (previously fetched ALL reads in large flanking windows via BAM — WRONG)
+#   3. BAM file no longer needed as input
 
 import pandas as pd
-import pysam
 import sys
 
-if len(sys.argv) != 4:
-    print("Usage: python circ_percent_calculation.py <sample_bam> <circularRNA_known.txt> <back_spliced_junction.bed>")
+if len(sys.argv) != 3:
+    print("Usage: python circ_percent_calculation.py <circularRNA_known.txt> <back_spliced_junction.bed>")
     sys.exit(1)
 
-bam_file           = sys.argv[1]
-circ_file          = sys.argv[2]
-raw_junction_file  = sys.argv[3]
-out_file           = circ_file.replace(".txt", "_circ_percentage.txt")
+circ_file         = sys.argv[1]
+raw_junction_file = sys.argv[2]
+out_file          = circ_file.replace(".txt", "_circ_percentage.txt")
 
 # -------------------------------------------------------------------------
 # Column names for circularRNA_known.txt
@@ -41,7 +40,6 @@ raw_junc = pd.read_csv(
     names=["chr", "start", "end", "name", "score", "strand"]
 )
 
-# Parse read count from FUSIONJUNC name field
 raw_junc["circ_reads"] = raw_junc["name"].apply(
     lambda x: int(x.split("/")[1]) if isinstance(x, str) and "/" in x else 0
 )
@@ -52,69 +50,40 @@ for _, row in raw_junc.iterrows():
     key = f"{row['chr']}:{row['start']}-{row['end']}"
     junc_lookup[key] = row["circ_reads"]
 
-# Map circ read counts onto circ df using chr:start-end key
 circ["circ_exon"] = circ.apply(
     lambda row: junc_lookup.get(f"{row['chr']}:{row['start']}-{row['end']}", 0),
     axis=1
 )
 
 # -------------------------------------------------------------------------
-# Open BAM and count LINEAR reads in flanking exon windows
-# Excludes:
-#   - supplementary alignments (chimeric read halves)
-#   - SA-tagged reads (back-splice supporting reads)
-#   - unmapped reads
+# Linear reads from col 11 (junction_reads) — CIRCexplorer2 already counted
+# reads spanning the internal splice junctions flanking the circRNA.
+# Sum comma-separated values per row.
+# e.g. "120,87,185" -> 392
+# e.g. "1099"       -> 1099
 # -------------------------------------------------------------------------
-bam = pysam.AlignmentFile(bam_file, "rb")
-
-def calc_linear_reads(coord_string):
-    """
-    Count non-chimeric reads in flanking exon windows from circ_coords column.
-    Format: chr:start-end|chr:start-end
-    Only counts reads that are:
-      - not supplementary
-      - not SA-tagged (chimeric)
-      - not unmapped
-    """
-    linear_count = 0
-    if pd.isna(coord_string) or coord_string == "None":
+def sum_junction_reads(s):
+    if pd.isna(s) or str(s).strip() in ("", "0"):
+        return 0
+    try:
+        return sum(int(x) for x in str(s).split(","))
+    except ValueError:
         return 0
 
-    for p in coord_string.split("|"):
-        if p == "None":
-            continue
-        try:
-            chr_part, range_part = p.split(":")
-            start_coord, end_coord = map(int, range_part.split("-"))
-            for read in bam.fetch(chr_part, start_coord, end_coord):
-                if read.is_unmapped:
-                    continue
-                if read.is_supplementary:
-                    continue
-                if read.has_tag("SA"):
-                    continue
-                linear_count += 1
-        except (ValueError, KeyError):
-            continue
-
-    return linear_count
-
-circ["linear_exon"] = circ["circ_coords"].apply(calc_linear_reads)
+circ["linear_exon"] = circ["junction_reads"].apply(sum_junction_reads)
 
 # -------------------------------------------------------------------------
-# Calculate circ percent
-# If both are 0 (e.g. CDR1as with no linear reads), set to 1.0
+# circ_percent = circ_reads / (circ_reads + linear_reads)
+# If both are 0 (e.g. CDR1as), set to 1.0
 # -------------------------------------------------------------------------
 circ["circ_percent"] = circ.apply(
     lambda row: (
-        row["circ_exon"] / (row["circ_exon"] + row["linear_exon"])
-        if (row["circ_exon"] + row["linear_exon"]) > 0
+        int(row["circ_exon"]) / (int(row["circ_exon"]) + row["linear_exon"])
+        if (int(row["circ_exon"]) + row["linear_exon"]) > 0
         else 1.0
     ),
     axis=1
 )
-
-bam.close()
 
 # -------------------------------------------------------------------------
 # Write output
