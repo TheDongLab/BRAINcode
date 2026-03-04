@@ -150,8 +150,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
         fi && \
 
         python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
-            "$SAMPLE_DIR/circularRNA_known.txt" \
-            "$SAMPLE_DIR/back_spliced_junction.bed" && \
+            "$SAMPLE_DIR/circularRNA_known.txt" && \
 
         echo "[STEP 5] circRNA calling completed successfully."
     else
