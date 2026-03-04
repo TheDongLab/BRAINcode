@@ -62,7 +62,11 @@ circ["circ_exon"] = circ.apply(
 # e.g. "120,87,185" -> 392
 # e.g. "1099"       -> 1099
 # -------------------------------------------------------------------------
-def sum_junction_reads(s):
+def sum_junction_reads(row):
+    # single exon circ — no internal junctions, col 11 is exon size not read count
+    if str(row["num_junctions"]).strip() == "1":
+        return 0
+    s = row["junction_reads"]
     if pd.isna(s) or str(s).strip() in ("", "0"):
         return 0
     try:
@@ -70,7 +74,7 @@ def sum_junction_reads(s):
     except ValueError:
         return 0
 
-circ["linear_exon"] = circ["junction_reads"].apply(sum_junction_reads)
+circ["linear_exon"] = circ.apply(sum_junction_reads, axis=1)
 
 # -------------------------------------------------------------------------
 # circ_percent = circ_reads / (circ_reads + linear_reads)
