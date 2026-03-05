@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 3/3/2026
-# Version: 4.3 (used --alignEndsType Local in STAR, updated circ calling step to account for Local alignment in STAR, updated bigWig generation script)
+# Date: 3/5/2026
+# Version: 4.4 (updated htseq to use the coordinate-sorted .bam (-r pos parameter); saves disk space)
 ###########################################
 
 set -euo pipefail
@@ -198,15 +198,9 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
     
-    # Sort by name once for both HTSeq runs
-    samtools sort -n -o "$SAMPLE_DIR/Aligned.sortedByName.bam" "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" && \
-    
-    # Index the name-sorted BAM
-    samtools index "$SAMPLE_DIR/Aligned.sortedByName.bam" && \
-    
     # Run HTSeq with intersection-strict mode
-    htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam \
-        "$SAMPLE_DIR/Aligned.sortedByName.bam" "$GTF" \
+    htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam -r pos \
+        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr" && \
     
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
