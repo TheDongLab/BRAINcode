@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 # normalize_counts.py
-# Usage: python3 normalize_counts.py <htseqcount.tab> <GTF> <output_dir>
+# Usage: python3 normalize_counts.py <htseqcount.tab> <GTF> <output_dir> --library-type [PE|SE]
 
 import sys
 import os
+import argparse
 
-htseq_file = sys.argv[1]
-gtf_file   = sys.argv[2]
-out_dir    = sys.argv[3]
+parser = argparse.ArgumentParser()
+parser.add_argument("htseq_file",     help="HTSeq count table")
+parser.add_argument("gtf_file",       help="GTF annotation file")
+parser.add_argument("out_dir",        help="Output directory")
+parser.add_argument("--library-type", choices=["PE", "SE"], required=True,
+                    help="PE (paired-end) or SE (single-end)")
+args = parser.parse_args()
 
-tpm_out  = os.path.join(out_dir, "normalization.TPM.tab")
-rpkm_out = os.path.join(out_dir, "normalization.RPKM.tab")
-fpkm_out = os.path.join(out_dir, "normalization.FPKM.tab")
+htseq_file   = args.htseq_file
+gtf_file     = args.gtf_file
+out_dir      = args.out_dir
+library_type = args.library_type
+norm_label   = "FPKM" if library_type == "PE" else "RPKM"
+
+out_file = os.path.join(out_dir, "normalization.tab")
 
 # ── 1. Parse exon lengths from GTF ───────────────────────────────────────
 gene_len = {}
@@ -53,20 +62,18 @@ for g, cnt in counts.items():
 sum_rpk   = sum(rpk.values())
 scale_tpm = sum_rpk / 1e6 if sum_rpk > 0 else 1.0
 
-# ── 4. Write output tables ───────────────────────────────────────────────
-with open(tpm_out, "w") as ft, open(rpkm_out, "w") as fr, open(fpkm_out, "w") as ff:
-    ft.write("gene_id\traw_count\tgene_length_bp\tTPM\n")
-    fr.write("gene_id\traw_count\tgene_length_bp\tRPKM\n")
-    ff.write("gene_id\traw_count\tgene_length_bp\tFPKM\n")
+# ── 4. Write combined output table ───────────────────────────────────────
+with open(out_file, "w") as fout:
+    fout.write(f"gene_id\traw_count\tgene_length_bp\tTPM\t{norm_label}\n")
     for g in gene_order:
         cnt      = counts[g]
         glen     = gene_len.get(g, 0)
         tpm_val  = rpk[g] / scale_tpm
-        rpkm_val = (cnt * 1e9) / (glen * total) if (glen > 0 and total > 0) else 0.0
-        fpkm_val = rpkm_val
-        ft.write(f"{g}\t{cnt}\t{glen}\t{tpm_val:.6f}\n")
-        fr.write(f"{g}\t{cnt}\t{glen}\t{rpkm_val:.6f}\n")
-        ff.write(f"{g}\t{cnt}\t{glen}\t{fpkm_val:.6f}\n")
+        norm_val = (cnt * 1e9) / (glen * total) if (glen > 0 and total > 0) else 0.0
+        fout.write(f"{g}\t{cnt}\t{glen}\t{tpm_val:.6f}\t{norm_val:.6f}\n")
 
+sys.stderr.write(f"  Library type       : {library_type}\n")
+sys.stderr.write(f"  Normalization      : TPM + {norm_label}\n")
+sys.stderr.write(f"  Output             : {out_file}\n")
 sys.stderr.write(f"  Total mapped reads : {total:,}\n")
 sys.stderr.write(f"  Genes quantified   : {len(counts):,}\n")
