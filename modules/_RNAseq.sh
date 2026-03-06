@@ -226,7 +226,7 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.normalization" ]; then
     echo "[STEP 8] Read normalization (TPM/RPKM/FPKM) starting..."
 
-    python3 "$PIPELINE_DIR/normalize_counts.py" \
+    python3 "$SCRIPT_DIR/normalize_counts.py" \
         "$SAMPLE_DIR/htseqcount.tab" \
         "$GTF" \
         "$SAMPLE_DIR" && \
