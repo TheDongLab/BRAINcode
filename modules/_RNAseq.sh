@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 3/5/2026
-# Version: 4.4 (updated htseq to use the coordinate-sorted .bam (-r pos parameter); saves disk space)
+# Date: 3/6/2026
+# Version: 5.0 (updated STAR output naming convention. Added FPKM/RPKM/TPM step. Removed extra files in cleanup step.)
 ###########################################
 
 set -euo pipefail
@@ -103,7 +103,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
     STAR --runThreadN $CPU \
         --genomeDir "$STAR_GENOME" \
         --readFilesIn "$R1" "$R2" --readFilesCommand zcat \
-        --outFileNamePrefix "$SAMPLE_DIR/" \
+        --outFileNamePrefix "$SAMPLE_DIR/STAR." \
         --outSAMtype BAM SortedByCoordinate \
         --outSAMattrRGline ID:$samplename SM:$samplename LB:$samplename PL:ILLUMINA PU:$samplename \
         --outFilterMultimapNmax 10 \
@@ -124,13 +124,12 @@ fi
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     echo "[STEP 5] circRNA calling starting..."
-
     cd "$SAMPLE_DIR" && \
 
     # Parse STAR chimeric junctions (Local alignment; default CIRCexplorer2 behavior)
     CIRCexplorer2 parse \
         -t STAR \
-        Chimeric.out.junction \
+        STAR.Chimeric.out.junction \
         > back_spliced_junction.txt && \
 
     # Annotate with default autofix
@@ -145,12 +144,13 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
         touch "$SAMPLE_DIR/.status.RNAseq.circRNA" && \
         echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs." && \
 
-        if [ ! -f "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam.bai" ]; then
-            samtools index "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
-        fi && \
+    if [ ! -f "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam.bai" ]; then
+        samtools index "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
+    fi && \
 
-        python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
-            "$SAMPLE_DIR/circularRNA_known.txt" && \
+    # Circ percentage calculation
+    python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+        "$SAMPLE_DIR/circularRNA_known.txt" && \
 
         echo "[STEP 5] circRNA calling completed successfully."
     else
@@ -164,10 +164,10 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
     echo "[STEP 6] BAM post-processing and annotation starting..."
 
-    SUMMARY=Aligned.sortedByCoord.out.summary.txt
+    SUMMARY="$SAMPLE_DIR/bam.summary.txt"
     echo -e "total_non_rRNA_mt\texons\tintrons\trRNA\tmtRNA\tLINE\tSINE\tintergenic\tintergenic_near_genes\tintergenic_not_near_genes\ttotal" > $SUMMARY
 
-    count() { samtools view -c -F 0x100 -L "$1" Aligned.sortedByCoord.out.bam; }
+    count() { samtools view -c -F 0x100 -L "$1" "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"; }
 
     total_non_rRNA_mt=$(count "${ANNOT_BEDS}/non_rRNA_mt.sorted.bed")
     exons=$(count "${ANNOT_BEDS}/exons.sorted.bed")
@@ -179,14 +179,14 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]; then
     intergenic=$(count "${ANNOT_BEDS}/intergenic.sorted.bed")
     intergenic_not_near_genes=$(count "${ANNOT_BEDS}/intergenic_notneargene.sorted.bed")
     intergenic_near_genes=$((intergenic - intergenic_not_near_genes))
-    total=$(samtools view -c -F 0x100 Aligned.sortedByCoord.out.bam)
+    total=$(samtools view -c -F 0x100 "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam")
 
     echo -e "${total_non_rRNA_mt}\t${exons}\t${introns}\t${rRNA}\t${mtRNA}\t${LINE}\t${SINE}\t${intergenic}\t${intergenic_near_genes}\t${intergenic_not_near_genes}\t${total}" >> $SUMMARY
 
-    samtools view -cF 0x100 Aligned.sortedByCoord.out.bam > Aligned.sortedByCoord.out.bam.stat
-    samtools flagstat Aligned.sortedByCoord.out.bam >> Aligned.sortedByCoord.out.bam.stat
-
-    Rscript "$SCRIPT_DIR/_bam2annotation.r" "$SUMMARY" "Aligned.sortedByCoord.out.bam2annotation.pdf"
+    samtools view -cF 0x100 "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam" > "$SAMPLE_DIR/bam.stat"
+    samtools flagstat "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam" >> "$SAMPLE_DIR/bam.stat"
+    
+    Rscript "$SCRIPT_DIR/_bam2annotation.r" "$SAMPLE_DIR/bam.summary.txt" "$SAMPLE_DIR/bam2annotation.pdf"
 
     touch "$SAMPLE_DIR/.status.RNAseq.bam2annotation"
     echo "[STEP 6] BAM annotation completed successfully."
@@ -200,7 +200,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     
     # Run HTSeq with intersection-strict mode
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam -r pos \
-        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" "$GTF" \
+        "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr" && \
     
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
@@ -208,10 +208,88 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
 fi
 
 ###########################################
-# STEP 8: LeafCutter junction quantification, clustering, and PSI
+# STEP 8: Read normalization (TPM, RPKM, FPKM)
+###########################################
+if [ ! -f "$SAMPLE_DIR/.status.RNAseq.normalization" ]; then
+    echo "[STEP 8] Read normalization (TPM/RPKM/FPKM) starting..."
+
+    awk '
+    BEGIN { FS="\t"; OFS="\t" }
+
+    # ── Pass 1 via ARGV: parse exon lengths from GTF ──────────────────────
+    FILENAME == ARGV[1] {
+        if ($0 ~ /^#/) next
+        if ($3 != "exon") next
+        exon_len = $5 - $4 + 1
+        match($9, /gene_id "([^"]+)"/, arr)
+        if (arr[1] != "") gene_len[arr[1]] += exon_len
+        next
+    }
+
+    # ── Pass 2 via ARGV: parse HTSeq counts ───────────────────────────────
+    FILENAME == ARGV[2] {
+        if ($1 ~ /^__/) next
+        gene    = $1
+        cnt     = $2 + 0
+        counts[gene]  = cnt
+        gene_order[NR] = gene
+        total        += cnt
+        next
+    }
+
+    END {
+        # ── RPK (reads per kilobase) for each gene ────────────────────────
+        sum_rpk = 0
+        for (g in counts) {
+            glen = (g in gene_len) ? gene_len[g] : 0
+            if (glen > 0)
+                rpk[g] = counts[g] / (glen / 1000)
+            else
+                rpk[g] = 0
+            sum_rpk += rpk[g]
+        }
+        scale_tpm = (sum_rpk > 0) ? sum_rpk / 1e6 : 1
+
+        # ── Write TPM ─────────────────────────────────────────────────────
+        print "gene_id", "raw_count", "gene_length_bp", "TPM" > tpm_out
+        # ── Write RPKM ────────────────────────────────────────────────────
+        print "gene_id", "raw_count", "gene_length_bp", "RPKM" > rpkm_out
+        # ── Write FPKM ────────────────────────────────────────────────────
+        print "gene_id", "raw_count", "gene_length_bp", "FPKM" > fpkm_out
+
+        for (i = 1; i <= length(gene_order); i++) {
+            g    = gene_order[i]
+            cnt  = counts[g]
+            glen = (g in gene_len) ? gene_len[g] : 0
+
+            tpm_val  = (scale_tpm > 0) ? rpk[g] / scale_tpm : 0
+            rpkm_val = (glen > 0 && total > 0) ? (cnt * 1e9) / (glen * total) : 0
+            fpkm_val = rpkm_val   # numerically identical for paired-end fragments
+
+            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, tpm_val  >> tpm_out
+            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, rpkm_val >> rpkm_out
+            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, fpkm_val >> fpkm_out
+        }
+
+        printf "  Total mapped reads : %d\n", total   > "/dev/stderr"
+        printf "  Genes quantified   : %d\n", length(counts) > "/dev/stderr"
+    }
+    ' \
+        -v tpm_out="$SAMPLE_DIR/normalization.TPM.tab" \
+        -v rpkm_out="$SAMPLE_DIR/normalization.RPKM.tab" \
+        -v fpkm_out="$SAMPLE_DIR/normalization.FPKM.tab" \
+        "$GTF" \
+        "$SAMPLE_DIR/htseqcount.tab" && \
+
+    touch "$SAMPLE_DIR/.status.RNAseq.normalization" && \
+    echo "[STEP 8] Normalization completed successfully."
+fi
+
+###########################################
+# STEP 9: LeafCutter junction quantification, clustering, and PSI
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
-    echo "[STEP 8] LeafCutter junction quantification starting..."
+    echo "[STEP 9] LeafCutter junction quantification starting..."
     LEAFCUTTER_BASE="/home/zw529/donglab/pipelines/modules/rnaseq/bin/leafcutter"
     LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
     JUNC_DIR="$LEAFCUTTER_OUT/juncs"
@@ -220,7 +298,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
     export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH" && \
     mkdir -p "$JUNC_DIR" "$CLUSTER_DIR" "$PSI_DIR" && \
     "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
-        "$SAMPLE_DIR/Aligned.sortedByCoord.out.bam" \
+        "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam" \
         "$JUNC_DIR/${samplename}.junc" && \
     python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
         -j "$JUNC_DIR"/*.junc \
@@ -238,16 +316,15 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
         "$LC_PSI" && \
     { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv" && \
     touch "$SAMPLE_DIR/.status.RNAseq.leafcutter" && \
-    echo "[STEP 8] LeafCutter processing completed successfully."
+    echo "[STEP 9] LeafCutter processing completed successfully."
 fi
 
 ###########################################
-# STEP 9: bigWig generation (+ / - split)
+# STEP 10: bigWig generation (+ / - split)
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
-    echo "[STEP 9] bigWig generation starting..."
-
-    BAM="$SAMPLE_DIR/Aligned.sortedByCoord.out.bam"
+    echo "[STEP 10] bigWig generation starting..."
+    BAM="$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
 
     # ensure BAM index exists (required by genomecov)
     [ -f "${BAM}.bai" ] || samtools index "$BAM"
@@ -255,18 +332,19 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     "$SCRIPT_DIR/bam2bigwig.sh" \
         "$BAM" \
         -split && \
-
     touch "$SAMPLE_DIR/.status.RNAseq.bigwig" && \
-    echo "[STEP 9] bigWig generation completed successfully."
+    echo "[STEP 10] bigWig generation completed successfully."
 fi
 
 ###########################################
-# STEP 10: Cleanup (_val.gz fastqs)
+# STEP 11: Cleanup
 ###########################################
 if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
-    echo "[STEP 10] Cleaning up trimmed FASTQ files..."
+    echo "[STEP 11] Cleaning up trimmed FASTQ files, bedGraph files, and bed files..."
     rm -f "$SAMPLE_DIR"/*_val_1.fq.gz "$SAMPLE_DIR"/*_val_2.fq.gz && \
-    echo "[STEP 10] Trimmed FASTQs removed."
+    rm -f "$SAMPLE_DIR"/*.bedGraph && \
+    rm -f "$SAMPLE_DIR"/back_spliced_junction.bed && \
+    echo "[STEP 11] Trimmed FASTQs, bedGraphs, and back_spliced_junction.bed removed."
 fi
 
 echo "[$(date)] RNAseq pipeline finished successfully and cleanup completed."
