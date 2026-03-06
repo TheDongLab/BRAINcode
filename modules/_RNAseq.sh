@@ -26,7 +26,7 @@ set -u
 export PATH="$HOME/.conda/envs/RNAseq/bin:/apps/software/2022b/software/Kent_tools/468-GCC-13.3.0/bin:/opt/slurm/current/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$SCRIPT_DIR/bam2bigwig.sh" "$SCRIPT_DIR/_bam2annotation.r"
+chmod +x "$SCRIPT_DIR/bam2bigwig.sh" "$SCRIPT_DIR/_bam2annotation.r" "$SCRIPT_DIR/normalize_counts.py"
 
 ###########################################
 # Reference paths
@@ -226,73 +226,10 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.normalization" ]; then
     echo "[STEP 8] Read normalization (TPM/RPKM/FPKM) starting..."
 
-    awk '
-    BEGIN { FS="\t"; OFS="\t" }
-
-    # ── Pass 1 via ARGV: parse exon lengths from GTF ──────────────────────
-    FILENAME == ARGV[1] {
-        if ($0 ~ /^#/) next
-        if ($3 != "exon") next
-        exon_len = $5 - $4 + 1
-        match($9, /gene_id "([^"]+)"/, arr)
-        if (arr[1] != "") gene_len[arr[1]] += exon_len
-        next
-    }
-
-    # ── Pass 2 via ARGV: parse HTSeq counts ───────────────────────────────
-    FILENAME == ARGV[2] {
-        if ($1 ~ /^__/) next
-        gene    = $1
-        cnt     = $2 + 0
-        counts[gene]  = cnt
-        gene_order[NR] = gene
-        total        += cnt
-        next
-    }
-
-    END {
-        # ── RPK (reads per kilobase) for each gene ────────────────────────
-        sum_rpk = 0
-        for (g in counts) {
-            glen = (g in gene_len) ? gene_len[g] : 0
-            if (glen > 0)
-                rpk[g] = counts[g] / (glen / 1000)
-            else
-                rpk[g] = 0
-            sum_rpk += rpk[g]
-        }
-        scale_tpm = (sum_rpk > 0) ? sum_rpk / 1e6 : 1
-
-        # ── Write TPM ─────────────────────────────────────────────────────
-        print "gene_id", "raw_count", "gene_length_bp", "TPM" > tpm_out
-        # ── Write RPKM ────────────────────────────────────────────────────
-        print "gene_id", "raw_count", "gene_length_bp", "RPKM" > rpkm_out
-        # ── Write FPKM ────────────────────────────────────────────────────
-        print "gene_id", "raw_count", "gene_length_bp", "FPKM" > fpkm_out
-
-        for (i = 1; i <= length(gene_order); i++) {
-            g    = gene_order[i]
-            cnt  = counts[g]
-            glen = (g in gene_len) ? gene_len[g] : 0
-
-            tpm_val  = (scale_tpm > 0) ? rpk[g] / scale_tpm : 0
-            rpkm_val = (glen > 0 && total > 0) ? (cnt * 1e9) / (glen * total) : 0
-            fpkm_val = rpkm_val   # numerically identical for paired-end fragments
-
-            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, tpm_val  >> tpm_out
-            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, rpkm_val >> rpkm_out
-            printf "%s\t%d\t%d\t%.6f\n", g, cnt, glen, fpkm_val >> fpkm_out
-        }
-
-        printf "  Total mapped reads : %d\n", total   > "/dev/stderr"
-        printf "  Genes quantified   : %d\n", length(counts) > "/dev/stderr"
-    }
-    ' \
-        -v tpm_out="$SAMPLE_DIR/normalization.TPM.tab" \
-        -v rpkm_out="$SAMPLE_DIR/normalization.RPKM.tab" \
-        -v fpkm_out="$SAMPLE_DIR/normalization.FPKM.tab" \
+    python3 "$PIPELINE_DIR/normalize_counts.py" \
+        "$SAMPLE_DIR/htseqcount.tab" \
         "$GTF" \
-        "$SAMPLE_DIR/htseqcount.tab" && \
+        "$SAMPLE_DIR" && \
 
     touch "$SAMPLE_DIR/.status.RNAseq.normalization" && \
     echo "[STEP 8] Normalization completed successfully."
