@@ -229,7 +229,8 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.normalization" ]; then
     python3 "$SCRIPT_DIR/normalize_counts.py" \
         "$SAMPLE_DIR/htseqcount.tab" \
         "$GTF" \
-        "$SAMPLE_DIR" && \
+        "$SAMPLE_DIR" \
+        --library-type PE && \
 
     touch "$SAMPLE_DIR/.status.RNAseq.normalization" && \
     echo "[STEP 8] Normalization completed successfully."
