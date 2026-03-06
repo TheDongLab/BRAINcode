@@ -151,6 +151,15 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     # Circ percentage calculation
     python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
         "$SAMPLE_DIR/circularRNA_known.txt" && \
+        
+    # After circ_percent_calculation.py completes, prepend header to original circ files
+    { echo -e "chr\tstart\tend\tcirc_ID\tstrand_count\tstrand\tbacksplice_start\tbacksplice_end\tread_support\tnum_junctions\tjunction_reads\tunknown1\tunknown2\ttype\tgene\ttranscript\tcirc_exon_nums\tcirc_coords"; \
+    cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
+    mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
+    
+    { echo -e "chr\tstart\tend\tcirc_ID\tstrand_count\tstrand\tbacksplice_start\tbacksplice_end\tread_support\tnum_junctions\tjunction_reads\tunknown1\tunknown2\ttype\tgene\ttranscript\tcirc_exon_nums\tcirc_coords"; \
+    cat "$SAMPLE_DIR/low_conf_circularRNA_known.txt"; } > "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" && \
+    mv "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" "$SAMPLE_DIR/low_conf_circularRNA_known.txt" && \
 
         echo "[STEP 5] circRNA calling completed successfully."
     else
@@ -202,6 +211,10 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam -r pos \
         "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr" && \
+        
+    # After htseq-count completes, prepend header
+    { echo -e "gene_id\tcount"; cat "$SAMPLE_DIR/htseqcount.tab"; } > "$SAMPLE_DIR/htseqcount.tab.tmp" && \
+    mv "$SAMPLE_DIR/htseqcount.tab.tmp" "$SAMPLE_DIR/htseqcount.tab" && \
     
     touch "$SAMPLE_DIR/.status.RNAseq.htseqcount" && \
     echo "[STEP 7] Gene counting completed successfully."
