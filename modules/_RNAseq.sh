@@ -294,8 +294,8 @@ if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     echo "[STEP 11] Cleaning up trimmed FASTQ files, bedGraph files, and bed files..."
     rm -f "$SAMPLE_DIR"/*_val_1.fq.gz "$SAMPLE_DIR"/*_val_2.fq.gz && \
     rm -f "$SAMPLE_DIR"/*.bedGraph && \
-    rm -f "$SAMPLE_DIR"/back_spliced_junction.bed && \
-    echo "[STEP 11] Trimmed FASTQs, bedGraphs, and back_spliced_junction.bed removed."
+    rm -f "$SAMPLE_DIR"/back_spliced* && \
+    echo "[STEP 11] Trimmed FASTQs, bedGraphs, and circRNA back_spliced intermediate files removed."
 fi
 
 echo "[$(date)] RNAseq pipeline finished successfully and cleanup completed."
