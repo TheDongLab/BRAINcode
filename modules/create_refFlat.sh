@@ -1,33 +1,52 @@
 #!/bin/bash
+
+set -euo pipefail
 module load Kent_tools
 
-GTF="gencode.v49.annotation.gtf"
-OUT="refFlat_cIRS7.txt"
+GTF="${1:-gencode.v49.annotation.gtf}"
+OUT="${2:-refFlat.txt}"
+OUT_CIRS7="${OUT%.txt}_cIRS7.txt"
+PREFIX="${GTF%.gtf}"
 
-# 1. Convert GTF to GenePred with GeneName as Name2
+# 1. Build transcript_id -> label lookup from GTF
+# Label format: ENSG___transcript_type___gene_name
+awk '$3=="transcript"{
+    match($0,/transcript_id "([^"]+)"/,tid)
+    match($0,/gene_id "([^"]+)"/,gid)
+    match($0,/transcript_type "([^"]+)"/,tt)
+    match($0,/gene_name "([^"]+)"/,gn)
+    print tid[1], gid[1]"___"tt[1]"___"gn[1]
+}' "$GTF" > tmp.label_lookup.tsv
+
+# 2. GTF -> GenePred
 gtfToGenePred -genePredExt -geneNameAsName2 "$GTF" tmp.gp
 
-# 2. Reorder to refFlat format:
-# GeneName (12), TranscriptID (1), Chrom (2), Strand (3), TxStart (4), TxEnd (5), 
-# CdsStart (6), CdsEnd (7), ExonCount (8), ExonStarts (9), ExonEnds (10)
+# 3. GenePred -> BED12 (original, unmodified name col)
+genePredToBed tmp.gp "${PREFIX}.bed12"
+
+# 4. BED12 with rich name col (ENST___ENSG___transcript_type___gene_name)
+awk 'BEGIN{OFS="\t"}
+NR==FNR{ lut[$1]=$2; next }
+{ $4 = ($4 in lut) ? $4"___"lut[$4] : $4; print }
+' tmp.label_lookup.tsv "${PREFIX}.bed12" > "${PREFIX}.labeled.bed12"
+
+# 5. GenePred -> refFlat column order (standard, no label modification)
 awk 'BEGIN{OFS="\t"} {print $12,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10}' tmp.gp > refFlat.tmp
 
-# 3. Cleanup: Ensure every coordinate list ends with a comma (strict CIRCexplorer2 requirement)
+# 6. Enforce trailing commas on exon fields (CIRCexplorer2 requirement)
 awk -F'\t' 'BEGIN{OFS="\t"} {
-    gsub(/,+$/, "", $10); $10=$10","; 
-    gsub(/,+$/, "", $11); $11=$11","; 
+    gsub(/,+$/, "", $10); $10=$10",";
+    gsub(/,+$/, "", $11); $11=$11",";
     print
 }' refFlat.tmp > "$OUT"
 
-# 4. PATCH: Manually append the ciRS-7 (CDR1as) entry with literal tabs
-printf "CDR1as\tciRS-7\tchrX\t-\t140783174\t140784660\t140783174\t140784660\t1\t140783174,\t140784660,\n" >> "$OUT"
+# 7. Create ciRS-7 patched version
+cp "$OUT" "$OUT_CIRS7"
+printf "CDR1as\tciRS-7\tchrX\t-\t140783174\t140784660\t140783174\t140784660\t1\t140783174,\t140784660,\n" >> "$OUT_CIRS7"
 
-rm tmp.gp refFlat.tmp
+rm tmp.gp tmp.label_lookup.tsv refFlat.tmp
 
 # VERIFICATION
-echo "--- Verification of CDR1 locus (Linear vs Circular) ---"
-# Check for the standard linear transcript (CDR1)
-grep "ENST00000674533" "$OUT" || echo "WARNING: Linear CDR1 not found in $OUT"
-
-# Check for the newly added circular entry (CDR1as)
-grep "CDR1as" "$OUT" || echo "WARNING: Circular CDR1as not found in $OUT"
+echo "--- Verification ---"
+grep "ENST00000674533" "$OUT"      || echo "WARNING: Linear CDR1 not found in $OUT"
+grep "CDR1as"         "$OUT_CIRS7" || echo "WARNING: Circular CDR1as not found in $OUT_CIRS7"
