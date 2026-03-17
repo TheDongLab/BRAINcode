@@ -11,7 +11,8 @@
 # Discovers all RNAseq samples across target experiments and runs _RNAseq.sh
 # on each sample as a SLURM array job.
 #
-# For most experiments: discovers samples from RNAseq/Raw/ subdirectories.
+# For most experiments: discovers samples from RNAseq/Raw/ subdirectories
+#                       and writes output to RNAseq/Processed/.
 # For target_ALS:       discovers samples from RNAseq/Processed/ subdirectories
 #                       (BAM already present; steps 1-4 are skipped via status
 #                       files, and the BAM is symlinked to the expected name).
@@ -19,8 +20,8 @@
 # Lives in: $HOME/donglab/pipelines/scripts/rnaseq/
 #
 # Usage:
-#   bash run_RNAseq_all.sh            # count samples and self-submit
-#   bash run_RNAseq_all.sh --dry-run  # preview without submitting
+#   bash RNAseq.pipeline.sh            # count samples and self-submit
+#   bash RNAseq.pipeline.sh --dry-run  # preview without submitting
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -34,7 +35,7 @@ PIPELINE_DIR="$HOME/donglab/pipelines/scripts/rnaseq"
 SCRIPT="$PIPELINE_DIR/_RNAseq.sh"
 
 # ── Target experiments ────────────────────────────────────────────────────────
-# Format: "EXPERIMENT_NAME|raw|Raw"   --> discover from RNAseq/Raw/
+# Format: "EXPERIMENT_NAME|raw"       --> discover from RNAseq/Raw/, output to RNAseq/Processed/
 #         "EXPERIMENT_NAME|processed" --> discover from RNAseq/Processed/ (BAM already present)
 EXPERIMENTS=(
     "AMPALS_GSE124439|raw"
@@ -101,7 +102,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     if [[ "$MODE" == "raw" ]]; then
 
         RAW_DIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/Raw/$SAMPLE"
-        OUTDIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/processed/$SAMPLE"
+        OUTDIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/Processed/$SAMPLE"
 
         FASTQ1=$(ls "$RAW_DIR"/*_1.fastq.gz 2>/dev/null | head -1 || true)
         FASTQ2=$(ls "$RAW_DIR"/*_2.fastq.gz 2>/dev/null | head -1 || true)
