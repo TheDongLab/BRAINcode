@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py
 #
-# circ_reads:   parsed from circular_RNA/N in col 4 of circularRNA_known.txt
+# circ_reads:   parsed from circular_RNA/N in col 4 (name) of circularRNA_known.txt
 #               (authoritative — this is what CIRCexplorer2 used internally)
-# linear_reads: summed from junction_reads col 11 of circularRNA_known.txt
+# linear_reads: summed from exonSizes col 11 of circularRNA_known.txt
 #               (reads spanning internal splice junctions flanking the circRNA)
-#               single-exon circs (num_junctions==1) get linear=0 by definition
+#               single-exon circs (exonCount==1) get linear=0 by definition
 # BAM file not needed
 
 import pandas as pd
@@ -19,34 +19,33 @@ circ_file = sys.argv[1]
 out_file  = circ_file.replace(".txt", "_circ_percentage.txt")
 
 # -------------------------------------------------------------------------
-# Column names for circularRNA_known.txt
+# Column names for circularRNA_known.txt (official CIRCexplorer2 names)
 # -------------------------------------------------------------------------
 circ_columns = [
-    "chr", "start", "end", "circ_ID", "strand_count", "strand",
-    "backsplice_start", "backsplice_end", "read_support",
-    "num_junctions", "junction_reads", "unknown1", "unknown2",
-    "type", "gene", "transcript", "circ_exon_nums", "circ_coords"
+    "chrom", "start", "end", "name", "score", "strand",
+    "thickStart", "thickEnd", "itemRgb",
+    "exonCount", "exonSizes", "exonOffsets", "readNumber",
+    "circType", "geneName", "isoformName", "index", "flankIntron"
 ]
-
 circ = pd.read_csv(circ_file, sep="\t", header=None, names=circ_columns, dtype=str)
 
 # -------------------------------------------------------------------------
-# circ_reads from col 4: circular_RNA/N -> N
+# circ_reads from name col: circular_RNA/N -> N
 # This is the authoritative back-splice read count from CIRCexplorer2
 # -------------------------------------------------------------------------
-circ["circ_exon"] = circ["circ_ID"].apply(
+circ["circ_exon"] = circ["name"].apply(
     lambda x: int(x.split("/")[1]) if isinstance(x, str) and "/" in x else 0
 )
 
 # -------------------------------------------------------------------------
-# linear_reads from col 11: sum comma-separated junction read counts
-# single-exon circs (num_junctions==1): col 11 is exon size not read count
+# linear_reads from exonSizes col: sum comma-separated junction read counts
+# single-exon circs (exonCount==1): exonSizes is exon size not read count
 # so set linear=0 for these
 # -------------------------------------------------------------------------
 def sum_junction_reads(row):
-    if str(row["num_junctions"]).strip() == "1":
+    if str(row["exonCount"]).strip() == "1":
         return 0
-    s = row["junction_reads"]
+    s = row["exonSizes"]
     if pd.isna(s) or str(s).strip() in ("", "0"):
         return 0
     try:
@@ -73,7 +72,6 @@ circ["circ_percent"] = circ.apply(
 # Write output
 # -------------------------------------------------------------------------
 circ.to_csv(out_file, sep="\t", index=False)
-
 print(f"[DONE] circRNA percentage written to {out_file}")
 print(f"[INFO] Total circRNAs: {len(circ)}")
 print(f"[INFO] circRNAs with circ reads > 0: {(circ['circ_exon'] > 0).sum()}")
