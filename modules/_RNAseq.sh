@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 3/6/2026
-# Version: 5.0 (updated STAR output naming convention. Added FPKM/RPKM/TPM step. Removed extra files in cleanup step.)
+# Date: 3/17/2026
+# Version: 5.1 (updated circRNA column naming convention)
 ###########################################
 
 set -euo pipefail
@@ -119,19 +119,19 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
     echo "[STEP 4] STAR mapping completed successfully."
 fi
 
-###########################################
+##########################################
 # STEP 5: circRNA calling
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     echo "[STEP 5] circRNA calling starting..."
     cd "$SAMPLE_DIR" && \
-
+ 
     # Parse STAR chimeric junctions (Local alignment; default CIRCexplorer2 behavior)
     CIRCexplorer2 parse \
         -t STAR \
         STAR.Chimeric.out.junction \
         > back_spliced_junction.txt && \
-
+ 
     # Annotate with default autofix
     CIRCexplorer2 annotate \
         -r "$REFFLAT" \
@@ -139,29 +139,32 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
         -b back_spliced_junction.bed \
         -o circularRNA_known.txt \
         --low-confidence && \
-
+ 
     if [ -s circularRNA_known.txt ]; then
+ 
+        # Ensure BAM index exists (required for circ percentage calculation)
+        if [ ! -f "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam.bai" ]; then
+            samtools index "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
+        fi && \
+ 
+        # Circ percentage calculation
+        python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+            "$SAMPLE_DIR/circularRNA_known.txt" && \
+ 
+        # Prepend official CIRCexplorer2 column headers to circularRNA_known.txt
+        { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
+        cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
+        mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
+ 
+        # Prepend official CIRCexplorer2 column headers to low_conf_circularRNA_known.txt
+        { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
+        cat "$SAMPLE_DIR/low_conf_circularRNA_known.txt"; } > "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" && \
+        mv "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" "$SAMPLE_DIR/low_conf_circularRNA_known.txt" && \
+ 
         touch "$SAMPLE_DIR/.status.RNAseq.circRNA" && \
-        echo "[STEP 5] SUCCESS: Found $(wc -l < circularRNA_known.txt) circRNAs." && \
-
-    if [ ! -f "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam.bai" ]; then
-        samtools index "$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
-    fi && \
-
-    # Circ percentage calculation
-    python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
-        "$SAMPLE_DIR/circularRNA_known.txt" && \
-        
-    # After circ_percent_calculation.py completes, prepend header to original circ files
-    { echo -e "chr\tstart\tend\tcirc_ID\tstrand_count\tstrand\tbacksplice_start\tbacksplice_end\tread_support\tnum_junctions\tjunction_reads\tunknown1\tunknown2\ttype\tgene\ttranscript\tcirc_exon_nums\tcirc_coords"; \
-    cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
-    mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
-    
-    { echo -e "chr\tstart\tend\tcirc_ID\tstrand_count\tstrand\tbacksplice_start\tbacksplice_end\tread_support\tnum_junctions\tjunction_reads\tunknown1\tunknown2\ttype\tgene\ttranscript\tcirc_exon_nums\tcirc_coords"; \
-    cat "$SAMPLE_DIR/low_conf_circularRNA_known.txt"; } > "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" && \
-    mv "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" "$SAMPLE_DIR/low_conf_circularRNA_known.txt" && \
-
+        echo "[STEP 5] SUCCESS: Found $(wc -l < "$SAMPLE_DIR/circularRNA_known.txt") circRNAs." && \
         echo "[STEP 5] circRNA calling completed successfully."
+ 
     else
         echo "[STEP 5] ERROR: No circRNAs annotated." && exit 1
     fi
