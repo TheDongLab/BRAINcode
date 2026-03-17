@@ -4,6 +4,8 @@
 #SBATCH --mem=99G
 #SBATCH --time=24:00:00
 #SBATCH -p day
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 
 # ── Meta RNAseq submission script ─────────────────────────────────────────────
 # Discovers all RNAseq samples across target experiments and runs _RNAseq.sh
