@@ -50,11 +50,25 @@ echo "--- Verification ---"
 grep "ENST00000674533" "$OUT"      || echo "WARNING: Linear CDR1 not found in $OUT"
 grep "CDR1as"         "$OUT_CIRS7" || echo "WARNING: Circular CDR1as not found in $OUT_CIRS7"
 
-# 8. Also generate BED12 for v47
+# 8. Generate labeled BED12 for v47
 echo ""
-echo "--- Generating v47 BED12 ---"
+echo "--- Generating v47 labeled BED12 ---"
+awk '$3=="transcript"{
+    match($0,/transcript_id "([^"]+)"/,tid)
+    match($0,/gene_id "([^"]+)"/,gid)
+    match($0,/transcript_type "([^"]+)"/,tt)
+    match($0,/gene_name "([^"]+)"/,gn)
+    print tid[1], gid[1]"___"tt[1]"___"gn[1]
+}' gencode.v47.annotation.gtf > tmp.v47.label_lookup.tsv
+
 gtfToGenePred -genePredExt -geneNameAsName2 gencode.v47.annotation.gtf tmp.v47.gp
 genePredToBed tmp.v47.gp gencode.v47.annotation.transcript.bed12
-rm tmp.v47.gp
+
+awk 'BEGIN{OFS="\t"}
+NR==FNR{ lut[$1]=$2; next }
+{ $4 = ($4 in lut) ? $4"___"lut[$4] : $4; print }
+' tmp.v47.label_lookup.tsv gencode.v47.annotation.transcript.bed12 > gencode.v47.annotation.labeled.transcript.bed12
+
+rm tmp.v47.gp tmp.v47.label_lookup.tsv gencode.v47.annotation.transcript.bed12
 
 echo "--- Done ---"
