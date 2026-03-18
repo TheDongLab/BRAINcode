@@ -3,13 +3,12 @@
 set -euo pipefail
 module load Kent_tools
 
-GTF="${1:-gencode.v49.annotation.gtf}"
-OUT="${2:-refFlat.txt}"
-OUT_CIRS7="${OUT%.txt}_cIRS7.txt"
+GTF="gencode.v49.annotation.gtf"
 PREFIX="${GTF%.gtf}"
+OUT="refFlat.txt"
+OUT_CIRS7="${OUT%.txt}_cIRS7.txt"
 
 # 1. Build transcript_id -> label lookup from GTF
-# Label format: ENSG___transcript_type___gene_name
 awk '$3=="transcript"{
     match($0,/transcript_id "([^"]+)"/,tid)
     match($0,/gene_id "([^"]+)"/,gid)
@@ -21,16 +20,16 @@ awk '$3=="transcript"{
 # 2. GTF -> GenePred
 gtfToGenePred -genePredExt -geneNameAsName2 "$GTF" tmp.gp
 
-# 3. GenePred -> BED12 (original, unmodified name col)
-genePredToBed tmp.gp "${PREFIX}.bed12"
+# 3. GenePred -> BED12 (v49, original unmodified name col)
+genePredToBed tmp.gp "${PREFIX}.transcript.bed12"
 
 # 4. BED12 with rich name col (ENST___ENSG___transcript_type___gene_name)
 awk 'BEGIN{OFS="\t"}
 NR==FNR{ lut[$1]=$2; next }
 { $4 = ($4 in lut) ? $4"___"lut[$4] : $4; print }
-' tmp.label_lookup.tsv "${PREFIX}.bed12" > "${PREFIX}.labeled.bed12"
+' tmp.label_lookup.tsv "${PREFIX}.transcript.bed12" > "${PREFIX}.labeled.transcript.bed12"
 
-# 5. GenePred -> refFlat column order (standard, no label modification)
+# 5. GenePred -> refFlat column order
 awk 'BEGIN{OFS="\t"} {print $12,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10}' tmp.gp > refFlat.tmp
 
 # 6. Enforce trailing commas on exon fields (CIRCexplorer2 requirement)
@@ -50,3 +49,12 @@ rm tmp.gp tmp.label_lookup.tsv refFlat.tmp
 echo "--- Verification ---"
 grep "ENST00000674533" "$OUT"      || echo "WARNING: Linear CDR1 not found in $OUT"
 grep "CDR1as"         "$OUT_CIRS7" || echo "WARNING: Circular CDR1as not found in $OUT_CIRS7"
+
+# 8. Also generate BED12 for v47
+echo ""
+echo "--- Generating v47 BED12 ---"
+gtfToGenePred -genePredExt -geneNameAsName2 gencode.v47.annotation.gtf tmp.v47.gp
+genePredToBed tmp.v47.gp gencode.v47.annotation.transcript.bed12
+rm tmp.v47.gp
+
+echo "--- Done ---"
