@@ -69,6 +69,6 @@ NR==FNR{ lut[$1]=$2; next }
 { $4 = ($4 in lut) ? $4"___"lut[$4] : $4; print }
 ' tmp.v47.label_lookup.tsv gencode.v47.annotation.transcript.bed12 > gencode.v47.annotation.labeled.transcript.bed12
 
-rm tmp.v47.gp tmp.v47.label_lookup.tsv gencode.v47.annotation.transcript.bed12
+rm tmp.v47.gp tmp.v47.label_lookup.tsv
 
 echo "--- Done ---"
