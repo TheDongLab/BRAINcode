@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 3/18/2026
-# Version: 5.3 (Step 11: CRAM conversion for STAR-created BAMs, STAR log archiving, removal of redundant circularRNA_known.txt and htseqcount.tab)
+# Date: 3/19/2026
+# Version: 5.3 (Step 11: CRAM conversion for STAR-created BAMs, STAR log archiving, removal of redundant circularRNA_known.txt and htseqcount.tab. Dynamic BAM resolution rearranged: pre-existing BAMs are detected and symlinked upfront, bypassing Steps 1-4. Raw samples run Steps 1-4 as normal and BAM is resolved after STAR completes.)
 ###########################################
 
 set -euo pipefail
@@ -54,96 +54,103 @@ SAMPLE_DIR="$outputdir"
  
 ###########################################
 # Dynamic BAM resolution
-# Use STAR output if present, otherwise find existing BAM in sample dir
-# STAR_CREATED_BAM flag is set so Step 11 knows whether to CRAM-convert
+# If a pre-existing BAM is found, symlink it and skip Steps 1-4.
+# If not, run Steps 1-4 and resolve BAM after STAR completes.
 ###########################################
 STAR_BAM="$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
 STAR_CREATED_BAM=false
-
-if [ -f "$STAR_BAM" ]; then
+ 
+EXISTING_BAM=$(ls "$SAMPLE_DIR"/*.sorted.bam "$SAMPLE_DIR"/*.final.bam 2>/dev/null | head -1 || true)
+ 
+if [ -n "$EXISTING_BAM" ]; then
+ 
+    # Pre-existing BAM found — symlink and proceed directly to Step 5
+    echo "[INFO] Pre-existing BAM found: $(basename "$EXISTING_BAM") — skipping Steps 1-4."
+    ln -sf "$EXISTING_BAM" "$STAR_BAM"
+    [ -f "${EXISTING_BAM}.bai" ] && ln -sf "${EXISTING_BAM}.bai" "${STAR_BAM}.bai"
     BAM="$STAR_BAM"
+    STAR_CREATED_BAM=false
+ 
 else
-    BAM=$(ls "$SAMPLE_DIR"/*.sorted.bam "$SAMPLE_DIR"/*.final.bam 2>/dev/null | head -1 || true)
-    if [ -z "$BAM" ]; then
-        echo "[INFO] No BAM file found yet — will be created by STAR in step 4."
-        BAM="$STAR_BAM"
-    else
-        echo "[INFO] Using existing BAM: $(basename "$BAM")"
-        # Symlink to expected name so all downstream steps reference consistently
-        ln -sf "$BAM" "$STAR_BAM"
-        [ -f "${BAM}.bai" ] && ln -sf "${BAM}.bai" "${STAR_BAM}.bai"
-        BAM="$STAR_BAM"
+ 
+    # No pre-existing BAM — run Steps 1-4, then resolve BAM after STAR
+ 
+    ###########################################
+    # STEP 1: Quality check (FastQC)
+    ###########################################
+    if [ ! -f "$SAMPLE_DIR/.status.RNAseq.fastqc" ]; then
+        echo "[STEP 1] FastQC quality check starting..."
+        fastqc -t $CPU --nogroup -o "$SAMPLE_DIR" "$R1" "$R2" && \
+        touch "$SAMPLE_DIR/.status.RNAseq.fastqc" && \
+        echo "[STEP 1] FastQC completed successfully."
     fi
-fi
  
-###########################################
-# STEP 1: Quality check (FastQC)
-###########################################
-if [ ! -f "$SAMPLE_DIR/.status.RNAseq.fastqc" ]; then
-    echo "[STEP 1] FastQC quality check starting..."
-    fastqc -t $CPU --nogroup -o "$SAMPLE_DIR" "$R1" "$R2" && \
-    touch "$SAMPLE_DIR/.status.RNAseq.fastqc" && \
-    echo "[STEP 1] FastQC completed successfully."
-fi
+    ###########################################
+    # STEP 2: Trimming (Trim Galore)
+    ###########################################
+    if [ ! -f "$SAMPLE_DIR/.status.RNAseq.trim" ]; then
+        echo "[STEP 2] Read trimming (Trim Galore) starting..."
+        trim_galore --paired --cores $CPU --output_dir "$SAMPLE_DIR" "$R1" "$R2" && \
+        touch "$SAMPLE_DIR/.status.RNAseq.trim" && \
+        echo "[STEP 2] Trimming completed successfully."
+    fi
  
-###########################################
-# STEP 2: Trimming (Trim Galore)
-###########################################
-if [ ! -f "$SAMPLE_DIR/.status.RNAseq.trim" ]; then
-    echo "[STEP 2] Read trimming (Trim Galore) starting..."
-    trim_galore --paired --cores $CPU --output_dir "$SAMPLE_DIR" "$R1" "$R2" && \
-    touch "$SAMPLE_DIR/.status.RNAseq.trim" && \
-    echo "[STEP 2] Trimming completed successfully."
-fi
+    R1="$SAMPLE_DIR/$(basename "$R1" .fastq.gz)_val_1.fq.gz"
+    R2="$SAMPLE_DIR/$(basename "$R2" .fastq.gz)_val_2.fq.gz"
  
-R1="$SAMPLE_DIR/$(basename "$R1" .fastq.gz)_val_1.fq.gz"
-R2="$SAMPLE_DIR/$(basename "$R2" .fastq.gz)_val_2.fq.gz"
+    ###########################################
+    # STEP 3: kPAL contamination check
+    ###########################################
+    if [ ! -f "$SAMPLE_DIR/.status.RNAseq.kpal" ]; then
+        echo "[STEP 3] kPAL contamination check starting..."
+        KPAL_DIR="$SAMPLE_DIR/kpal_results"
+        KPAL_OUT="$KPAL_DIR/counts.k9.txt"
+        mkdir -p "$KPAL_DIR" && \
+        gunzip -c "$R1" > "$KPAL_DIR/temp_R1.fastq" && \
+        gunzip -c "$R2" > "$KPAL_DIR/temp_R2.fastq" && \
+        "$HOME/.conda/envs/RNAseq/bin/kpal" count \
+            "$KPAL_DIR/temp_R1.fastq" \
+            "$KPAL_DIR/temp_R2.fastq" \
+            "$KPAL_OUT" && \
+        rm -f "$KPAL_DIR"/temp_R{1,2}.fastq && \
+        touch "$SAMPLE_DIR/.status.RNAseq.kpal" && \
+        echo "[STEP 3] kPAL contamination check completed successfully."
+    fi
  
-###########################################
-# STEP 3: kPAL contamination check
-###########################################
-if [ ! -f "$SAMPLE_DIR/.status.RNAseq.kpal" ]; then
-    echo "[STEP 3] kPAL contamination check starting..."
-    KPAL_DIR="$SAMPLE_DIR/kpal_results"
-    KPAL_OUT="$KPAL_DIR/counts.k9.txt"
-    mkdir -p "$KPAL_DIR" && \
-    gunzip -c "$R1" > "$KPAL_DIR/temp_R1.fastq" && \
-    gunzip -c "$R2" > "$KPAL_DIR/temp_R2.fastq" && \
-    "$HOME/.conda/envs/RNAseq/bin/kpal" count \
-        "$KPAL_DIR/temp_R1.fastq" \
-        "$KPAL_DIR/temp_R2.fastq" \
-        "$KPAL_OUT" && \
-    rm -f "$KPAL_DIR"/temp_R{1,2}.fastq && \
-    touch "$SAMPLE_DIR/.status.RNAseq.kpal" && \
-    echo "[STEP 3] kPAL contamination check completed successfully."
-fi
+    ###########################################
+    # STEP 4: STAR mapping
+    ###########################################
+    if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
+        echo "[STEP 4] STAR mapping starting..."
+        STAR_TMP_DIR="$SAMPLE_DIR/STARtmp_${SLURM_JOB_ID:-NA}_${SLURM_ARRAY_TASK_ID:-NA}"
+        STAR --runThreadN $CPU \
+            --genomeDir "$STAR_GENOME" \
+            --readFilesIn "$R1" "$R2" --readFilesCommand zcat \
+            --outFileNamePrefix "$SAMPLE_DIR/STAR." \
+            --outSAMtype BAM SortedByCoordinate \
+            --outSAMattrRGline ID:$samplename SM:$samplename LB:$samplename PL:ILLUMINA PU:$samplename \
+            --outFilterMultimapNmax 10 \
+            --alignEndsType Local \
+            --chimSegmentMin 10 \
+            --chimJunctionOverhangMin 10 \
+            --chimOutType Junctions \
+            --outSAMstrandField intronMotif \
+            --quantMode GeneCounts \
+            --outTmpDir "$STAR_TMP_DIR"
+        touch "$SAMPLE_DIR/.status.RNAseq.mapping"
+        rm -rf "$STAR_TMP_DIR"
+        echo "[STEP 4] STAR mapping completed successfully."
+    fi
  
-###########################################
-# STEP 4: STAR mapping
-###########################################
-if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
-    echo "[STEP 4] STAR mapping starting..."
-    STAR_TMP_DIR="$SAMPLE_DIR/STARtmp_${SLURM_JOB_ID:-NA}_${SLURM_ARRAY_TASK_ID:-NA}"
-    STAR --runThreadN $CPU \
-        --genomeDir "$STAR_GENOME" \
-        --readFilesIn "$R1" "$R2" --readFilesCommand zcat \
-        --outFileNamePrefix "$SAMPLE_DIR/STAR." \
-        --outSAMtype BAM SortedByCoordinate \
-        --outSAMattrRGline ID:$samplename SM:$samplename LB:$samplename PL:ILLUMINA PU:$samplename \
-        --outFilterMultimapNmax 10 \
-        --alignEndsType Local \
-        --chimSegmentMin 10 \
-        --chimJunctionOverhangMin 10 \
-        --chimOutType Junctions \
-        --outSAMstrandField intronMotif \
-        --quantMode GeneCounts \
-        --outTmpDir "$STAR_TMP_DIR" && \
-    touch "$SAMPLE_DIR/.status.RNAseq.mapping" && \
-    rm -rf "$STAR_TMP_DIR" && \
-    # Update BAM to the newly created STAR output and flag for CRAM conversion in Step 11
-    BAM="$STAR_BAM" && \
-    STAR_CREATED_BAM=true && \
-    echo "[STEP 4] STAR mapping completed successfully."
+    # Resolve BAM after STAR — fail clearly if it still doesn't exist
+    if [ -f "$STAR_BAM" ]; then
+        BAM="$STAR_BAM"
+        STAR_CREATED_BAM=true
+    else
+        echo "[ERROR] STAR BAM not found after Step 4 — mapping may have failed."
+        exit 1
+    fi
+ 
 fi
  
 ###########################################
@@ -152,20 +159,17 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
     echo "[STEP 5] circRNA calling starting..."
  
-    # Skip if no chimeric junction file (e.g. pre-processed BAM-only samples)
     if [ ! -f "$SAMPLE_DIR/STAR.Chimeric.out.junction" ]; then
         echo "[STEP 5] WARNING: No STAR.Chimeric.out.junction found — skipping circRNA calling."
         touch "$SAMPLE_DIR/.status.RNAseq.circRNA"
     else
         cd "$SAMPLE_DIR" && \
  
-        # Parse STAR chimeric junctions (Local alignment; default CIRCexplorer2 behavior)
         CIRCexplorer2 parse \
             -t STAR \
             STAR.Chimeric.out.junction \
             > back_spliced_junction.txt && \
  
-        # Annotate with default autofix
         CIRCexplorer2 annotate \
             -r "$REFFLAT" \
             -g "$GENOME_FA" \
@@ -175,19 +179,15 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
  
         if [ -s circularRNA_known.txt ]; then
  
-            # Ensure BAM index exists (required for circ percentage calculation)
             [ -f "${BAM}.bai" ] || samtools index "$BAM"
  
-            # Circ percentage calculation
             python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
                 "$SAMPLE_DIR/circularRNA_known.txt" && \
  
-            # Prepend official CIRCexplorer2 column headers to circularRNA_known.txt
             { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
             cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
             mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
  
-            # Prepend official CIRCexplorer2 column headers to low_conf_circularRNA_known.txt
             { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
             cat "$SAMPLE_DIR/low_conf_circularRNA_known.txt"; } > "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" && \
             mv "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" "$SAMPLE_DIR/low_conf_circularRNA_known.txt" && \
@@ -309,7 +309,6 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     echo "[STEP 10] bigWig generation starting..."
  
-    # Ensure BAM index exists (required by genomecov)
     [ -f "${BAM}.bai" ] || samtools index "$BAM"
  
     "$SCRIPT_DIR/bam2bigwig.sh" \
@@ -324,28 +323,31 @@ fi
 ###########################################
 if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
     echo "[STEP 11] Cleanup starting..."
-
+ 
     # --- Trimmed FASTQs, bedGraphs, circRNA intermediates ---
     rm -f "$SAMPLE_DIR"/*_val_1.fq.gz "$SAMPLE_DIR"/*_val_2.fq.gz
     rm -f "$SAMPLE_DIR"/*.bedGraph
     rm -f "$SAMPLE_DIR"/back_spliced*
     echo "[STEP 11] Trimmed FASTQs, bedGraphs, and circRNA back_spliced intermediate files removed."
-
+ 
     # --- Redundant output files superseded by richer versions ---
-    # circularRNA_known.txt is fully contained in circularRNA_known_circ_percentage.txt
     rm -f "$SAMPLE_DIR/circularRNA_known.txt"
-    # htseqcount.tab raw counts are fully contained in normalization.tab
     rm -f "$SAMPLE_DIR/htseqcount.tab"
     echo "[STEP 11] Redundant circularRNA_known.txt and htseqcount.tab removed."
-
-    # --- Archive STAR log files ---
-    STAR_LOGS_DIR="$SAMPLE_DIR/STAR_logs"
-    mkdir -p "$STAR_LOGS_DIR"
-    mv "$SAMPLE_DIR"/STAR.Log* "$STAR_LOGS_DIR/" 2>/dev/null || true
-    zip -j "$STAR_LOGS_DIR/STAR_logs.zip" "$STAR_LOGS_DIR"/STAR.Log* && \
-    rm -f "$STAR_LOGS_DIR"/STAR.Log*
-    echo "[STEP 11] STAR logs archived to STAR_logs/STAR_logs.zip."
-
+ 
+    # --- Archive STAR log files (only if present — skipped for pre-existing BAM samples) ---
+    STAR_LOGS=$(ls "$SAMPLE_DIR"/STAR.Log* 2>/dev/null || true)
+    if [ -n "$STAR_LOGS" ]; then
+        STAR_LOGS_DIR="$SAMPLE_DIR/STAR_logs"
+        mkdir -p "$STAR_LOGS_DIR"
+        mv "$SAMPLE_DIR"/STAR.Log* "$STAR_LOGS_DIR/"
+        zip -j "$STAR_LOGS_DIR/STAR_logs.zip" "$STAR_LOGS_DIR"/STAR.Log* && \
+        rm -f "$STAR_LOGS_DIR"/STAR.Log*
+        echo "[STEP 11] STAR logs archived to STAR_logs/STAR_logs.zip."
+    else
+        echo "[STEP 11] No STAR logs found — skipping log archiving."
+    fi
+ 
     # --- CRAM conversion (STAR-created BAMs only, skipped for pre-existing BAMs) ---
     if [ "$STAR_CREATED_BAM" = true ] && [ -f "$STAR_BAM" ]; then
         echo "[STEP 11] Converting STAR BAM to CRAM..."
@@ -355,8 +357,9 @@ if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
         rm -f "$STAR_BAM" "${STAR_BAM}.bai"
         echo "[STEP 11] CRAM conversion complete: $(basename "$STAR_CRAM")"
     fi
-
+ 
     echo "[STEP 11] Cleanup completed."
 fi
  
 echo "[$(date)] RNAseq pipeline finished successfully and cleanup completed."
+ 
