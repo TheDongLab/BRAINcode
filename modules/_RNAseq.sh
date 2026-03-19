@@ -3,7 +3,7 @@
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
 # Date: 3/18/2026
-# Version: 5.2 (Added preliminary step to handle existing .bam output. Changed BAM references in further steps so it is not automatically hard-coded to STAR .bam)
+# Version: 5.3 (Step 11: CRAM conversion for STAR-created BAMs, STAR log archiving, removal of redundant circularRNA_known.txt and htseqcount.tab)
 ###########################################
 
 set -euo pipefail
@@ -55,8 +55,11 @@ SAMPLE_DIR="$outputdir"
 ###########################################
 # Dynamic BAM resolution
 # Use STAR output if present, otherwise find existing BAM in sample dir
+# STAR_CREATED_BAM flag is set so Step 11 knows whether to CRAM-convert
 ###########################################
 STAR_BAM="$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
+STAR_CREATED_BAM=false
+
 if [ -f "$STAR_BAM" ]; then
     BAM="$STAR_BAM"
 else
@@ -137,8 +140,9 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.mapping" ]; then
         --outTmpDir "$STAR_TMP_DIR" && \
     touch "$SAMPLE_DIR/.status.RNAseq.mapping" && \
     rm -rf "$STAR_TMP_DIR" && \
-    # Update BAM to the newly created STAR output
+    # Update BAM to the newly created STAR output and flag for CRAM conversion in Step 11
     BAM="$STAR_BAM" && \
+    STAR_CREATED_BAM=true && \
     echo "[STEP 4] STAR mapping completed successfully."
 fi
  
@@ -319,11 +323,40 @@ fi
 # STEP 11: Cleanup
 ###########################################
 if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
-    echo "[STEP 11] Cleaning up trimmed FASTQ files, bedGraph files, and bed files..."
-    rm -f "$SAMPLE_DIR"/*_val_1.fq.gz "$SAMPLE_DIR"/*_val_2.fq.gz && \
-    rm -f "$SAMPLE_DIR"/*.bedGraph && \
-    rm -f "$SAMPLE_DIR"/back_spliced* && \
+    echo "[STEP 11] Cleanup starting..."
+
+    # --- Trimmed FASTQs, bedGraphs, circRNA intermediates ---
+    rm -f "$SAMPLE_DIR"/*_val_1.fq.gz "$SAMPLE_DIR"/*_val_2.fq.gz
+    rm -f "$SAMPLE_DIR"/*.bedGraph
+    rm -f "$SAMPLE_DIR"/back_spliced*
     echo "[STEP 11] Trimmed FASTQs, bedGraphs, and circRNA back_spliced intermediate files removed."
+
+    # --- Redundant output files superseded by richer versions ---
+    # circularRNA_known.txt is fully contained in circularRNA_known_circ_percentage.txt
+    rm -f "$SAMPLE_DIR/circularRNA_known.txt"
+    # htseqcount.tab raw counts are fully contained in normalization.tab
+    rm -f "$SAMPLE_DIR/htseqcount.tab"
+    echo "[STEP 11] Redundant circularRNA_known.txt and htseqcount.tab removed."
+
+    # --- Archive STAR log files ---
+    STAR_LOGS_DIR="$SAMPLE_DIR/STAR_logs"
+    mkdir -p "$STAR_LOGS_DIR"
+    mv "$SAMPLE_DIR"/STAR.Log* "$STAR_LOGS_DIR/" 2>/dev/null || true
+    zip -j "$STAR_LOGS_DIR/STAR_logs.zip" "$STAR_LOGS_DIR"/STAR.Log* && \
+    rm -f "$STAR_LOGS_DIR"/STAR.Log*
+    echo "[STEP 11] STAR logs archived to STAR_logs/STAR_logs.zip."
+
+    # --- CRAM conversion (STAR-created BAMs only, skipped for pre-existing BAMs) ---
+    if [ "$STAR_CREATED_BAM" = true ] && [ -f "$STAR_BAM" ]; then
+        echo "[STEP 11] Converting STAR BAM to CRAM..."
+        STAR_CRAM="${STAR_BAM%.bam}.cram"
+        samtools view -@ $CPU -C -T "$GENOME_FA" -o "$STAR_CRAM" "$STAR_BAM" && \
+        samtools index "$STAR_CRAM" && \
+        rm -f "$STAR_BAM" "${STAR_BAM}.bai"
+        echo "[STEP 11] CRAM conversion complete: $(basename "$STAR_CRAM")"
+    fi
+
+    echo "[STEP 11] Cleanup completed."
 fi
  
 echo "[$(date)] RNAseq pipeline finished successfully and cleanup completed."
