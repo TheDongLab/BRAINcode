@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prepare_joint_vcf
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/prepare_joint_vcf.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS//eQTLprepare_joint_vcf.err
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/prepare_joint_vcf.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -50,7 +50,8 @@ print(f"\nVCFs found:   {len(found)}")
 print(f"VCFs missing: {len(missing)}")
 
 # ── Step 4: Save list for bcftools merge
-vcf_list_file = BASE/eQTL/"vcf_merge_list.txt"
+vcf_list_file = BASE / "eQTL" / "vcf_merge_list.txt"
+
 unique_vcfs = found["vcf_path"].unique()
 with open(vcf_list_file, "w") as f:
     for path in unique_vcfs:
@@ -60,7 +61,8 @@ print(f"\nSaved VCF list: {vcf_list_file}")
 
 # ── Step 5: Save tracking table
 found[["Externalsubjectid","Externalsampleid","vcf_path"]].to_csv(
-    BASE/eQTL/"wgs_samples_for_vcf_merge.csv", index=False
+    BASE / "eQTL" / "wgs_samples_for_vcf_merge.csv",
+    index=False
 )
 
 # ── Step 6: Report missing
@@ -71,4 +73,7 @@ if len(missing) > 0:
 EOF
 
 # ── Merge VCFs together:
-bcftools merge -f PASS -l /home/zw529/donglab/data/target_ALS/vcf_merge_list.txt -O z -o /home/zw529/donglab/data/target_ALS/joint_genotyped.vcf.gz
+bcftools merge -f PASS \
+    -l /home/zw529/donglab/data/target_ALS/eQTL/vcf_merge_list.txt \
+    -O z \
+    -o /home/zw529/donglab/data/target_ALS/eQTL/joint_genotyped.vcf.gz
