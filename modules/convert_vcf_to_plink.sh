@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=vcf_to_plink_joint
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=56G
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/vcf_to_plink.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/vcf_to_plink.err
@@ -22,37 +22,51 @@ VCF=/home/zw529/donglab/data/target_ALS/eQTL/joint_genotyped.vcf.gz
 OUTDIR=/home/zw529/donglab/data/target_ALS/eQTL/plink
 mkdir -p ${OUTDIR}
 
-PREFIX=${OUTDIR}/joint_autosomes
+#----------------------------------------
+# STEP 0: define prefixes
+#----------------------------------------
+RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
+FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
+BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
+MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: Convert VCF → initial PLINK BED (autosomes only)
+# STEP 1: VCF → PLINK2 binary (PGEN/PSAM/PVAR) keeping all variants
 #----------------------------------------
 plink2 --vcf ${VCF} \
        --chr 1-22 \
-       --make-bed \
-       --out ${PREFIX} \
+       --make-pgen \
+       --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 2: Apply filters on BED: biallelic + MAF ≥ 0.01
+# STEP 2: Filter multiallelic + MAF ≥ 0.01 → new PGEN
 #----------------------------------------
-plink2 --bfile ${PREFIX} \
+plink2 --pfile ${RAW_PREFIX} \
        --maf 0.01 \
        --max-alleles 2 \
-       --make-bed \
-       --out ${PREFIX}.filtered \
+       --make-pgen \
+       --out ${FILTERED_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 3: PLINK → numeric allele matrix for MatrixEQTL
+# STEP 3: Optional: create BED/BIM/FAM (PLINK1 format)
 #----------------------------------------
-plink2 --bfile ${PREFIX}.filtered \
+plink2 --pfile ${FILTERED_PREFIX} \
+       --make-bed \
+       --out ${BED_PREFIX} \
+       --threads ${SLURM_CPUS_PER_TASK}
+
+#----------------------------------------
+# STEP 4: Numeric allele matrix for MatrixEQTL
+#----------------------------------------
+plink2 --pfile ${FILTERED_PREFIX} \
        --recode A \
-       --out ${PREFIX}.matrixEQTL \
+       --out ${MATRIX_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
 # DONE
 #----------------------------------------
-echo "Finished PLINK conversion (autosomes only, filtered) for joint cohort"
-echo "All outputs including .pgen/.pvar/.psam/.log files are in ${OUTDIR}"
+echo "Finished PLINK conversion for joint cohort."
+echo "All outputs (PGEN, PSAM, PVAR, BED, numeric matrix) are in ${OUTDIR}"
