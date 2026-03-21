@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vcf_to_plink_joint
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=10G
+#SBATCH --mem=60G
 #SBATCH --time=24:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/vcf_to_plink.out
@@ -60,7 +60,7 @@ EOF
 plink2 --vcf ${VCF} \
        --max-alleles 2 \
        --maf 0.01 \
-       --impute-sex \
+       --impute-sex \  # use existing chromosomes to guess sex of each sample, since some may be NA in the metadata
        --split-par b38 \
        --make-bed \
        --out ${PREFIX} \
