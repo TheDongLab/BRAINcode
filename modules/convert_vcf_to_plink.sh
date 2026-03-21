@@ -26,7 +26,6 @@ cd ${EQTL}
 
 PREFIX=${OUTDIR}/joint
 SEXFILE=${EQTL}/sex.txt
-MULTIALLELIC_LIST=${OUTDIR}/joint_multiallelic.txt
 
 #----------------------------------------
 # STEP 0: auto-generate sex.txt from metadata
@@ -56,17 +55,10 @@ out.to_csv("${SEXFILE}", sep=" ", index=False, header=["IID","SEX"])
 EOF
 
 #----------------------------------------
-# STEP 1a: list multiallelic variants for documentation
+# STEP 1: VCF → PLINK BED (remove multiallelics, filter MAF, handle sex chromosomes)
 #----------------------------------------
 plink2 --vcf ${VCF} \
-       --max-alleles 2 list \
-       --out ${MULTIALLELIC_LIST}
-
-#----------------------------------------
-# STEP 1b: VCF → BED (remove multiallelics, filter MAF, handle sex chromosomes)
-#----------------------------------------
-plink2 --vcf ${VCF} \
-       --max-alleles 2 strict \
+       --max-alleles 2 \
        --maf 0.01 \
        --impute-sex \
        --split-par b38 \
@@ -74,8 +66,10 @@ plink2 --vcf ${VCF} \
        --out ${PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
+# PLINK2 will automatically create ${PREFIX}.missnp containing removed multiallelic variants
+
 #----------------------------------------
-# STEP 2: numeric allele matrix for MatrixEQTL
+# STEP 2: PLINK → numeric allele matrix (MatrixEQTL)
 #----------------------------------------
 plink2 --bfile ${PREFIX} \
        --recode A \
