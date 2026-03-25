@@ -259,13 +259,6 @@ with open(SUMMARY, "w") as f:
             f.write(f"{col}  (all missing)\n\n")
             continue
         f.write(f"{col}  (n={len(s)}, {n_missing} missing/non-numeric)\n")
-        f.write(f"    mean   : {s.mean()*100:.1f}%\n")
-        f.write(f"    median : {s.median()*100:.1f}%\n")
-        f.write(f"    std    : {s.std()*100:.1f}%\n")
-        f.write(f"    min    : {s.min()*100:.1f}%\n")
-        f.write(f"    max    : {s.max()*100:.1f}%\n")
-        f.write(f"    25th % : {s.quantile(0.25)*100:.1f}%\n")
-        f.write(f"    75th % : {s.quantile(0.75)*100:.1f}%\n")
         f.write(f"    Distribution:\n")
         binned = pd.cut(s, bins=ANCESTRY_BINS, labels=ANCESTRY_LABELS, right=False)
         for label, cnt in binned.value_counts().sort_index().items():
