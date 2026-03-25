@@ -75,9 +75,9 @@ unmatched       = []
 for d in rnaseq_dirs:
     if not d.is_dir():
         continue
-    tissue    = d.parts[-4]                  # e.g. Frontal_Cortex
-    dir_name  = d.name                       # e.g. CGND_HRA_00289
-    sample_id = dir_name.replace("_", "-")  # normalize to CGND-HRA-00289
+    tissue    = d.parts[-4]
+    dir_name  = d.name
+    sample_id = dir_name.replace("_", "-")
 
     subject_id = sample_to_subject.get(sample_id)
     if subject_id is None:
@@ -134,7 +134,6 @@ echo "Extracting covariates and generating summary..."
 python3 - <<'EOF'
 import csv
 import pandas as pd
-import numpy as np
 
 DATA_DIR = "/home/zw529/donglab/data/target_ALS"
 METADATA  = f"{DATA_DIR}/targetALS_rnaseq_metadata.csv"
@@ -215,7 +214,7 @@ with open(SUMMARY, "w") as f:
     for col in CATEGORICAL:
         if col not in df.columns:
             continue
-        counts = df[col].value_counts(dropna=False)
+        counts    = df[col].value_counts(dropna=False)
         n_missing = df[col].isna().sum()
         f.write(f"{col}  (n={len(df) - n_missing} non-null, {n_missing} missing)\n")
         for val, cnt in counts.items():
@@ -223,17 +222,17 @@ with open(SUMMARY, "w") as f:
             f.write(f"    {str(val):<45} {cnt:>5}  ({pct:.1f}%)\n")
         f.write("\n")
 
-    # Numerical covariates
+    # Numerical covariates — coerce to numeric to handle "Not Applicable"/"Unknown"
     f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
     for col in NUMERICAL:
         if col not in df.columns:
             continue
-        s = df[col].dropna()
-        n_missing = df[col].isna().sum()
+        s         = pd.to_numeric(df[col], errors='coerce').dropna()
+        n_missing = len(df) - len(s)
         if len(s) == 0:
             f.write(f"{col}  (all missing)\n\n")
             continue
-        f.write(f"{col}  (n={len(s)}, {n_missing} missing)\n")
+        f.write(f"{col}  (n={len(s)}, {n_missing} missing/non-numeric)\n")
         f.write(f"    mean   : {s.mean():.2f}\n")
         f.write(f"    median : {s.median():.2f}\n")
         f.write(f"    std    : {s.std():.2f}\n")
