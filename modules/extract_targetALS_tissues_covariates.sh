@@ -132,7 +132,6 @@ echo ""
 echo "Extracting covariates and generating summary..."
 
 python3 - <<'EOF'
-import csv
 import pandas as pd
 
 DATA_DIR = "/home/zw529/donglab/data/target_ALS"
@@ -172,20 +171,20 @@ COVARIATES = [
     "site_specimen_collected",
 ]
 
+# Shown as value counts (categorical-style)
 CATEGORICAL = [
     "sex", "ethnicity", "subject_group", "subject_group_subcategory",
     "tissue", "site_of_motor_onset", "c9orf72_repeat_expansion",
     "atxn2_repeat_expansion", "sex_genotype", "revised_el_escorial_criteria",
     "phenotype_near_time_of_death", "reported_genomic_mutations",
-    "platform", "site_specimen_collected",
-]
-
-NUMERICAL = [
-    "age_at_death", "age_at_symptom_onset", "rin", "ph",
-    "disease_duration_in_months", "post_mortem_interval_in_hours",
-    "c9_repeat_size", "atxn2_repeat_size",
     "pct_african", "pct_south_asian", "pct_east_asian",
     "pct_european", "pct_americas",
+]
+
+# Shown as mean/median/std/min/max/IQR
+NUMERICAL = [
+    "age_at_death", "age_at_symptom_onset", "rin",
+    "post_mortem_interval_in_hours",
 ]
 
 # ── Raw covariate extraction
@@ -209,7 +208,7 @@ with open(SUMMARY, "w") as f:
     f.write(f" Total subjects: {df['externalsubjectid'].nunique()}\n")
     f.write("=" * 60 + "\n\n")
 
-    # Categorical covariates
+    # Categorical covariates — value counts + percentages
     f.write("── CATEGORICAL COVARIATES ──────────────────────────────\n\n")
     for col in CATEGORICAL:
         if col not in df.columns:
@@ -222,7 +221,7 @@ with open(SUMMARY, "w") as f:
             f.write(f"    {str(val):<45} {cnt:>5}  ({pct:.1f}%)\n")
         f.write("\n")
 
-    # Numerical covariates — coerce to numeric to handle "Not Applicable"/"Unknown"
+    # Numerical covariates — coerce to numeric, compute stats
     f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
     for col in NUMERICAL:
         if col not in df.columns:
