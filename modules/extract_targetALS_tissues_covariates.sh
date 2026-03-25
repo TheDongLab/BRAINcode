@@ -171,14 +171,12 @@ COVARIATES = [
     "site_specimen_collected",
 ]
 
-# Shown as value counts (categorical-style)
+# Shown as value counts + percentages
 CATEGORICAL = [
     "sex", "ethnicity", "subject_group", "subject_group_subcategory",
     "tissue", "site_of_motor_onset", "c9orf72_repeat_expansion",
     "atxn2_repeat_expansion", "sex_genotype", "revised_el_escorial_criteria",
     "phenotype_near_time_of_death", "reported_genomic_mutations",
-    "pct_african", "pct_south_asian", "pct_east_asian",
-    "pct_european", "pct_americas",
 ]
 
 # Shown as mean/median/std/min/max/IQR
@@ -186,6 +184,15 @@ NUMERICAL = [
     "age_at_death", "age_at_symptom_onset", "rin",
     "post_mortem_interval_in_hours",
 ]
+
+# Shown as mean/median/std/min/max/IQR + binned distribution (×100 for %)
+ANCESTRY = [
+    "pct_african", "pct_south_asian", "pct_east_asian",
+    "pct_european", "pct_americas",
+]
+
+ANCESTRY_BINS   = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
+ANCESTRY_LABELS = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
 
 # ── Raw covariate extraction
 df = pd.read_csv(METADATA)
@@ -208,7 +215,7 @@ with open(SUMMARY, "w") as f:
     f.write(f" Total subjects: {df['externalsubjectid'].nunique()}\n")
     f.write("=" * 60 + "\n\n")
 
-    # Categorical covariates — value counts + percentages
+    # Categorical covariates
     f.write("── CATEGORICAL COVARIATES ──────────────────────────────\n\n")
     for col in CATEGORICAL:
         if col not in df.columns:
@@ -221,7 +228,7 @@ with open(SUMMARY, "w") as f:
             f.write(f"    {str(val):<45} {cnt:>5}  ({pct:.1f}%)\n")
         f.write("\n")
 
-    # Numerical covariates — coerce to numeric, compute stats
+    # Numerical covariates
     f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
     for col in NUMERICAL:
         if col not in df.columns:
@@ -239,6 +246,31 @@ with open(SUMMARY, "w") as f:
         f.write(f"    max    : {s.max():.2f}\n")
         f.write(f"    25th % : {s.quantile(0.25):.2f}\n")
         f.write(f"    75th % : {s.quantile(0.75):.2f}\n")
+        f.write("\n")
+
+    # Ancestry covariates — stats + binned distribution
+    f.write("── ANCESTRY COVARIATES (proportion 0–1) ────────────────\n\n")
+    for col in ANCESTRY:
+        if col not in df.columns:
+            continue
+        s         = pd.to_numeric(df[col], errors='coerce').dropna()
+        n_missing = len(df) - len(s)
+        if len(s) == 0:
+            f.write(f"{col}  (all missing)\n\n")
+            continue
+        f.write(f"{col}  (n={len(s)}, {n_missing} missing/non-numeric)\n")
+        f.write(f"    mean   : {s.mean()*100:.1f}%\n")
+        f.write(f"    median : {s.median()*100:.1f}%\n")
+        f.write(f"    std    : {s.std()*100:.1f}%\n")
+        f.write(f"    min    : {s.min()*100:.1f}%\n")
+        f.write(f"    max    : {s.max()*100:.1f}%\n")
+        f.write(f"    25th % : {s.quantile(0.25)*100:.1f}%\n")
+        f.write(f"    75th % : {s.quantile(0.75)*100:.1f}%\n")
+        f.write(f"    Distribution:\n")
+        binned = pd.cut(s, bins=ANCESTRY_BINS, labels=ANCESTRY_LABELS, right=False)
+        for label, cnt in binned.value_counts().sort_index().items():
+            pct = 100 * cnt / len(s)
+            f.write(f"      {label:<12} {cnt:>5}  ({pct:.1f}%)\n")
         f.write("\n")
 
 print(f"Covariate summary written: {SUMMARY}")
