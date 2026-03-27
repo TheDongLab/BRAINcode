@@ -17,7 +17,7 @@
 #   3. Covariate summary (counts/frequencies for categorical, mean/median for numerical)
 #   4. Raw covariate extraction per sample
 #
-# Tissue remapping (applied during directory walk):
+# Tissue remapping (applied to tissue_summary counts only):
 #   Motor_Cortex_Lateral, Motor_Cortex_Medial, Medial_Motor_Cortex,
 #   Lateral_Motor_Cortex, Lateral_motor_cortex, Cortex_Motor_BA4,
 #   BA4_Motor_Cortex, Cortex_Motor_Unspecified, Primary_Motor_Cortex_L,
@@ -26,6 +26,8 @@
 #   Lumbar_spinal_cord, Lumbosacral_Spinal_Cord  →  Lumbar_Spinal_Cord
 #
 #   Spinal_Cord_Cervical  →  Cervical_Spinal_Cord
+#
+# patient_tissue_breakdown.tsv uses original (raw) tissue names.
 #
 # Usage:
 #   sbatch targetALS_covariate_tissue_summary.sh
@@ -57,6 +59,8 @@ WGS_META    = BASE / "targetALS_wgs_metadata.csv"
 OUTDIR      = BASE / "eQTL"
 
 # ── Tissue name remapping (raw directory name → canonical name)
+# Applied to tissue_summary counts only.
+# patient_tissue_breakdown.tsv keeps original names.
 TISSUE_REMAP = {
     # Motor Cortex variants
     "Motor_Cortex_Lateral":     "Motor_Cortex",
@@ -98,15 +102,22 @@ sample_to_subject = {
 # ── Walk RNAseq/Processed/ directories and map to subject + tissue
 # Structure: target_ALS / <TISSUE> / RNAseq / Processed / <SAMPLE> /
 #                          parts[-4]                        parts[-1]
-rnaseq_dirs     = list(BASE.glob("*/RNAseq/Processed/*/"))
-patient_tissues = defaultdict(set)
-unmatched       = []
+#
+# Two separate accumulators:
+#   patient_tissues_raw  – list of canonical names per patient
+#                          (allows duplicates so all subtypes are counted)
+#   patient_tissues_orig – set of original names per patient
+#                          (deduplicated, used for breakdown TSV)
+rnaseq_dirs          = list(BASE.glob("*/RNAseq/Processed/*/"))
+patient_tissues_raw  = defaultdict(list)
+patient_tissues_orig = defaultdict(set)
+unmatched            = []
 
 for d in rnaseq_dirs:
     if not d.is_dir():
         continue
     raw_tissue = d.parts[-4]
-    tissue     = TISSUE_REMAP.get(raw_tissue, raw_tissue)   # ← remap here
+    canonical  = TISSUE_REMAP.get(raw_tissue, raw_tissue)
     dir_name   = d.name
     sample_id  = dir_name.replace("_", "-")
 
@@ -116,7 +127,8 @@ for d in rnaseq_dirs:
         continue
 
     if subject_id in shared_patients:
-        patient_tissues[subject_id].add(tissue)
+        patient_tissues_raw[subject_id].append(canonical)   # list → keeps per-subtype dupes
+        patient_tissues_orig[subject_id].add(raw_tissue)    # set  → original names, deduped
 
 print(f"Unmatched directories (not in metadata): {len(unmatched)}")
 if unmatched:
@@ -125,24 +137,24 @@ if unmatched:
     if len(unmatched) > 10:
         print(f"  ... and {len(unmatched) - 10} more")
 
-# ── Write per-patient tissue breakdown TSV
+# ── Write per-patient tissue breakdown TSV (original names)
 with open(OUTDIR / "patient_tissue_breakdown.tsv", "w") as f:
     f.write("subject_id\tn_tissues\ttissues\n")
-    for patient in sorted(patient_tissues.keys()):
-        tissues = sorted(patient_tissues[patient])
+    for patient in sorted(patient_tissues_orig.keys()):
+        tissues = sorted(patient_tissues_orig[patient])
         f.write(f"{patient}\t{len(tissues)}\t{'; '.join(tissues)}\n")
 
-print(f"Per-patient tissue breakdown written: {len(patient_tissues)} patients")
+print(f"Per-patient tissue breakdown written: {len(patient_tissues_orig)} patients")
 
-# ── Write global tissue summary
-all_tissues   = [t for tissues in patient_tissues.values() for t in tissues]
+# ── Write global tissue summary (canonical names, all subtypes counted)
+all_tissues   = [t for tissues in patient_tissues_raw.values() for t in tissues]
 tissue_counts = Counter(all_tissues)
 
 with open(OUTDIR / "tissue_summary.txt", "w") as f:
     f.write("==============================\n")
     f.write(" target_ALS Tissue Summary\n")
     f.write(f" Patients with WGS + RNAseq: {len(shared_patients)}\n")
-    f.write(f" Patients with tissue data:  {len(patient_tissues)}\n")
+    f.write(f" Patients with tissue data:  {len(patient_tissues_raw)}\n")
     f.write("==============================\n\n")
     f.write(f"{'COUNT':<8} {'TISSUE'}\n")
     f.write(f"{'-----':<8} {'------------------------------'}\n")
