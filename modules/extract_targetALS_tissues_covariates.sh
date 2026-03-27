@@ -17,6 +17,16 @@
 #   3. Covariate summary (counts/frequencies for categorical, mean/median for numerical)
 #   4. Raw covariate extraction per sample
 #
+# Tissue remapping (applied during directory walk):
+#   Motor_Cortex_Lateral, Motor_Cortex_Medial, Medial_Motor_Cortex,
+#   Lateral_Motor_Cortex, Lateral_motor_cortex, Cortex_Motor_BA4,
+#   BA4_Motor_Cortex, Cortex_Motor_Unspecified, Primary_Motor_Cortex_L,
+#   Primary_Motor_Cortex_M  →  Motor_Cortex
+#
+#   Lumbar_spinal_cord, Lumbosacral_Spinal_Cord  →  Lumbar_Spinal_Cord
+#
+#   Spinal_Cord_Cervical  →  Cervical_Spinal_Cord
+#
 # Usage:
 #   sbatch targetALS_covariate_tissue_summary.sh
 #   bash targetALS_covariate_tissue_summary.sh   # run interactively
@@ -45,6 +55,26 @@ BASE        = Path("/home/zw529/donglab/data/target_ALS")
 RNASEQ_META = BASE / "targetALS_rnaseq_metadata.csv"
 WGS_META    = BASE / "targetALS_wgs_metadata.csv"
 OUTDIR      = BASE / "eQTL"
+
+# ── Tissue name remapping (raw directory name → canonical name)
+TISSUE_REMAP = {
+    # Motor Cortex variants
+    "Motor_Cortex_Lateral":     "Motor_Cortex",
+    "Motor_Cortex_Medial":      "Motor_Cortex",
+    "Medial_Motor_Cortex":      "Motor_Cortex",
+    "Lateral_Motor_Cortex":     "Motor_Cortex",
+    "Lateral_motor_cortex":     "Motor_Cortex",
+    "Cortex_Motor_BA4":         "Motor_Cortex",
+    "BA4_Motor_Cortex":         "Motor_Cortex",
+    "Cortex_Motor_Unspecified": "Motor_Cortex",
+    "Primary_Motor_Cortex_L":   "Motor_Cortex",
+    "Primary_Motor_Cortex_M":   "Motor_Cortex",
+    # Lumbar Spinal Cord variants
+    "Lumbar_spinal_cord":       "Lumbar_Spinal_Cord",
+    "Lumbosacral_Spinal_Cord":  "Lumbar_Spinal_Cord",
+    # Cervical Spinal Cord variants
+    "Spinal_Cord_Cervical":     "Cervical_Spinal_Cord",
+}
 
 # ── Load metadata
 rnaseq_meta = pd.read_csv(RNASEQ_META)
@@ -75,9 +105,10 @@ unmatched       = []
 for d in rnaseq_dirs:
     if not d.is_dir():
         continue
-    tissue    = d.parts[-4]
-    dir_name  = d.name
-    sample_id = dir_name.replace("_", "-")
+    raw_tissue = d.parts[-4]
+    tissue     = TISSUE_REMAP.get(raw_tissue, raw_tissue)   # ← remap here
+    dir_name   = d.name
+    sample_id  = dir_name.replace("_", "-")
 
     subject_id = sample_to_subject.get(sample_id)
     if subject_id is None:
