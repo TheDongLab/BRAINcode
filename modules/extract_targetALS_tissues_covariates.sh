@@ -23,9 +23,11 @@
 #   BA4_Motor_Cortex, Cortex_Motor_Unspecified, Primary_Motor_Cortex_L,
 #   Primary_Motor_Cortex_M  →  Motor_Cortex
 #
-#   Lumbar_spinal_cord, Lumbosacral_Spinal_Cord  →  Lumbar_Spinal_Cord
+#   Lumbar_spinal_cord, Lumbosacral_Spinal_Cord,
+#   Spinal_Cord_Lumbar, Spinal_Cord_Lumbosacral  →  Lumbar_Spinal_Cord
 #
-#   Spinal_Cord_Cervical  →  Cervical_Spinal_Cord
+#   Spinal_Cord_Cervical, Cervical_spinal_cord,
+#   Spinal_cord_Cervical                         →  Cervical_Spinal_Cord
 #
 # patient_tissue_breakdown.tsv uses original (raw) tissue names.
 #
@@ -76,8 +78,12 @@ TISSUE_REMAP = {
     # Lumbar Spinal Cord variants
     "Lumbar_spinal_cord":       "Lumbar_Spinal_Cord",
     "Lumbosacral_Spinal_Cord":  "Lumbar_Spinal_Cord",
+    "Spinal_Cord_Lumbar":       "Lumbar_Spinal_Cord",
+    "Spinal_Cord_Lumbosacral":  "Lumbar_Spinal_Cord",
     # Cervical Spinal Cord variants
     "Spinal_Cord_Cervical":     "Cervical_Spinal_Cord",
+    "Cervical_spinal_cord":     "Cervical_Spinal_Cord",
+    "Spinal_cord_Cervical":     "Cervical_Spinal_Cord",
 }
 
 # ── Load metadata
@@ -113,13 +119,12 @@ rnaseq_dirs          = list(BASE.glob("*/RNAseq/Processed/*/"))
 patient_tissues_raw  = defaultdict(list)
 patient_tissues_orig = defaultdict(set)
 unmatched            = []
-seen_dirs            = set()   # resolved real paths, to skip symlink duplicates
+seen_dirs            = set()
 
 for d in rnaseq_dirs:
     if not d.is_dir():
         continue
 
-    # Resolve symlinks so the same physical directory is never counted twice
     resolved = d.resolve()
     if resolved in seen_dirs:
         continue
