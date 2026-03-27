@@ -105,17 +105,26 @@ sample_to_subject = {
 #
 # Two separate accumulators:
 #   patient_tissues_raw  – list of canonical names per patient
-#                          (allows duplicates so all subtypes are counted)
+#                          (allows duplicates so all subtypes are counted,
+#                           but each resolved physical path counted only once)
 #   patient_tissues_orig – set of original names per patient
 #                          (deduplicated, used for breakdown TSV)
 rnaseq_dirs          = list(BASE.glob("*/RNAseq/Processed/*/"))
 patient_tissues_raw  = defaultdict(list)
 patient_tissues_orig = defaultdict(set)
 unmatched            = []
+seen_dirs            = set()   # resolved real paths, to skip symlink duplicates
 
 for d in rnaseq_dirs:
     if not d.is_dir():
         continue
+
+    # Resolve symlinks so the same physical directory is never counted twice
+    resolved = d.resolve()
+    if resolved in seen_dirs:
+        continue
+    seen_dirs.add(resolved)
+
     raw_tissue = d.parts[-4]
     canonical  = TISSUE_REMAP.get(raw_tissue, raw_tissue)
     dir_name   = d.name
