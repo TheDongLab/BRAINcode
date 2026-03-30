@@ -23,15 +23,16 @@ OUT.mkdir(exist_ok=True)
 wgs = pd.read_csv(BASE/"targetALS_wgs_metadata.csv")
 rna = pd.read_csv(BASE/"targetALS_rnaseq_metadata.csv")
 
-wgs.columns = wgs.columns.str.strip()
-rna.columns = rna.columns.str.strip()
-rna.columns = [c.lower() for c in rna.columns]
+# normalize first (IMPORTANT)
+wgs.columns = wgs.columns.str.strip().str.lower()
+rna.columns = rna.columns.str.strip().str.lower()
 
-shared = set(wgs["externalsubjectid"].dropna()) & set(rna["externalsubjectid"].dropna())
-rna = rna[rna["externalsubjectid"].isin(shared)].copy()
+# DEBUG BLOCK
+def find_col(df, name):
+    return [c for c in df.columns if name in c]
 
-print("Patients with BOTH WGS + RNAseq:", len(shared))
-print("RNAseq samples (pre-filter):", len(rna))
+print("WGS subject candidates:", find_col(wgs, "subject"))
+print("RNA subject candidates:", find_col(rna, "subject"))
 
 # ─────────────────────────────
 # find all normalization files
