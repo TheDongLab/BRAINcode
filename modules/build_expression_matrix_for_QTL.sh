@@ -79,27 +79,30 @@ geno_raw = BASE / "eQTL/plink/joint_autosomes_matrixEQTL.raw"
 geno_header = pd.read_csv(geno_raw, sep=" ", nrows=1)
 geno_samples = list(geno_header.columns[1:])
 
-# build mapping: subject → genotype sample
+# build subject → genotype sample map
 wgs_map = dict(zip(wgs["Externalsubjectid"], wgs["Externalsampleid"]))
 
-# map RNA samples → genotype sample IDs
+# attach genotype IDs to RNA samples
 rna_found["geno_id"] = rna_found["externalsubjectid"].map(wgs_map)
 
-# drop samples without genotype
-rna_found = rna_found[rna_found["geno_id"].isin(geno_samples)]
+# drop samples without genotype match
+rna_found = rna_found.dropna(subset=["geno_id"])
 
-# build expression matrix indexed by gene
+# build rename map (RNA sample → genotype sample)
+rename_map = dict(zip(rna_found["externalsampleid"], rna_found["geno_id"]))
+
+# set index AFTER building full matrix
 expr = expr.set_index("gene_id")
 
-# rename columns from RNA sample → genotype sample
-rename_map = dict(zip(rna_found["externalsampleid"], rna_found["geno_id"]))
+# rename columns
 expr = expr.rename(columns=rename_map)
 
-# collapse duplicates (multiple RNA samples per subject)
-expr = expr.groupby(expr.columns, axis=1).mean()
+# keep only genotype samples that exist in expression
+valid_samples = [s for s in geno_samples if s in expr.columns]
+expr = expr[valid_samples]
 
-# reorder to match genotype
-expr = expr[geno_samples]
+# collapse duplicates (multiple RNA per subject)
+expr = expr.T.groupby(level=0).mean().T
 
 print(f"Final expression matrix shape (aligned): {expr.shape}")
 
