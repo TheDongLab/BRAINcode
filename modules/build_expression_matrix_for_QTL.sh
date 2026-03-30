@@ -75,13 +75,31 @@ print(f"Expression matrix shape: {expr.shape}")
 # ── Align sample order with genotype (.raw)
 geno_raw = BASE / "eQTL/plink/joint_autosomes_matrixEQTL.raw"
 
+# load genotype sample IDs
 geno_header = pd.read_csv(geno_raw, sep=" ", nrows=1)
-geno_samples = list(geno_header.columns[1:])  # drop FID
+geno_samples = list(geno_header.columns[1:])
 
+# build mapping: subject → genotype sample
+wgs_map = dict(zip(wgs["Externalsubjectid"], wgs["Externalsampleid"]))
+
+# map RNA samples → genotype sample IDs
+rna_found["geno_id"] = rna_found["externalsubjectid"].map(wgs_map)
+
+# drop samples without genotype
+rna_found = rna_found[rna_found["geno_id"].isin(geno_samples)]
+
+# build expression matrix indexed by gene
 expr = expr.set_index("gene_id")
 
-common = [s for s in geno_samples if s in expr.columns]
-expr = expr[common]
+# rename columns from RNA sample → genotype sample
+rename_map = dict(zip(rna_found["externalsampleid"], rna_found["geno_id"]))
+expr = expr.rename(columns=rename_map)
+
+# collapse duplicates (multiple RNA samples per subject)
+expr = expr.groupby(expr.columns, axis=1).mean()
+
+# reorder to match genotype
+expr = expr[geno_samples]
 
 print(f"Final expression matrix shape (aligned): {expr.shape}")
 
