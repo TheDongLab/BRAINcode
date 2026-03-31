@@ -54,10 +54,11 @@ print(f"Cols 1-5 (should be IID,PAT,MAT,SEX,PHENOTYPE): {geno_iid}")
 geno_samples = [norm(x) for x in all_geno_cols[6:]]
 print(f"Geno samples (SNP columns, first 10): {geno_samples[:10]}")
 
-# Re-read with IID as the sample axis — PLINK .raw uses IID not FID
-# Actually collect IIDs row by row from the file using only cols 0+1
-geno_meta = pd.read_csv(geno_raw, sep=r"\s+", usecols=["FID", "IID"], engine="python")
-geno_iids = [norm(x) for x in geno_meta["IID"].tolist()]
+# Extract IID (col 2) from every data row using awk — fast on any file size
+iid_raw = subprocess.check_output(
+    ["awk", "NR>1 {print $2}", str(geno_raw)]
+).decode().strip().split("\n")
+geno_iids = [norm(x) for x in iid_raw if x]
 print(f"Geno IIDs (first 10): {geno_iids[:10]}")
 print(f"Total geno IIDs: {len(geno_iids)}")
 
