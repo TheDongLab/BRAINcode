@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prep_eQTL
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/prep_%x_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/prep_%x_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/%x_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/%x_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=499G
