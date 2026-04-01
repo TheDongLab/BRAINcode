@@ -128,7 +128,8 @@ fi
 ###########################################
 # STEP 3: Symlink key outputs to sample root
 # for easy access (IGV, CIRCexplorer2, etc.)
-# Symlinks are clearly named *remap* so they can never be confused with the original BAM.
+# Symlinks are clearly named *remap* so they
+# can never be confused with the original BAM.
 ###########################################
 REMAP_BAM_LINK="${SAMPLE_DIR}/${samplename}.remap.sorted.bam"
 if [[ ! -L "${REMAP_BAM_LINK}" ]]; then
@@ -150,45 +151,62 @@ fi
 if [ ! -f "${SAMPLE_DIR}/.status.RNAseq.circRNA" ]; then
     echo "[STEP 4] circRNA calling starting..."
 
-    if [ ! -s "${CHIM_JXN}" ]; then
-        echo "[STEP 4] WARNING: Chimeric.out.junction missing or empty — skipping circRNA calling." >&2
+    # Check file exists (may be 0 lines if no chimeric reads — still valid to proceed)
+    NJXN=0
+    if [[ -f "${CHIM_JXN}" ]]; then
+        NJXN=$(wc -l < "${CHIM_JXN}")
+    fi
+    echo "[STEP 4] Chimeric.out.junction: ${NJXN} lines (${CHIM_JXN})"
+
+    if [[ ! -f "${CHIM_JXN}" ]]; then
+        echo "[STEP 4] WARNING: Chimeric.out.junction not found — skipping circRNA calling." >&2
         touch "${SAMPLE_DIR}/.status.RNAseq.circRNA"
     else
-        cd "${SAMPLE_DIR}" && \
+        cd "${SAMPLE_DIR}" || { echo "[STEP 4] ERROR: cannot cd to ${SAMPLE_DIR}" >&2; exit 1; }
 
+        echo "[STEP 4] Running CIRCexplorer2 parse..."
         CIRCexplorer2 parse \
             -t STAR \
             STAR.Chimeric.out.junction \
-            > back_spliced_junction.txt && \
+            > back_spliced_junction.txt
+        if [[ $? -ne 0 ]]; then
+            echo "[STEP 4] ERROR: CIRCexplorer2 parse failed." >&2; exit 1
+        fi
 
+        echo "[STEP 4] Running CIRCexplorer2 annotate..."
         CIRCexplorer2 annotate \
             -r "${REFFLAT}" \
             -g "${GENOME_FA}" \
             -b back_spliced_junction.bed \
             -o circularRNA_known.txt \
-            --low-confidence && \
+            --low-confidence
+        if [[ $? -ne 0 ]]; then
+            echo "[STEP 4] ERROR: CIRCexplorer2 annotate failed." >&2; exit 1
+        fi
 
         if [ -s circularRNA_known.txt ]; then
 
             [ -f "${REMAP_BAM}.bai" ] || samtools index "${REMAP_BAM}"
 
             python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
-                "${SAMPLE_DIR}/circularRNA_known.txt" && \
+                "${SAMPLE_DIR}/circularRNA_known.txt"
 
-            { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
-            cat "${SAMPLE_DIR}/circularRNA_known.txt"; } > "${SAMPLE_DIR}/circularRNA_known.tmp" && \
-            mv "${SAMPLE_DIR}/circularRNA_known.tmp" "${SAMPLE_DIR}/circularRNA_known.txt" && \
+            HEADER="chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"
 
-            { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
-            cat "${SAMPLE_DIR}/low_conf_circularRNA_known.txt"; } > "${SAMPLE_DIR}/low_conf_circularRNA_known.tmp" && \
-            mv "${SAMPLE_DIR}/low_conf_circularRNA_known.tmp" "${SAMPLE_DIR}/low_conf_circularRNA_known.txt" && \
+            { echo -e "${HEADER}"; cat "${SAMPLE_DIR}/circularRNA_known.txt"; } \
+                > "${SAMPLE_DIR}/circularRNA_known.tmp" \
+                && mv "${SAMPLE_DIR}/circularRNA_known.tmp" "${SAMPLE_DIR}/circularRNA_known.txt"
 
-            touch "${SAMPLE_DIR}/.status.RNAseq.circRNA" && \
-            echo "[STEP 4] SUCCESS: Found $(wc -l < "${SAMPLE_DIR}/circularRNA_known.txt") circRNAs." && \
+            { echo -e "${HEADER}"; cat "${SAMPLE_DIR}/low_conf_circularRNA_known.txt"; } \
+                > "${SAMPLE_DIR}/low_conf_circularRNA_known.tmp" \
+                && mv "${SAMPLE_DIR}/low_conf_circularRNA_known.tmp" "${SAMPLE_DIR}/low_conf_circularRNA_known.txt"
+
+            touch "${SAMPLE_DIR}/.status.RNAseq.circRNA"
+            echo "[STEP 4] SUCCESS: Found $(wc -l < "${SAMPLE_DIR}/circularRNA_known.txt") circRNAs."
             echo "[STEP 4] circRNA calling completed successfully."
 
         else
-            echo "[STEP 4] ERROR: No circRNAs annotated." >&2
+            echo "[STEP 4] ERROR: circularRNA_known.txt is empty — no circRNAs annotated." >&2
             exit 1
         fi
     fi
@@ -198,7 +216,8 @@ fi
 
 ###########################################
 # STEP 5: Cleanup intermediate files
-# Runs after circRNA calling so nothing is removed prematurely on re-runs
+# Runs after circRNA calling so nothing is
+# removed prematurely on re-runs
 ###########################################
 echo "[STEP 5] Cleaning up intermediate files..."
 
@@ -206,7 +225,5 @@ if [[ -f "${UNMAPPED_FQ}" ]]; then
     rm -f "${UNMAPPED_FQ}"
     echo "[STEP 5] Removed: ${UNMAPPED_FQ}"
 fi
-
-rm -f "$SAMPLE_DIR/circularRNA_known.txt"
 
 echo "[$(date)] Done: ${samplename}"
