@@ -424,10 +424,17 @@ echo "[7] Generating gene location file..."
 
 GENE_LOC=$OUTDIR/gene_location.txt
 echo -e "geneid\tchr\tleft\tright" > $GENE_LOC
+
+# extract only ENSG ID (before first underscore)
 awk 'BEGIN{OFS="\t"} {
-    gene=$4; sub(/\.[0-9]+$/, "", gene)
-    print gene, $1, $2, $3
+    gene=$4
+    split(gene, a, "___")   # split on triple underscore
+    gene_id=a[1]            # ENSGxxxxxx.version
+    print gene_id, $1, $2, $3
 }' $GTF_BED6 >> $GENE_LOC
+
+N_GENES=$(tail -n +2 $GENE_LOC | wc -l)
+echo "  Genes in location file : $N_GENES"
 
 N_GENES=$(tail -n +2 $GENE_LOC | wc -l)
 echo "  Genes in location file : $N_GENES"
