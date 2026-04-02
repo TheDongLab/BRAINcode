@@ -3,16 +3,13 @@
 # Matrix eQTL by Andrey A. Shabalin
 # http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/
 # Usage: Rscript $PIPELINE_PATH/_eQTL.R snp.txt expression.txt cov.txt output.txt geneloc.txt snploc.txt
-# Author: Xianjun Dong
-# Version: 1.0
-# Date: 2014-May-19
+# Author: Xianjun Dong (modified by Zachery Wolfe)
+# Version: 1.1
+# Date:4/2/2026
 ###########################################
 
-## TODO: incooprate the genotype-covairance interaction!!
-## TODO: re-run without 
-## Note: PD could potentially introduce noise (e.g. those survived neurons could be more resisitent than other died)
-
-require('MatrixEQTL') || install.packages('MatrixEQTL', repo='http://cran.revolutionanalytics.com');
+.libPaths(c("~/R/libs", .libPaths()))
+library('MatrixEQTL')
 
 args<-commandArgs(TRUE)
 
