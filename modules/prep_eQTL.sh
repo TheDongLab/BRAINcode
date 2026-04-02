@@ -71,7 +71,7 @@ TMP_MATCHED=$OUTDIR/tmp_matched.txt
 TMP_HRA=$OUTDIR/tmp_HRA_ids.txt
 TMP_HRA_UNDER=$OUTDIR/tmp_HRA_ids_underscore.txt
 TMP_HDA=$OUTDIR/tmp_HDA_ids.txt
-TMP_FINAL_SAMPLES=$OUTDIR/tmp_final_sample_list.txt   # ordered intersection after alignment
+TMP_FINAL_SAMPLES=$OUTDIR/tmp_final_sample_list.txt
 
 ##############################################
 # STEP 1: Build sample mapping table
@@ -84,197 +84,104 @@ tail -n +2 $META \
     | sort -t',' -k1,1 \
     > $TMP_META
 
-N_META=$(wc -l < $TMP_META)
-echo "  RNA samples in metadata for $TISSUE : $N_META"
-
-if [ "$N_META" -eq 0 ]; then
-    echo "ERROR: No samples found for tissue '$TISSUE'."
-    echo "Check tissue label exactly — available labels:"
-    tail -n +2 $META | awk -F',' '{print $3}' | sort | uniq -c | sort -rn
-    exit 1
-fi
-
 tail -n +2 $WGS_MAP \
     | awk -F',' '{print $1","$2}' \
     | sort -t',' -k1,1 \
     > $TMP_WGS
 
-N_WGS=$(wc -l < $TMP_WGS)
-echo "  Subjects with WGS data             : $N_WGS"
-
-# Inner join on subjectid → subjectid, HRA_id, HDA_id
 join -t',' -1 1 -2 1 \
     $TMP_META \
     $TMP_WGS \
     > $TMP_MATCHED
 
-N_MATCHED=$(wc -l < $TMP_MATCHED)
-echo "  Subjects with $TISSUE RNA + WGS    : $N_MATCHED"
-
-if [ "$N_MATCHED" -eq 0 ]; then
-    echo "ERROR: No matched samples found."
-    exit 1
-fi
-
 awk -F',' '{print $2}' $TMP_MATCHED > $TMP_HRA
 awk -F',' '{print $3}' $TMP_MATCHED > $TMP_HDA
 sed 's/-/_/g' $TMP_HRA > $TMP_HRA_UNDER
 
-echo "  Sample HRA IDs (expression): $(head -3 $TMP_HRA | tr '\n' ' ')..."
-echo "  Sample HDA IDs (SNP):        $(head -3 $TMP_HDA | tr '\n' ' ')..."
-
 ##############################################
 # STEP 2: Subset expression matrix
-# Expression matrix columns use underscores (CGND_HRA_03594)
 ##############################################
 echo ""
 echo "[2] Subsetting expression matrix..."
 
 python3 << EOF
-ids_file  = "$TMP_HRA_UNDER"
-expr_file = "$EXPR"
-out_file  = "$OUTDIR/expression_${TISSUE_DIR}.txt"
-
-with open(ids_file) as f:
-    keep_ids = set(line.strip() for line in f if line.strip())
-
-with open(expr_file) as f, open(out_file, 'w') as out:
-    header = f.readline().rstrip('\n').split('\t')
-    keep_idx = [0] + [i for i, h in enumerate(header) if h in keep_ids]
-    found_ids = [header[i] for i in keep_idx[1:]]
-    missing = keep_ids - set(found_ids)
-
-    print(f"  Requested samples : {len(keep_ids)}", flush=True)
-    print(f"  Found in matrix   : {len(found_ids)}", flush=True)
-    if missing:
-        print(f"  WARNING - {len(missing)} IDs not found in expression matrix", flush=True)
-        print(f"  First 5 missing   : {list(missing)[:5]}", flush=True)
-
-    out.write('\t'.join(header[i] for i in keep_idx) + '\n')
-    for line in f:
-        fields = line.rstrip('\n').split('\t')
-        out.write('\t'.join(fields[i] for i in keep_idx) + '\n')
-
-print(f"  Written to: {out_file}", flush=True)
+ids=set(x.strip() for x in open("$TMP_HRA_UNDER"))
+with open("$EXPR") as f, open("$OUTDIR/expression_${TISSUE_DIR}.txt","w") as out:
+    h=f.readline().strip().split("\t")
+    idx=[0]+[i for i,x in enumerate(h) if x in ids]
+    out.write("\t".join(h[i] for i in idx)+"\n")
+    for l in f:
+        s=l.strip().split("\t")
+        out.write("\t".join(s[i] for i in idx)+"\n")
 EOF
-
-echo "  Expression matrix done."
 
 ##############################################
 # STEP 3: Subset and transpose SNP matrix
 # .raw samples are ROWS; Matrix eQTL wants SNPs as ROWS
 # Strip -b38 suffix from IIDs before matching
+# FIX: assign unique SNP IDs (chr:pos) using BIM
 ##############################################
 echo ""
-echo "[3] Subsetting and transposing SNP matrix (chunked)..."
+echo "[3] Subsetting and transposing SNP matrix..."
 
 python3 << EOF
 import re
 
-ids_file = "$TMP_HDA"
-raw_file = "$RAW"
-out_file = "$OUTDIR/snp_${TISSUE_DIR}.txt"
+ids=set(x.strip() for x in open("$TMP_HDA"))
+def norm(x): return re.sub(r'-b\\d+$','',x)
 
-with open(ids_file) as f:
-    keep_ids = set(line.strip() for line in f if line.strip())
+# build SNP IDs from BIM
+bim_ids=[]
+with open("$BIM") as f:
+    for l in f:
+        c=l.split()
+        snp=c[1]
+        if snp==".":
+            snp=f"chr{c[0]}:{c[3]}"
+        bim_ids.append(snp)
 
-print(f"  HDA IDs to keep: {len(keep_ids)}", flush=True)
+rows=[]
+with open("$RAW") as f:
+    h=f.readline().split()
+    for l in f:
+        s=l.split()
+        iid=norm(s[1])
+        if iid in ids:
+            rows.append((iid,s[6:]))
 
-def normalize_hda(iid):
-    return re.sub(r'-b\d+$', '', iid)
+samples=[r[0] for r in rows]
+ns=len(rows)
+n_snps=len(bim_ids)
 
-rows = []
-with open(raw_file) as f:
-    header = f.readline().split()
-    snp_names = header[6:]
-    for line in f:
-        fields = line.split()
-        iid_raw   = fields[1]
-        iid_norm  = normalize_hda(iid_raw)
-        matched   = iid_norm if iid_norm in keep_ids else (iid_raw if iid_raw in keep_ids else None)
-        if matched:
-            rows.append((matched, fields[6:]))
-
-print(f"  Samples found in SNP matrix : {len(rows)}", flush=True)
-missing = keep_ids - set(r[0] for r in rows)
-if missing:
-    print(f"  WARNING: {len(missing)} HDA IDs not found in SNP matrix", flush=True)
-    print(f"  First 5 missing: {list(missing)[:5]}", flush=True)
-
-sample_ids = [r[0] for r in rows]
-n_samples  = len(rows)
-n_snps     = len(snp_names)
-CHUNK      = 50000
-
-with open(out_file, 'w') as out:
-    out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
-    for chunk_start in range(0, n_snps, CHUNK):
-        chunk_end = min(chunk_start + CHUNK, n_snps)
-        for j in range(chunk_start, chunk_end):
-            snp_row = [rows[i][1][j] for i in range(n_samples)]
-            out.write(snp_names[j] + '\t' + '\t'.join(snp_row) + '\n')
-        print(f"  Written SNPs {chunk_start}-{chunk_end} of {n_snps}", flush=True)
-
-print(f"  Done: {n_snps} SNPs x {n_samples} samples -> {out_file}", flush=True)
+with open("$OUTDIR/snp_${TISSUE_DIR}.txt","w") as out:
+    out.write("snpid\t"+"\t".join(samples)+"\n")
+    for j in range(n_snps):
+        out.write(bim_ids[j]+"\t"+"\t".join(rows[i][1][j] for i in range(ns))+"\n")
 EOF
-
-echo "  SNP matrix done."
 
 ##############################################
 # STEP 4: Subset covariates
-# LONG format: rows = samples, cols = covariate variables
-# We subset rows to tissue samples, then TRANSPOSE to wide format for Matrix eQTL (rows = covariates, cols = samples)
-# Numeric covariates only — sex/ethnicity etc need to be encoded
 ##############################################
 echo ""
 echo "[4] Subsetting and transposing covariates..."
 
 python3 << EOF
-ids_file = "$TMP_HRA"    # hyphens, matching covariates.tsv
-cov_file = "$COV"
-out_file = "$OUTDIR/covariates_${TISSUE_DIR}.txt"
+ids=set(x.strip() for x in open("$TMP_HRA"))
+h=None
+rows={}
+with open("$COV") as f:
+    h=f.readline().strip().split("\t")
+    for l in f:
+        s=l.strip().split("\t")
+        if s[0] in ids:
+            rows[s[0]]=s[1:]
 
-with open(ids_file) as f:
-    keep_ids = set(line.strip() for line in f if line.strip())
-
-# Read long-format covariate file (rows = samples)
-header = None
-kept_rows = {}   # sample_id -> {covariate: value}
-
-with open(cov_file) as f:
-    header = f.readline().rstrip('\n').split('\t')
-    sample_col = header[0]   # 'externalsampleid'
-    cov_cols   = header[1:]  # covariate column names
-
-    for line in f:
-        fields = line.rstrip('\n').split('\t')
-        sid = fields[0]
-        if sid in keep_ids:
-            kept_rows[sid] = fields[1:]
-
-found = len(kept_rows)
-missing = keep_ids - set(kept_rows.keys())
-print(f"  Requested samples : {len(keep_ids)}", flush=True)
-print(f"  Found in cov file : {found}", flush=True)
-if missing:
-    print(f"  WARNING - {len(missing)} IDs not in covariates", flush=True)
-    print(f"  First 5 missing   : {list(missing)[:5]}", flush=True)
-
-# Transpose: write wide format — rows = covariates, cols = samples
-# Header row: covariate_name  sample1  sample2 ...
-sample_order = sorted(kept_rows.keys())   # consistent ordering
-
-with open(out_file, 'w') as out:
-    out.write('covariate\t' + '\t'.join(sample_order) + '\n')
-    for i, cov_name in enumerate(cov_cols):
-        row_vals = [kept_rows[s][i] if s in kept_rows else 'NA' for s in sample_order]
-        out.write(cov_name + '\t' + '\t'.join(row_vals) + '\n')
-
-print(f"  Transposed {len(cov_cols)} covariates x {len(sample_order)} samples", flush=True)
-print(f"  Written to: {out_file}", flush=True)
+order=sorted(rows)
+with open("$OUTDIR/covariates_${TISSUE_DIR}.txt","w") as out:
+    out.write("covariate\t"+"\t".join(order)+"\n")
+    for i,c in enumerate(h[1:]):
+        out.write(c+"\t"+"\t".join(rows[x][i] for x in order)+"\n")
 EOF
-
-echo "  Covariates done."
 
 ##############################################
 # STEP 5: Align all three files to exact same sample set and order
@@ -405,16 +312,22 @@ echo "  Alignment done."
 
 ##############################################
 # STEP 6: SNP location file from .bim
+# FIX: assign chr:pos when SNP ID is '.'
 ##############################################
 echo ""
 echo "[6] Generating SNP location file..."
 
 SNP_LOC=$OUTDIR/snp_location.txt
 echo -e "snpid\tchr\tpos" > $SNP_LOC
-awk 'BEGIN{OFS="\t"} {print $2, "chr"$1, $4}' $BIM >> $SNP_LOC
 
-N_SNPS=$(tail -n +2 $SNP_LOC | wc -l)
-echo "  SNPs in location file : $N_SNPS"
+awk 'BEGIN{OFS="\t"}
+{
+    snp=$2
+    if(snp==".") {
+        snp="chr"$1":"$4
+    }
+    print snp, "chr"$1, $4
+}' $BIM >> $SNP_LOC
 
 ##############################################
 # STEP 7: Gene location file from gencode v49 BED6
@@ -425,39 +338,10 @@ echo "[7] Generating gene location file..."
 GENE_LOC=$OUTDIR/gene_location.txt
 echo -e "geneid\tchr\tleft\tright" > $GENE_LOC
 
-# extract only ENSG ID (before first underscore)
 awk 'BEGIN{OFS="\t"} {
-    gene=$4
-    split(gene, a, "___")   # split on triple underscore
-    gene_id=a[1]            # ENSGxxxxxx.version
-    print gene_id, $1, $2, $3
+    split($4,a,"___")
+    print a[1], $1, $2, $3
 }' $GTF_BED6 >> $GENE_LOC
-
-N_GENES=$(tail -n +2 $GENE_LOC | wc -l)
-echo "  Genes in location file : $N_GENES"
-
-N_GENES=$(tail -n +2 $GENE_LOC | wc -l)
-echo "  Genes in location file : $N_GENES"
-
-python3 << EOF
-expr_file = "$OUTDIR/expression_${TISSUE_DIR}.txt"
-loc_file  = "$OUTDIR/gene_location.txt"
-
-with open(loc_file) as f:
-    f.readline()
-    loc_genes = set(line.split('\t')[0] for line in f)
-with open(expr_file) as f:
-    f.readline()
-    expr_genes = [line.split('\t')[0] for line in f]
-
-found   = sum(1 for g in expr_genes if g in loc_genes)
-missing = [g for g in expr_genes if g not in loc_genes]
-print(f"  Expression genes            : {len(expr_genes)}", flush=True)
-print(f"  Found in gene location file : {found}", flush=True)
-print(f"  Missing                     : {len(missing)}", flush=True)
-if missing:
-    print(f"  First 5 missing             : {missing[:5]}", flush=True)
-EOF
 
 ##############################################
 # STEP 8: Cleanup temp files
@@ -465,7 +349,6 @@ EOF
 echo ""
 echo "[8] Cleaning up temp files..."
 rm -f $TMP_META $TMP_WGS $TMP_MATCHED $TMP_HRA $TMP_HRA_UNDER $TMP_HDA
-echo "  Done. Final sample list retained at: $TMP_FINAL_SAMPLES"
 
 ##############################################
 # STEP 9: Final summary
@@ -474,13 +357,4 @@ echo ""
 echo "============================================"
 echo "  Prep complete for: $TISSUE"
 echo "  Output directory : $OUTDIR"
-echo ""
-echo "  snp_${TISSUE_DIR}.txt         -> args[1] SNP_file_name"
-echo "  expression_${TISSUE_DIR}.txt  -> args[2] expression_file_name"
-echo "  covariates_${TISSUE_DIR}.txt  -> args[3] covariates_file_name"
-echo "  gene_location.txt             -> args[5] gene_location_file_name"
-echo "  snp_location.txt              -> args[6] snp_location_file_name"
-echo ""
-echo "  Next step: sbatch run_eQTL.sh \"$TISSUE\""
-echo "  $(date)"
 echo "============================================"
