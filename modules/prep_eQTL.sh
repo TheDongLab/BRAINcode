@@ -11,15 +11,14 @@
 # Purpose: Prepare all Matrix eQTL inputs for a given tissue type.
 #
 # Steps:
-#   1. Build sample mapping (HRA <-> subjectid <-> HDA)
-#   2. Subset expression matrix to tissue samples
-#   3. Subset + transpose SNP matrix to tissue samples
-#      -> SNP matrix is the AUTHORITATIVE sample set after this step
-#   4. Subset covariates to match SNP-confirmed samples
-#   5. Align expression + covariates to exact SNP sample order/count
-#   6. Encode covariates to numeric (Matrix eQTL requirement)
-#   7. Generate SNP location file from .bim
-#   8. Generate gene location file from gencode BED6
+#   1.  Build sample mapping (HRA <-> subjectid <-> HDA)
+#   2.  Subset expression matrix to tissue samples
+#   3.  Subset + transpose SNP matrix to tissue samples -> SNP matrix is the AUTHORITATIVE sample set after this step
+#   4.  Subset covariates to match SNP-confirmed samples
+#   5.  Align expression + covariates to exact SNP sample order/count
+#   6.  Encode covariates to numeric (Matrix eQTL requirement)
+#   7.  Generate SNP location file -> SNP names taken from .raw header (authority) matched positionally to chr/pos from .bim
+#   8.  Generate gene location file from gencode v49 BED6 -> Strips ___type___name decorator, keeps versioned ENSG ID
 #
 # Logic: Keeps subjects with BOTH:
 #   - RNAseq for the specified tissue in expression_sample_metadata.csv
@@ -30,7 +29,10 @@
 # Covariate encoding (Step 6):
 #   - sex                       -> binary (Male=1, Female=0)
 #   - ethnicity                 -> one-hot dummies (drop first level)
+#                                  normalised to lowercase before encoding
+#                                  to avoid duplicate levels from typos
 #   - subject_group             -> one-hot dummies (drop first level)
+#                                  normalised: lowercase, hyphens->underscores
 #   - subject_group_subcategory -> DROPPED (too many sparse levels)
 #   - tissue                    -> DROPPED (constant within tissue)
 #   - age_at_death, age_at_symptom_onset, rin -> numeric as-is
@@ -90,7 +92,6 @@ TMP_HDA=$OUTDIR/tmp_HDA_ids.txt
 
 ##############################################
 # STEP 1: Build sample mapping table
-# Inner join: Cerebellum RNA samples ∩ WGS subjects
 ##############################################
 echo ""
 echo "[1] Building sample mapping (HRA <-> subjectid <-> HDA) for: $TISSUE"
@@ -173,7 +174,9 @@ echo "  Expression matrix done."
 ##############################################
 # STEP 3: Subset + transpose SNP matrix
 # After this step the SNP file is the AUTHORITATIVE sample set.
-# Any HDA IDs absent from the .raw file are silently excluded here, and Step 5 will trim expression + covariates to match.
+# SNP row names are taken directly from the .raw header — these are
+# in PLINK's SNPID_ALLELE format (e.g. ._AC) and must be used
+# consistently in the SNP location file (Step 7).
 ##############################################
 echo ""
 echo "[3] Subsetting and transposing SNP matrix (chunked)..."
@@ -196,6 +199,7 @@ def normalize_hda(iid):
 rows = []
 with open(raw_file) as f:
     header = f.readline().split()
+    # SNP names as PLINK wrote them (SNPID_ALLELE format) — used as-is
     snp_names = header[6:]
     for line in f:
         fields = line.split()
@@ -230,8 +234,6 @@ echo "  SNP matrix done."
 
 ##############################################
 # STEP 4: Subset covariates (long -> wide)
-# Rows are subsetted to tissue samples, then transposed.
-# Uses HRA IDs with hyphens as they appear in covariates.tsv.
 ##############################################
 echo ""
 echo "[4] Subsetting and transposing covariates..."
@@ -278,7 +280,6 @@ echo "  Covariates done."
 
 ##############################################
 # STEP 5: Align expression + covariates to SNP sample set
-# The SNP matrix is the authority. Any samples absent from the .raw file were silently dropped in Step 3. This step trims expression and covariates to exactly match, in the same column order.
 ##############################################
 echo ""
 echo "[5] Aligning expression and covariates to SNP sample set..."
@@ -291,13 +292,11 @@ meta_file = "$META"
 wgs_file  = "$WGS_MAP"
 tissue    = "$TISSUE"
 
-# ── Get authoritative HDA order from SNP header ──────────────────────
 with open(snp_file) as f:
     hda_ordered = f.readline().rstrip('\n').split('\t')[1:]
 hda_set = set(hda_ordered)
 print(f"  SNP matrix samples (authoritative): {len(hda_ordered)}", flush=True)
 
-# ── Build HDA -> HRA bridge ──────────────────────────────────────────
 subj_to_hda = {}
 with open(wgs_file) as f:
     f.readline()
@@ -329,7 +328,6 @@ if unmapped:
 hra_under_ordered  = [hda_to_hra_under.get(h)  for h in hda_ordered]
 hra_hyphen_ordered = [hda_to_hra_hyphen.get(h) for h in hda_ordered]
 
-# ── Re-subset expression to SNP order ────────────────────────────────
 print(f"  Re-ordering expression matrix...", flush=True)
 with open(expr_file) as f:
     header = f.readline().rstrip('\n').split('\t')
@@ -343,7 +341,6 @@ with open(expr_file, 'w') as f:
     f.write('\n'.join(rows) + '\n')
 print(f"  Expression aligned: {len(keep_idx)-1} samples", flush=True)
 
-# ── Re-subset covariates to SNP order ────────────────────────────────
 print(f"  Re-ordering covariate matrix...", flush=True)
 with open(cov_file) as f:
     header = f.readline().rstrip('\n').split('\t')
@@ -357,7 +354,6 @@ with open(cov_file, 'w') as f:
     f.write('\n'.join(rows) + '\n')
 print(f"  Covariates aligned: {len(keep_idx)-1} samples", flush=True)
 
-# ── Final count check ─────────────────────────────────────────────────
 def col_count(fpath):
     with open(fpath) as f:
         return len(f.readline().rstrip('\n').split('\t')) - 1
@@ -365,7 +361,6 @@ def col_count(fpath):
 n_snp  = col_count(snp_file)
 n_expr = col_count(expr_file)
 n_cov  = col_count(cov_file)
-
 print(f"  Final sample counts -> SNP: {n_snp}  Expr: {n_expr}  Cov: {n_cov}", flush=True)
 
 if n_snp == n_expr == n_cov:
@@ -379,8 +374,10 @@ echo "  Alignment done."
 
 ##############################################
 # STEP 6: Encode covariates to numeric
-# Matrix eQTL requires all covariate values to be numeric.
-# Reads the wide-format covariate file written in Step 4/5, encodes categoricals, and writes a separate _encoded file.
+# Categorical variables are normalised before encoding to prevent
+# duplicate dummy columns from capitalisation/punctuation inconsistencies:
+#   - ethnicity: lowercased before level detection
+#   - subject_group: lowercased + hyphens replaced with underscores
 ##############################################
 echo ""
 echo "[6] Encoding covariates to numeric..."
@@ -397,6 +394,15 @@ BINARY_COLS  = {'sex': {'male': 1, 'female': 0, 'm': 1, 'f': 0,
                         'Male': 1, 'Female': 0, 'M': 1, 'F': 0}}
 NUMERIC_COLS = {'age_at_death', 'age_at_symptom_onset', 'rin'}
 ONEHOT_COLS  = {'ethnicity', 'subject_group'}
+
+def normalise_level(col, val):
+    """Normalise categorical values to prevent duplicate dummy columns."""
+    v = val.strip()
+    if col == 'ethnicity':
+        return v.lower()
+    if col == 'subject_group':
+        return v.lower().replace('-', '_').replace(',', '').replace('/', '_')
+    return v
 
 with open(cov_file) as f:
     reader     = csv.reader(f, delimiter='\t')
@@ -438,15 +444,17 @@ for cov_name, values in rows.items():
         continue
 
     if cov_name in ONEHOT_COLS or cov_lower in ONEHOT_COLS:
+        # Normalise values first to collapse duplicates from typos/capitalisation
+        norm_values = [normalise_level(cov_lower, v) for v in values]
         levels = sorted(set(
-            v.strip() for v in values
-            if v.strip() not in ('NA', '', 'nan', 'NaN')
+            v for v in norm_values
+            if v not in ('na', '', 'nan')
         ))
         ref = levels[0]
         for level in levels[1:]:
-            dummy = f"{cov_name}_{level.replace(' ','_').replace('/','_')}"
-            encoded = ['1' if v.strip() == level else ('NA' if v.strip() in ('NA','','nan','NaN') else '0')
-                       for v in values]
+            dummy = f"{cov_name}_{level.replace(' ','_').replace('/','_').replace(',','')}"
+            encoded = ['1' if v == level else ('NA' if v in ('na','','nan') else '0')
+                       for v in norm_values]
             out_rows.append((dummy, encoded))
         print(f"  One-hot: '{cov_name}' -> {len(levels)-1} dummies (ref='{ref}')", flush=True)
         continue
@@ -482,28 +490,55 @@ EOF
 echo "  Covariate encoding done."
 
 ##############################################
-# STEP 7: SNP location file from .bim
-# .bim: chr, snpid, cm, pos, a1, a2
-# Unnamed SNPs (snpid=".") renamed to chr:pos
+# STEP 7: SNP location file
+# SNP names MUST match the row labels in the SNP matrix exactly.
+# The .raw file names SNPs in PLINK's SNPID_ALLELE format (e.g. ._AC).
+# We read the SNP names from the .raw header and pair them positionally
+# with chr/pos from the .bim file (same row order guaranteed by PLINK).
 ##############################################
 echo ""
 echo "[7] Generating SNP location file..."
 
 SNP_LOC=$OUTDIR/snp_location.txt
-echo -e "snpid\tchr\tpos" > $SNP_LOC
-awk 'BEGIN{OFS="\t"} {
-    snp = ($2 == ".") ? "chr"$1":"$4 : $2
-    print snp, "chr"$1, $4
-}' $BIM >> $SNP_LOC
 
-echo "  SNPs in location file : $(tail -n +2 $SNP_LOC | wc -l)"
-echo "  Written to: $SNP_LOC"
+python3 << EOF
+raw_file = "$RAW"
+bim_file = "$BIM"
+out_file = "$SNP_LOC"
+
+# Read SNP names from .raw header (columns 7 onward, space-delimited)
+with open(raw_file) as f:
+    raw_header = f.readline().split()
+snp_names = raw_header[6:]   # skip FID IID PAT MAT SEX PHENOTYPE
+print(f"  SNP names from .raw header: {len(snp_names)}", flush=True)
+
+# Read chr/pos from .bim (col 1=chr, col 4=pos), same row order as .raw SNPs
+bim_positions = []
+with open(bim_file) as f:
+    for line in f:
+        fields = line.split()
+        bim_positions.append(('chr' + fields[0], fields[3]))
+print(f"  Positions from .bim       : {len(bim_positions)}", flush=True)
+
+if len(snp_names) != len(bim_positions):
+    print(f"  ERROR: SNP count mismatch between .raw ({len(snp_names)}) and .bim ({len(bim_positions)})", flush=True)
+    exit(1)
+
+with open(out_file, 'w') as out:
+    out.write('snpid\tchr\tpos\n')
+    for name, (chrom, pos) in zip(snp_names, bim_positions):
+        out.write(f'{name}\t{chrom}\t{pos}\n')
+
+print(f"  Written {len(snp_names)} SNPs to: {out_file}", flush=True)
+EOF
+
+echo "  SNP location file done."
 
 ##############################################
 # STEP 8: Gene location file from gencode v49 BED6
-# BED6: chr, start, end, gene_id, score, strand
-# Matrix eQTL needs: geneid, chr, left, right
-# Strip version suffix (ENSG00000123.7 -> ENSG00000123)
+# BED6 field 4 format: ENSG00000123.7___gene_type___gene_name
+# Strip ___* suffix to recover versioned ENSG ID.
+# Versioned IDs match expression matrix directly (same gencode release).
 ##############################################
 echo ""
 echo "[8] Generating gene location file..."
@@ -518,7 +553,6 @@ awk 'BEGIN{OFS="\t"} {
 echo "  Genes in location file : $(tail -n +2 $GENE_LOC | wc -l)"
 echo "  Written to: $GENE_LOC"
 
-# Sanity check: gene ID overlap
 python3 << EOF
 expr_file = "$OUTDIR/expression_${TISSUE_DIR}.txt"
 loc_file  = "$OUTDIR/gene_location.txt"
