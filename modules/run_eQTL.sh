@@ -8,8 +8,19 @@
 
 ###########################################
 # run_eQTL.sh
-# Purpose: Run Matrix eQTL (cis + trans) for a given tissue type.
-#           Expects prep_eQTL.sh to have been run first.
+# Purpose: Run Matrix eQTL (cis only) for a given tissue type,
+#           then post-process results and generate figures.
+#
+# Expects prep_eQTL.sh to have been run first.
+#
+# Steps:
+#   0.  Pre-flight checks (file existence + sample count alignment)
+#   1.  Run Matrix eQTL via _eQTL.R
+#   2.  Post-process: join coordinates, flag telomeric SNPs,
+#       filter FDR, identify lead SNPs (_eQTL_postprocess.R)
+#   3.  Manhattan plots by SNP position and gene position
+#       (_eQTL_manhattan.R)
+#   4.  Boxplots for top 100 gene-SNP pairs (_eQTL_boxplot.R)
 #
 # Usage:
 #   sbatch run_eQTL.sh "Cerebellum"
@@ -39,6 +50,7 @@ echo "============================================"
 # ── Paths ─────────────────────────────────────────────────────────────
 BASE=/home/zw529/donglab/data/target_ALS
 PIPELINE=/home/zw529/donglab/pipelines/scripts/eQTL
+PLINK=$BASE/eQTL/plink
 
 INDIR=$BASE/$TISSUE_DIR/eQTL
 OUTDIR=$INDIR/results
@@ -49,7 +61,12 @@ EXPR_FILE=$INDIR/expression_${TISSUE_DIR}.txt
 COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 GENE_LOC=$INDIR/gene_location.txt
 SNP_LOC=$INDIR/snp_location.txt
+BIM=$PLINK/joint_autosomes_filtered_bed.bim
 OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
+
+CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
+FDR_THRESH=0.05
+TOP_N=100
 
 # ── Pre-flight: check input files exist ───────────────────────────────
 echo ""
@@ -67,7 +84,6 @@ for f in "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$GENE_LOC" "$SNP_LOC"; do
 done
 
 if [ "$MISSING" -eq 1 ]; then
-    echo ""
     echo "ERROR: One or more input files are missing."
     echo "Run: sbatch prep_eQTL.sh \"$TISSUE\" first."
     exit 1
@@ -92,8 +108,7 @@ print(f"  SNP samples        : {n_snp}",  flush=True)
 print(f"  Expression samples : {n_expr}", flush=True)
 print(f"  Covariate samples  : {n_cov}",  flush=True)
 
-ok = n_snp == n_expr == n_cov
-if ok:
+if n_snp == n_expr == n_cov:
     print(f"  All sample counts match: {n_snp}", flush=True)
 else:
     if n_expr != n_snp:
@@ -104,9 +119,9 @@ else:
     sys.exit(1)
 EOF
 
-# ── Run Matrix eQTL ───────────────────────────────────────────────────
+# ── Step 1: Run Matrix eQTL ───────────────────────────────────────────
 echo ""
-echo "[1] Running Matrix eQTL (cis + trans)..."
+echo "[1] Running Matrix eQTL (cis only)..."
 echo "  SNP file    : $SNP_FILE"
 echo "  Expr file   : $EXPR_FILE"
 echo "  Cov file    : $COV_FILE"
@@ -123,37 +138,82 @@ Rscript $PIPELINE/_eQTL.R \
     "$GENE_LOC" \
     "$SNP_LOC"
 
-# ── Post-run summary ──────────────────────────────────────────────────
+# ── Step 2: Post-processing ───────────────────────────────────────────
 echo ""
-echo "[2] Results summary for $TISSUE..."
+echo "[2] Post-processing results..."
 
-CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
-TRANS_FILE="${OUTPUT_PREFIX}.trans.txt"
-PDF_FILE="${OUTPUT_PREFIX}.pdf"
-
-if [ -f "$CIS_FILE" ]; then
-    N_CIS=$(tail -n +2 "$CIS_FILE" | wc -l)
-    echo "  Cis eQTLs detected  : $N_CIS"
-    echo "  Top 5 cis eQTLs:"
-    head -6 "$CIS_FILE" | column -t
-else
-    echo "  WARNING: Cis output not found: $CIS_FILE"
+if [ ! -f "$CIS_FILE" ]; then
+    echo "  ERROR: Cis output not found: $CIS_FILE"
+    echo "  Matrix eQTL may have failed — check the error log."
+    exit 1
 fi
 
-if [ -f "$TRANS_FILE" ]; then
-    N_TRANS=$(tail -n +2 "$TRANS_FILE" | wc -l)
-    echo "  Trans eQTLs detected: $N_TRANS"
-    echo "  Top 5 trans eQTLs:"
-    head -6 "$TRANS_FILE" | column -t
-else
-    echo "  WARNING: Trans output not found: $TRANS_FILE"
-fi
+N_CIS=$(tail -n +2 "$CIS_FILE" | wc -l)
+echo "  Raw cis-eQTLs detected : $N_CIS"
 
-[ -f "$PDF_FILE" ] && echo "  QQ plot saved to    : $PDF_FILE"
+Rscript $PIPELINE/_eQTL_postprocess.R \
+    "$CIS_FILE" \
+    "$SNP_LOC" \
+    "$GENE_LOC" \
+    "$OUTPUT_PREFIX" \
+    "$FDR_THRESH" \
+    "$TOP_N"
 
+ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
+LEAD_FILE="${OUTPUT_PREFIX}.lead_snps.txt"
+FDR_FILE="${OUTPUT_PREFIX}.FDR${FDR_THRESH}.txt"
+TOP_PAIRS="${OUTPUT_PREFIX}.top${TOP_N}_for_boxplot.txt"
+
+N_FDR=$(tail -n +2 "$FDR_FILE" | wc -l)
+N_LEAD=$(wc -l < "$LEAD_FILE")
+echo "  FDR < $FDR_THRESH associations : $N_FDR"
+echo "  Unique genes with lead SNP      : $N_LEAD"
+
+# ── Step 3: Manhattan plots ───────────────────────────────────────────
+echo ""
+echo "[3] Generating Manhattan plots..."
+
+Rscript $PIPELINE/_eQTL_manhattan.R \
+    "$ANNOTATED_FILE" \
+    "$LEAD_FILE" \
+    "$OUTPUT_PREFIX" \
+    "$FDR_THRESH"
+
+echo "  Manhattan by SNP  : ${OUTPUT_PREFIX}.manhattan_by_SNP.pdf"
+echo "  Manhattan by gene : ${OUTPUT_PREFIX}.manhattan_by_gene.pdf"
+
+# ── Step 4: Boxplots ──────────────────────────────────────────────────
+echo ""
+echo "[4] Generating boxplots for top $TOP_N gene-SNP pairs..."
+
+BOXPLOT_DIR=$OUTDIR/boxplots
+mkdir -p $BOXPLOT_DIR
+
+Rscript $PIPELINE/_eQTL_boxplot.R \
+    "$TOP_PAIRS" \
+    "$SNP_FILE" \
+    "$EXPR_FILE" \
+    "$BIM" \
+    "$SNP_LOC" \
+    "$BOXPLOT_DIR"
+
+N_PLOTS=$(ls $BOXPLOT_DIR/*.pdf 2>/dev/null | wc -l)
+echo "  Boxplots written : $N_PLOTS PDFs in $BOXPLOT_DIR"
+
+# ── Final summary ─────────────────────────────────────────────────────
 echo ""
 echo "============================================"
 echo "  Matrix eQTL complete for : $TISSUE"
 echo "  Results in               : $OUTDIR"
+echo ""
+echo "  Key output files:"
+echo "  ${OUTPUT_PREFIX}.cis.txt                  (raw Matrix eQTL output)"
+echo "  ${OUTPUT_PREFIX}.full_annotated.txt        (with chr/pos, flags)"
+echo "  ${OUTPUT_PREFIX}.FDR${FDR_THRESH}.txt            (FDR-filtered)"
+echo "  ${OUTPUT_PREFIX}.lead_snps.txt             (one lead SNP per gene)"
+echo "  ${OUTPUT_PREFIX}.manhattan_by_SNP.pdf"
+echo "  ${OUTPUT_PREFIX}.manhattan_by_gene.pdf"
+echo "  $BOXPLOT_DIR/                              (top $TOP_N boxplots)"
+echo ""
 echo "  $(date)"
 echo "============================================"
