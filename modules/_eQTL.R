@@ -4,8 +4,8 @@
 # http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/
 # Usage: Rscript $PIPELINE_PATH/_eQTL.R snp.txt expression.txt cov.txt output.txt geneloc.txt snploc.txt
 # Author: Xianjun Dong (modified by Zachery Wolfe)
-# Version: 1.1
-# Date:4/2/2026
+# Version: 1.2
+# Date:4/6/2026
 ###########################################
 
 .libPaths(c("~/R/libs", .libPaths()))
@@ -28,7 +28,7 @@ pvOutputThreshold = 5e-3;
 
 # Only associations significant at this level will be saved
 pvOutputThreshold_cis = 2e-2;
-pvOutputThreshold_tra = 1e-2;
+pvOutputThreshold_tra = 0;   # removed trans eQTL analysis
 
 # Distance for local gene-SNP pairs
 cisDist = 1e6;
