@@ -10,12 +10,6 @@
 # ── target_ALS tissue summary + covariate extraction ─────────────────────────
 # Script lives in: ~/donglab/pipelines/scripts/QTL/
 # All output goes to: ~/donglab/data/target_ALS/QTL/
-#
-# For all patients with both WGS + RNAseq data:
-#   1. Per-patient tissue breakdown (which tissues each patient has RNAseq for)
-#   2. Global tissue summary (how many samples per tissue across all patients)
-#   3. Covariate summary (Detailed counts, binned ancestry, and numeric stats)
-#   4. Raw covariate extraction per sample
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -42,7 +36,6 @@ RNASEQ_META = BASE / "targetALS_rnaseq_metadata.csv"
 WGS_META    = BASE / "targetALS_wgs_metadata.csv"
 OUTDIR      = BASE / "QTL"
 
-# ── Tissue name remapping for directory walking
 TISSUE_REMAP = {
     "Motor_Cortex_Lateral":     "Motor_Cortex",
     "Motor_Cortex_Medial":      "Motor_Cortex",
@@ -100,12 +93,8 @@ all_tissues = [TISSUE_REMAP.get(t, t.replace(" ", "_")) for tissues in patient_t
 tissue_counts = Counter(all_tissues)
 
 with open(OUTDIR / "tissue_summary.txt", "w") as f:
-    f.write("==============================\n")
-    f.write(" target_ALS Tissue Summary\n")
-    f.write(f" Patients with WGS + RNAseq: {len(shared_patients)}\n")
-    f.write("==============================\n\n")
-    f.write(f"{'COUNT':<8} {'TISSUE'}\n")
-    f.write(f"{'-----':<8} {'------------------------------'}\n")
+    f.write("==============================\n target_ALS Tissue Summary\n Patients with WGS + RNAseq: "+str(len(shared_patients))+"\n==============================\n\n")
+    f.write(f"{'COUNT':<8} {'TISSUE'}\n{'-----':<8} {'------------------------------'}\n")
     for tissue, count in sorted(tissue_counts.items(), key=lambda x: -x[1]):
         f.write(f"{count:<8} {tissue}\n")
 EOF
@@ -122,11 +111,32 @@ METADATA  = f"{DATA_DIR}/targetALS_rnaseq_metadata.csv"
 OUTFILE   = f"{DATA_DIR}/QTL/covariates.tsv"
 SUMMARY   = f"{DATA_DIR}/QTL/covariate_summary.txt"
 
-# ── Mappings for grouping
+# ── Mappings
 SUBJECT_GROUP_REMAP = {
     "ALS Spectrum MND, Other Neurological Diseases": "ALS Spectrum MND, Other Neurological Disorders",
     "Non Neurological Control": "Non-Neurological Control",
 }
+
+C9_REMAP = {
+    "ND": "Unknown", "yes": "Yes", "Negative": "No",
+    "Not Applicable": "Not Applicable/NaN", "nan": "Not Applicable/NaN", "NaN": "Not Applicable/NaN"
+}
+
+# Site of Motor Onset custom logic
+def clean_motor_onset(val):
+    val = str(val).strip()
+    if val.lower() in ['nan', 'not applicable']:
+        return "Not Applicable/NaN"
+    
+    # Exceptions that contain 'limb' but stay separate
+    if any(ex in val for ex in ["Bulbar and Limb", "Bulbar/Limb", "Axial and Limb"]):
+        return val
+    
+    # Generic limb merging
+    if "limb" in val.lower() or "extremity" in val.lower():
+        return "Limb"
+    
+    return val
 
 TISSUE_REMAP = {
     "Motor Cortex Lateral": "Motor_Cortex", "Motor Cortex Medial": "Motor_Cortex",
@@ -156,16 +166,17 @@ COVARIATES = [
     "disease_duration_in_months", "post_mortem_interval_in_hours",
     "site_of_motor_onset", "c9orf72_repeat_expansion", "atxn2_repeat_expansion",
     "sex_genotype", "pct_african", "pct_south_asian", "pct_east_asian",
-    "pct_european", "pct_americas", "revised_el_escorial_criteria",
-    "phenotype_near_time_of_death", "reported_genomic_mutations"
+    "pct_european", "pct_americas"
 ]
 
 df = pd.read_csv(METADATA)
 df.columns = df.columns.str.strip()
 
-# ── Clean Data
+# Apply Cleanups
 df['subject_group'] = df['subject_group'].astype(str).str.strip().replace(SUBJECT_GROUP_REMAP)
 df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x).strip(), str(x).replace(" ", "_")))
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].astype(str).str.strip().replace(C9_REMAP)
+df['site_of_motor_onset'] = df['site_of_motor_onset'].apply(clean_motor_onset)
 
 # Sex Imputation
 df['sex'] = df['sex'].astype(str).str.capitalize()
@@ -175,7 +186,7 @@ def impute_sex(row):
     return 'Female' if 'XX' in gen else 'Male' if 'XY' in gen else row['sex']
 df.loc[mask_missing_sex, 'sex'] = df[mask_missing_sex].apply(impute_sex, axis=1)
 
-# Duration Calculation
+# Duration
 def calculate_duration(row):
     dur = pd.to_numeric(row.get("disease_duration_in_months"), errors='coerce')
     if pd.isna(dur) or dur == 0.0:
@@ -190,57 +201,42 @@ df["disease_duration_in_months"] = df.apply(calculate_duration, axis=1)
 available = [c for c in COVARIATES if c in df.columns]
 df[available].to_csv(OUTFILE, sep="\t", index=False)
 
-# ── Generate Detailed Summary
+# Summary Report
 with open(SUMMARY, "w") as f:
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Summary\n")
-    f.write(f" Total samples: {len(df)} | Total subjects: {df['externalsubjectid'].nunique()}\n")
+    f.write(" Total samples: "+str(len(df))+" | Total subjects: "+str(df['externalsubjectid'].nunique())+"\n")
     f.write("============================================================\n\n")
 
-    # 1. Categorical
     for col in ["sex", "subject_group", "tissue", "site_of_motor_onset", "c9orf72_repeat_expansion"]:
         if col not in df.columns: continue
-        f.write(f"── {col.upper()} ──────────────────────────────\n")
+        f.write("── "+col.upper()+" ──────────────────────────────\n")
         counts = df[col].value_counts(dropna=False)
         for val, cnt in counts.items():
-            f.write(f"    {str(val):<45} {cnt:>5} ({100*cnt/len(df):.1f}%)\n")
+            f.write("    "+str(val).ljust(45)+" "+str(cnt).rjust(5)+" ("+format(100*cnt/len(df), ".1f")+"%)\n")
         f.write("\n")
 
-    # 2. Numerical (Detailed Stats)
     f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
     for col in ["age_at_death", "rin", "disease_duration_in_months", "post_mortem_interval_in_hours"]:
         if col not in df.columns: continue
         s = pd.to_numeric(df[col], errors='coerce').dropna()
-        n_missing = len(df) - len(s)
         if len(s) > 0:
-            f.write(f"{col} (n={len(s)}, {n_missing} missing/non-numeric)\n")
-            f.write(f"    mean   : {s.mean():.2f} | median : {s.median():.2f} | std : {s.std():.2f}\n")
-            f.write(f"    min    : {s.min():.2f} | max    : {s.max():.2f}\n")
-            f.write(f"    25th % : {s.quantile(0.25):.2f} | 75th % : {s.quantile(0.75):.2f}\n\n")
+            f.write(col+" (n="+str(len(s))+")\n")
+            f.write("    mean: "+format(s.mean(), ".2f")+" | median: "+format(s.median(), ".2f")+" | std: "+format(s.std(), ".2f")+"\n\n")
 
-    # 3. Ancestry (Binned Distribution)
-    f.write("── ANCESTRY COVARIATES (proportion 0–1) ────────────────\n\n")
+    f.write("── ANCESTRY ───────────────────────────────────────────\n\n")
     for col in ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]:
         if col not in df.columns: continue
         s = pd.to_numeric(df[col], errors='coerce').dropna()
-        # Filter for valid proportion range to avoid skewed stats from placeholder values
         s_valid = s[(s >= 0) & (s <= 1)]
-        n_invalid = len(s) - len(s_valid)
-        
-        f.write(f"{col} (n={len(s_valid)} valid, {n_invalid} placeholder/out-of-range)\n")
-        f.write(f"    mean: {s_valid.mean():.4f} | median: {s_valid.median():.4f}\n")
-        
-        binned = pd.cut(s_valid, bins=ANCESTRY_BINS, labels=ANCESTRY_LABELS, right=False)
-        for label, cnt in binned.value_counts().sort_index().items():
-            f.write(f"      {label:<12} {cnt:>5} ({100*cnt/len(s_valid):.1f}%)\n")
-        f.write("\n")
+        if len(s_valid) > 0:
+            f.write(col+" (n="+str(len(s_valid))+")\n")
+            binned = pd.cut(s_valid, bins=ANCESTRY_BINS, labels=ANCESTRY_LABELS, right=False)
+            for label, cnt in binned.value_counts().sort_index().items():
+                f.write("      "+str(label).ljust(12)+" "+str(cnt).rjust(5)+" ("+format(100*cnt/len(s_valid), ".1f")+"%)\n")
+            f.write("\n")
 
-print(f"Summary written: {SUMMARY}")
+print("Summary written: " + SUMMARY)
 EOF
 
-echo ""
 echo "Done."
-echo "  Tissue summary       : $TISSUE_SUMMARY"
-echo "  Per-patient breakdown: $PATIENT_TISSUES"
-echo "  Covariate summary    : $COVARIATE_SUMMARY"
-echo "  Covariates (raw)     : $COVARIATES"
