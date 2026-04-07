@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prep_eQTL
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/%x_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/%x_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=499G
@@ -31,7 +31,7 @@
 #   sbatch prep_eQTL.sh "Frontal Cortex"
 #   bash   prep_eQTL.sh "Cerebellum"
 #
-# Output: $BASE/[TISSUE_DIR]/eQTL/
+# Output: $BASE/[TISSUE_DIR]/QTL/
 ###########################################
 
 set -euo pipefail
@@ -55,18 +55,18 @@ echo "============================================"
 
 # ── Paths ─────────────────────────────────────────────────────────────
 BASE=/home/zw529/donglab/data/target_ALS
-PLINK=$BASE/eQTL/plink
+PLINK=$BASE/QTL/plink
 REFS=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode
 
-EXPR=$BASE/eQTL/expression_matrix.txt
+EXPR=$BASE/QTL/expression_matrix.txt
 RAW=$PLINK/joint_autosomes_matrixEQTL.raw
-META=$BASE/eQTL/expression_sample_metadata.csv
-WGS_MAP=$BASE/eQTL/wgs_samples_for_vcf_merge.csv
-COV=$BASE/eQTL/covariates.tsv
+META=$BASE/QTL/expression_sample_metadata.csv
+WGS_MAP=$BASE/QTL/wgs_samples_for_vcf_merge.csv
+COV=$BASE/QTL/covariates.tsv
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
 GTF_BED6=$REFS/gencode.v49.annotation.gene.bed6
 
-OUTDIR=$BASE/$TISSUE_DIR/eQTL
+OUTDIR=$BASE/$TISSUE_DIR/QTL
 mkdir -p $OUTDIR
 
 TMP_META=$OUTDIR/tmp_meta.txt
