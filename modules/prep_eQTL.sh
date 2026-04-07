@@ -13,31 +13,18 @@
 # Steps:
 #   1.  Build sample mapping (HRA <-> subjectid <-> HDA)
 #   2.  Subset expression matrix to tissue samples
-#   3.  Subset + transpose SNP matrix to tissue samples -> SNP matrix is the AUTHORITATIVE sample set after this step
+#   3.  Subset + transpose SNP matrix; rename SNP rows to chr:pos (unique key) using positional join with .bim -> SNP matrix is the AUTHORITATIVE sample set after this step
 #   4.  Subset covariates to match SNP-confirmed samples
 #   5.  Align expression + covariates to exact SNP sample order/count
 #   6.  Encode covariates to numeric (Matrix eQTL requirement)
-#   7.  Generate SNP location file -> SNP names taken from .raw header (authority) matched positionally to chr/pos from .bim
-#   8.  Generate gene location file from gencode v49 BED6 -> Strips ___type___name decorator, keeps versioned ENSG ID
+#   7.  Generate SNP location file using chr:pos as snpid (matches row labels written in Step 3)
+#   8.  Generate gene location file from gencode v49 BED6
 #
-# Logic: Keeps subjects with BOTH:
-#   - RNAseq for the specified tissue in expression_sample_metadata.csv
-#   - WGS data (any tissue) in wgs_samples_for_vcf_merge.csv
-#   Subjects in the WGS manifest but absent from the .raw genotype
-#   file are automatically excluded during alignment (Step 5).
-#
-# Covariate encoding (Step 6):
-#   - sex                       -> binary (Male=1, Female=0)
-#   - ethnicity                 -> one-hot dummies (drop first level)
-#                                  normalised to lowercase before encoding
-#                                  to avoid duplicate levels from typos
-#   - subject_group             -> one-hot dummies (drop first level)
-#                                  normalised: lowercase, hyphens->underscores
-#   - subject_group_subcategory -> DROPPED (too many sparse levels)
-#   - tissue                    -> DROPPED (constant within tissue)
-#   - age_at_death, age_at_symptom_onset, rin -> numeric as-is
-#   - externalsampleid, externalsubjectid     -> DROPPED (ID cols)
-#   - other non-numeric columns -> DROPPED with warning
+# SNP naming convention:
+#   PLINK .raw uses SNPID_ALLELE format (e.g. ._AC) which is NOT unique
+#   when all variants are unnamed. We rename all SNPs to chr:pos format
+#   (e.g. chr1:10146) which is unique and human-readable.
+#   Steps 3 and 7 must always use the same naming scheme.
 #
 # Usage:
 #   sbatch prep_eQTL.sh "Cerebellum"
@@ -82,7 +69,6 @@ GTF_BED6=$REFS/gencode.v49.annotation.gene.bed6
 OUTDIR=$BASE/$TISSUE_DIR/eQTL
 mkdir -p $OUTDIR
 
-# Temp files in OUTDIR so they persist across compute nodes
 TMP_META=$OUTDIR/tmp_meta.txt
 TMP_WGS=$OUTDIR/tmp_wgs_map.txt
 TMP_MATCHED=$OUTDIR/tmp_matched.txt
@@ -173,19 +159,23 @@ echo "  Expression matrix done."
 
 ##############################################
 # STEP 3: Subset + transpose SNP matrix
-# After this step the SNP file is the AUTHORITATIVE sample set.
-# SNP row names are taken directly from the .raw header — these are
-# in PLINK's SNPID_ALLELE format (e.g. ._AC) and must be used
-# consistently in the SNP location file (Step 7).
+#
+# SNP rows are renamed from PLINK's ._ALLELE format to chr:pos
+# using a positional join with the .bim file.
+# .raw row order == .bim row order is guaranteed by PLINK.
+#
+# chr:pos is unique (one variant per genomic position after QC)
+# and is used consistently in Step 7 (SNP location file).
 ##############################################
 echo ""
-echo "[3] Subsetting and transposing SNP matrix (chunked)..."
+echo "[3] Subsetting and transposing SNP matrix (with chr:pos renaming)..."
 
 python3 << EOF
 import re
 
 ids_file = "$TMP_HDA"
 raw_file = "$RAW"
+bim_file = "$BIM"
 out_file = "$OUTDIR/snp_${TISSUE_DIR}.txt"
 
 with open(ids_file) as f:
@@ -196,11 +186,20 @@ print(f"  HDA IDs requested: {len(keep_ids)}", flush=True)
 def normalize_hda(iid):
     return re.sub(r'-b\d+$', '', iid)
 
+# Read chr:pos names from .bim (positional — same order as .raw SNP columns)
+chrpos_names = []
+with open(bim_file) as f:
+    for line in f:
+        fields = line.split()
+        chrpos_names.append(f"chr{fields[0]}:{fields[3]}")
+
+print(f"  chr:pos names from .bim: {len(chrpos_names)}", flush=True)
+
+# Read .raw, subset to matching samples, keep genotype columns
 rows = []
 with open(raw_file) as f:
     header = f.readline().split()
-    # SNP names as PLINK wrote them (SNPID_ALLELE format) — used as-is
-    snp_names = header[6:]
+    n_snps_raw = len(header) - 6   # subtract FID IID PAT MAT SEX PHENOTYPE
     for line in f:
         fields = line.split()
         iid_raw  = fields[1]
@@ -212,11 +211,15 @@ with open(raw_file) as f:
 print(f"  HDA IDs found in .raw : {len(rows)}", flush=True)
 missing = keep_ids - set(r[0] for r in rows)
 if missing:
-    print(f"  NOTE: {len(missing)} HDA IDs absent from .raw (excluded from genotype data): {list(missing)[:5]}", flush=True)
+    print(f"  NOTE: {len(missing)} HDA IDs absent from .raw: {list(missing)[:5]}", flush=True)
+
+if len(chrpos_names) != n_snps_raw:
+    print(f"  ERROR: .bim has {len(chrpos_names)} SNPs but .raw has {n_snps_raw} SNP columns", flush=True)
+    exit(1)
 
 sample_ids = [r[0] for r in rows]
 n_samples  = len(rows)
-n_snps     = len(snp_names)
+n_snps     = len(chrpos_names)
 CHUNK      = 50000
 
 with open(out_file, 'w') as out:
@@ -224,7 +227,7 @@ with open(out_file, 'w') as out:
     for chunk_start in range(0, n_snps, CHUNK):
         chunk_end = min(chunk_start + CHUNK, n_snps)
         for j in range(chunk_start, chunk_end):
-            out.write(snp_names[j] + '\t' + '\t'.join(rows[i][1][j] for i in range(n_samples)) + '\n')
+            out.write(chrpos_names[j] + '\t' + '\t'.join(rows[i][1][j] for i in range(n_samples)) + '\n')
         print(f"  Written SNPs {chunk_start}-{chunk_end} of {n_snps}", flush=True)
 
 print(f"  Done: {n_snps} SNPs x {n_samples} samples -> {out_file}", flush=True)
@@ -374,10 +377,6 @@ echo "  Alignment done."
 
 ##############################################
 # STEP 6: Encode covariates to numeric
-# Categorical variables are normalised before encoding to prevent
-# duplicate dummy columns from capitalisation/punctuation inconsistencies:
-#   - ethnicity: lowercased before level detection
-#   - subject_group: lowercased + hyphens replaced with underscores
 ##############################################
 echo ""
 echo "[6] Encoding covariates to numeric..."
@@ -396,7 +395,6 @@ NUMERIC_COLS = {'age_at_death', 'age_at_symptom_onset', 'rin'}
 ONEHOT_COLS  = {'ethnicity', 'subject_group'}
 
 def normalise_level(col, val):
-    """Normalise categorical values to prevent duplicate dummy columns."""
     v = val.strip()
     if col == 'ethnicity':
         return v.lower()
@@ -444,7 +442,6 @@ for cov_name, values in rows.items():
         continue
 
     if cov_name in ONEHOT_COLS or cov_lower in ONEHOT_COLS:
-        # Normalise values first to collapse duplicates from typos/capitalisation
         norm_values = [normalise_level(cov_lower, v) for v in values]
         levels = sorted(set(
             v for v in norm_values
@@ -459,7 +456,6 @@ for cov_name, values in rows.items():
         print(f"  One-hot: '{cov_name}' -> {len(levels)-1} dummies (ref='{ref}')", flush=True)
         continue
 
-    # Unknown column: attempt numeric coercion
     numeric_vals = []
     n_valid = 0
     for v in values:
@@ -491,54 +487,32 @@ echo "  Covariate encoding done."
 
 ##############################################
 # STEP 7: SNP location file
-# SNP names MUST match the row labels in the SNP matrix exactly.
-# The .raw file names SNPs in PLINK's SNPID_ALLELE format (e.g. ._AC).
-# We read the SNP names from the .raw header and pair them positionally
-# with chr/pos from the .bim file (same row order guaranteed by PLINK).
+# Uses chr:pos as snpid — matches row labels written in Step 3.
+# Built directly from .bim (chr col 1, pos col 4).
 ##############################################
 echo ""
-echo "[7] Generating SNP location file..."
+echo "[7] Generating SNP location file (chr:pos identifiers)..."
 
 SNP_LOC=$OUTDIR/snp_location.txt
+echo -e "snpid\tchr\tpos" > $SNP_LOC
+awk 'BEGIN{OFS="\t"} {
+    print "chr"$1":"$4, "chr"$1, $4
+}' $BIM >> $SNP_LOC
 
-python3 << EOF
-raw_file = "$RAW"
-bim_file = "$BIM"
-out_file = "$SNP_LOC"
+N_SNPS=$(tail -n +2 $SNP_LOC | wc -l)
+echo "  SNPs in location file : $N_SNPS"
 
-# Read SNP names from .raw header (columns 7 onward, space-delimited)
-with open(raw_file) as f:
-    raw_header = f.readline().split()
-snp_names = raw_header[6:]   # skip FID IID PAT MAT SEX PHENOTYPE
-print(f"  SNP names from .raw header: {len(snp_names)}", flush=True)
-
-# Read chr/pos from .bim (col 1=chr, col 4=pos), same row order as .raw SNPs
-bim_positions = []
-with open(bim_file) as f:
-    for line in f:
-        fields = line.split()
-        bim_positions.append(('chr' + fields[0], fields[3]))
-print(f"  Positions from .bim       : {len(bim_positions)}", flush=True)
-
-if len(snp_names) != len(bim_positions):
-    print(f"  ERROR: SNP count mismatch between .raw ({len(snp_names)}) and .bim ({len(bim_positions)})", flush=True)
-    exit(1)
-
-with open(out_file, 'w') as out:
-    out.write('snpid\tchr\tpos\n')
-    for name, (chrom, pos) in zip(snp_names, bim_positions):
-        out.write(f'{name}\t{chrom}\t{pos}\n')
-
-print(f"  Written {len(snp_names)} SNPs to: {out_file}", flush=True)
-EOF
-
-echo "  SNP location file done."
+# Verify uniqueness
+N_UNIQ=$(cut -f1 $SNP_LOC | tail -n +2 | sort -u | wc -l)
+echo "  Unique snpids         : $N_UNIQ"
+if [ "$N_SNPS" -ne "$N_UNIQ" ]; then
+    echo "  WARNING: $(( N_SNPS - N_UNIQ )) duplicate chr:pos entries detected"
+    echo "  This may indicate multiallelic sites — Matrix eQTL may warn about these"
+fi
+echo "  Written to: $SNP_LOC"
 
 ##############################################
 # STEP 8: Gene location file from gencode v49 BED6
-# BED6 field 4 format: ENSG00000123.7___gene_type___gene_name
-# Strip ___* suffix to recover versioned ENSG ID.
-# Versioned IDs match expression matrix directly (same gencode release).
 ##############################################
 echo ""
 echo "[8] Generating gene location file..."
