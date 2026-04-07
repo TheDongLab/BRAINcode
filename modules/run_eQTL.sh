@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=run_eQTL
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/run_eQTL_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/run_eQTL_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_eQTL_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_eQTL_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
@@ -49,10 +49,10 @@ echo "============================================"
 
 # ── Paths ─────────────────────────────────────────────────────────────
 BASE=/home/zw529/donglab/data/target_ALS
-PIPELINE=/home/zw529/donglab/pipelines/scripts/eQTL
-PLINK=$BASE/eQTL/plink
+PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
+PLINK=$BASE/QTL/plink
 
-INDIR=$BASE/$TISSUE_DIR/eQTL
+INDIR=$BASE/$TISSUE_DIR/QTL
 OUTDIR=$INDIR/results
 mkdir -p $OUTDIR
 
