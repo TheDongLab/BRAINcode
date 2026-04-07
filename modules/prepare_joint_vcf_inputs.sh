@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prepare_joint_vcf
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/prepare_joint_vcf.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/prepare_joint_vcf.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prepare_joint_vcf.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prepare_joint_vcf.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -74,6 +74,6 @@ EOF
 
 # ── Merge VCFs together:
 bcftools merge -f PASS \
-    -l /home/zw529/donglab/data/target_ALS/eQTL/vcf_merge_list.txt \
+    -l /home/zw529/donglab/data/target_ALS/QTL/vcf_merge_list.txt \
     -O z \
-    -o /home/zw529/donglab/data/target_ALS/eQTL/joint_genotyped.vcf.gz
+    -o /home/zw529/donglab/data/target_ALS/QTL/joint_genotyped.vcf.gz
