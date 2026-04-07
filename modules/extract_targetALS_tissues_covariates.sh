@@ -4,12 +4,12 @@
 #SBATCH --mem=8G
 #SBATCH --time=1:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/targetALS_covariate_tissue_summary.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/targetALS_covariate_tissue_summary.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/targetALS_covariate_tissue_summary.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/targetALS_covariate_tissue_summary.err
 
 # ── target_ALS tissue summary + covariate extraction ─────────────────────────
-# Script lives in: ~/donglab/pipelines/scripts/eQTL/
-# All output goes to: ~/donglab/data/target_ALS/eQTL/
+# Script lives in: ~/donglab/pipelines/scripts/QTL/
+# All output goes to: ~/donglab/data/target_ALS/QTL/
 #
 # For all patients with both WGS + RNAseq data:
 #   1. Per-patient tissue breakdown (which tissues each patient has RNAseq for)
@@ -41,7 +41,7 @@
 set -euo pipefail
 
 DATA_DIR="/home/zw529/donglab/data/target_ALS"
-OUTDIR="$DATA_DIR/eQTL"
+OUTDIR="$DATA_DIR/QTL"
 mkdir -p "$OUTDIR"
 
 TISSUE_SUMMARY="$OUTDIR/tissue_summary.txt"
@@ -187,8 +187,8 @@ import pandas as pd
 
 DATA_DIR = "/home/zw529/donglab/data/target_ALS"
 METADATA  = f"{DATA_DIR}/targetALS_rnaseq_metadata.csv"
-OUTFILE   = f"{DATA_DIR}/eQTL/covariates.tsv"
-SUMMARY   = f"{DATA_DIR}/eQTL/covariate_summary.txt"
+OUTFILE   = f"{DATA_DIR}/QTL/covariates.tsv"
+SUMMARY   = f"{DATA_DIR}/QTL/covariate_summary.txt"
 
 COVARIATES = [
     "externalsampleid",
