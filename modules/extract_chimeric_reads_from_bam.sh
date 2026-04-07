@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=remap_unmapped_chimeric
-#SBATCH --array=1-2
+#SBATCH --array=0-2230
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00
@@ -210,13 +210,18 @@ fi
 
 ###########################################
 # STEP 5: Cleanup intermediate files
-# Runs after circRNA calling so nothing is removed prematurely on re-runs
 ###########################################
 echo "[STEP 5] Cleaning up intermediate files..."
 
-if [[ -f "${UNMAPPED_FQ}" ]]; then
-    rm -f "${UNMAPPED_FQ}"
-    echo "[STEP 5] Removed: ${UNMAPPED_FQ}"
-fi
+# remove FASTQ
+[ -f "${UNMAPPED_FQ}" ] && rm -f "${UNMAPPED_FQ}"
 
+# remove intermediate circ files
+[ -f "${SAMPLE_DIR}/back_spliced_junction.bed" ] && rm -f "${SAMPLE_DIR}/back_spliced_junction.bed"
+[ -f "${SAMPLE_DIR}/back_spliced_junction.txt" ] && rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
+
+# remove final circ output (as requested)
+[ -f "${SAMPLE_DIR}/circularRNA_known.txt" ] && rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
+
+echo "[STEP 5] Cleanup complete"
 echo "[$(date)] Done: ${samplename}"
