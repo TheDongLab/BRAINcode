@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=build_expression_matrix
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/build_expression_matrix.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/build_expression_matrix.err
-#SBATCH --time=1:00:00
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/build_expression_matrix.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/build_expression_matrix.err
+#SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 
