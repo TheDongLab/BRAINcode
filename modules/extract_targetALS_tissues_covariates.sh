@@ -60,7 +60,7 @@ from collections import defaultdict, Counter
 BASE        = Path("/home/zw529/donglab/data/target_ALS")
 RNASEQ_META = BASE / "targetALS_rnaseq_metadata.csv"
 WGS_META    = BASE / "targetALS_wgs_metadata.csv"
-OUTDIR      = BASE / "eQTL"
+OUTDIR      = BASE / "QTL"
 
 # ── Tissue name remapping (raw directory name → canonical name)
 # Used only when writing tissue_summary.txt counts.
