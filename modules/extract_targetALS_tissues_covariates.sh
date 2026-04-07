@@ -122,17 +122,20 @@ C9_REMAP = {
     "Not Applicable": "Not Applicable/NaN", "nan": "Not Applicable/NaN", "NaN": "Not Applicable/NaN"
 }
 
-# Site of Motor Onset custom logic
 def clean_motor_onset(val):
     val = str(val).strip()
     if val.lower() in ['nan', 'not applicable']:
         return "Not Applicable/NaN"
     
-    # Exceptions that contain 'limb' but stay separate
-    if any(ex in val for ex in ["Bulbar and Limb", "Bulbar/Limb", "Axial and Limb"]):
+    # Merge Bulbar/Limb variations
+    if any(ex in val for ex in ["Bulbar and Limb", "Bulbar/Limb"]):
+        return "Bulbar and Limb"
+    
+    # Exception for Axial and Limb
+    if "Axial and Limb" in val:
         return val
     
-    # Generic limb merging
+    # Generic limb merging (Upper, Lower, Extremity)
     if "limb" in val.lower() or "extremity" in val.lower():
         return "Limb"
     
@@ -203,9 +206,10 @@ df[available].to_csv(OUTFILE, sep="\t", index=False)
 
 # Summary Report
 with open(SUMMARY, "w") as f:
+    total_n = len(df)
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Summary\n")
-    f.write(" Total samples: "+str(len(df))+" | Total subjects: "+str(df['externalsubjectid'].nunique())+"\n")
+    f.write(" Total samples: "+str(total_n)+" | Total subjects: "+str(df['externalsubjectid'].nunique())+"\n")
     f.write("============================================================\n\n")
 
     for col in ["sex", "subject_group", "tissue", "site_of_motor_onset", "c9orf72_repeat_expansion"]:
@@ -213,15 +217,16 @@ with open(SUMMARY, "w") as f:
         f.write("── "+col.upper()+" ──────────────────────────────\n")
         counts = df[col].value_counts(dropna=False)
         for val, cnt in counts.items():
-            f.write("    "+str(val).ljust(45)+" "+str(cnt).rjust(5)+" ("+format(100*cnt/len(df), ".1f")+"%)\n")
+            f.write("    "+str(val).ljust(45)+" "+str(cnt).rjust(5)+" ("+format(100*cnt/total_n, ".1f")+"%)\n")
         f.write("\n")
 
     f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
     for col in ["age_at_death", "rin", "disease_duration_in_months", "post_mortem_interval_in_hours"]:
         if col not in df.columns: continue
         s = pd.to_numeric(df[col], errors='coerce').dropna()
+        n_missing = total_n - len(s)
         if len(s) > 0:
-            f.write(col+" (n="+str(len(s))+")\n")
+            f.write(col+" (n="+str(len(s))+", "+str(n_missing)+" missing)\n")
             f.write("    mean: "+format(s.mean(), ".2f")+" | median: "+format(s.median(), ".2f")+" | std: "+format(s.std(), ".2f")+"\n\n")
 
     f.write("── ANCESTRY ───────────────────────────────────────────\n\n")
@@ -229,8 +234,10 @@ with open(SUMMARY, "w") as f:
         if col not in df.columns: continue
         s = pd.to_numeric(df[col], errors='coerce').dropna()
         s_valid = s[(s >= 0) & (s <= 1)]
+        n_missing = total_n - len(s_valid)
         if len(s_valid) > 0:
-            f.write(col+" (n="+str(len(s_valid))+")\n")
+            f.write(col+" (n="+str(len(s_valid))+", "+str(n_missing)+" missing/invalid)\n")
+            f.write("    mean: "+format(s_valid.mean(), ".4f")+" | median: "+format(s_valid.median(), ".4f")+"\n")
             binned = pd.cut(s_valid, bins=ANCESTRY_BINS, labels=ANCESTRY_LABELS, right=False)
             for label, cnt in binned.value_counts().sort_index().items():
                 f.write("      "+str(label).ljust(12)+" "+str(cnt).rjust(5)+" ("+format(100*cnt/len(s_valid), ".1f")+"%)\n")
