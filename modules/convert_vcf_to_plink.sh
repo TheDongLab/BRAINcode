@@ -4,8 +4,8 @@
 #SBATCH --mem=56G
 #SBATCH --time=12:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/eQTL/vcf_to_plink.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/eQTL/vcf_to_plink.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/vcf_to_plink.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/vcf_to_plink.err
 
 set -euo pipefail
 
@@ -14,12 +14,12 @@ module load PLINK2/avx2_20250707
 #----------------------------------------
 # INPUT (joint VCF)
 #----------------------------------------
-VCF=/home/zw529/donglab/data/target_ALS/eQTL/joint_genotyped.vcf.gz
+VCF=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped.vcf.gz
 
 #----------------------------------------
 # OUTPUT DIRECTORY
 #----------------------------------------
-OUTDIR=/home/zw529/donglab/data/target_ALS/eQTL/plink
+OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
 #----------------------------------------
