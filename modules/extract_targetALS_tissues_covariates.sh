@@ -28,6 +28,7 @@ WGS_META="$DATA_DIR/targetALS_wgs_metadata.csv"
 ORIG_BED="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 
 # Output Files
+TARGET_BED="/home/zw529/donglab/data/target_ALS/QTL/RNAQC_data/reference_subset.bed"
 SKEW_DATA="$RNAQC_DIR/calculated_skew.tsv"
 FINAL_COVARIATES="$OUTDIR/covariates.tsv"
 PATIENT_TISSUES="$OUTDIR/patient_tissue_breakdown.tsv"
@@ -36,15 +37,19 @@ COVARIATE_SUMMARY="$OUTDIR/covariate_summary.txt"
 
 # ── STEP 0: BED REFORMATTING ──────────────────────────────────────────────────
 echo 'Cleaning BED file and selecting longest genes...'
-TARGET_BED="/home/zw529/donglab/data/target_ALS/QTL/RNAQC_data/reference_subset.bed"
+
+# Temporarily disable pipefail if you use 'head' to prevent SIGPIPE crashes
+set +o pipefail
 
 grep -E '^chr([1-9]|1[0-9]|2[0-2]|X|Y)[[:space:]]' "$ORIG_BED" | \
 awk -v OFS='\t' '{split($4, a, "___"); $4=a[1]; print $1, $2, $3, $4, $5, $6, $3-$2}' | \
 sort -k7,7rn | \
 head -n 500 | \
-cut -f1-6 > "$TARGET_BED"
+cut -f1-6 > "$TARGET_BED" || true   # The '|| true' ensures grep failing doesn't kill the script
 
-echo "BED file created at $TARGET_BED"
+set -o pipefail # Turn it back on for the rest of the script
+
+echo "Proceeding to next step..."
 
 # ── STEP 1: PARALLEL SKEWNESS CALCULATION ─────────────────────────────────────
 echo "Running Parallel RNA Degradation Rescue..."
