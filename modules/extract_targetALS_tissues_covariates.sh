@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=targetALS_covariate_tissue_summary
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=80G
-#SBATCH --time=20:00:00
+#SBATCH --mem=180G
+#SBATCH --time=23:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/targetALS_covariate_tissue_summary.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/targetALS_covariate_tissue_summary.err
@@ -63,29 +63,37 @@ echo "Found $(wc -l < "$SAMPLE_LIST") STAR BAMs. Starting Skew Calculation..."
 # Worker script - optimized for memory and speed
 cat << 'EOF' > "$RNAQC_DIR/worker.py"
 import sys, subprocess, numpy as np
+
 def compute(bam, bed):
+    # Pre-process BED into a dictionary for O(1) chromosome lookup
+    gene_lookup = {}
+    with open(bed) as f:
+        for line in f:
+            p = line.split()
+            chrom, start, end = p[0], int(p[1]), int(p[2])
+            if chrom not in gene_lookup:
+                gene_lookup[chrom] = []
+            gene_lookup[chrom].append((start, end))
+
     cmd = ["samtools", "depth", "-a", "-b", bed, bam]
     try:
-        # Stream the depth data to avoid memory bloat
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True) as proc:
             bins = np.zeros(101)
-            genes = []
-            with open(bed) as f:
-                for line in f:
-                    p = line.split()
-                    genes.append((p[0], int(p[1]), int(p[2])))
-            
             if proc.stdout:
                 for line in proc.stdout:
                     parts = line.split()
                     if len(parts) < 3: continue
                     chrom, pos, depth = parts[0], int(parts[1]), int(parts[2])
-                    for g_chr, g_start, g_end in genes:
-                        if chrom == g_chr and g_start <= pos <= g_end:
-                            rel = int(((pos - g_start) / (g_end - g_start)) * 100)
-                            if 0 <= rel <= 100: bins[rel] += depth
-                            break
+                    
+                    # Optimization: Only check genes on the current chromosome
+                    if chrom in gene_lookup:
+                        for g_start, g_end in gene_lookup[chrom]:
+                            if g_start <= pos <= g_end:
+                                rel = int(((pos - g_start) / (g_end - g_start)) * 100)
+                                if 0 <= rel <= 100: bins[rel] += depth
+                                break # Found the gene, move to next position
             proc.wait()
+            
             if np.sum(bins) == 0: return "NaN"
             pos_arr = np.arange(101)
             mean = np.average(pos_arr, weights=bins)
@@ -95,7 +103,8 @@ def compute(bam, bed):
 
 if __name__ == "__main__":
     bam_path, bed_path, sid = sys.argv[1], sys.argv[2], sys.argv[3]
-    print(f"{sid}\t{compute(bam_path, bed_path)}")
+    # flush=True ensures we see progress immediately in the log/file
+    print(f"{sid}\t{compute(bam_path, bed_path)}", flush=True)
 EOF
 
 # Run parallel using xargs
