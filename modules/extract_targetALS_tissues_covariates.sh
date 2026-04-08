@@ -35,13 +35,16 @@ TISSUE_SUMMARY="$OUTDIR/tissue_summary.txt"
 COVARIATE_SUMMARY="$OUTDIR/covariate_summary.txt"
 
 # ── STEP 0: BED REFORMATTING ──────────────────────────────────────────────────
-echo "Cleaning BED file and selecting longest genes..."
-TARGET_BED="$RNAQC_DIR/reference_subset.bed"
+echo 'Cleaning BED file and selecting longest genes...'
+TARGET_BED="/home/zw529/donglab/data/target_ALS/QTL/RNAQC_data/reference_subset.bed"
 
-# Clean custom naming and take top 500 longest for signal stability
-grep -E "^chr([1-9]|1[0-9]|2[0-2]|X|Y)[[:space:]]" "$ORIG_BED" | \
-awk -v OFS="\t" '{split($4, a, "___"); $4=a[1]; print $1, $2, $3, $4, $5, $6, $3-$2}' | \
-sort -k7,7rn | head -n 500 | cut -f1-6 > "$TARGET_BED"
+grep -E '^chr([1-9]|1[0-9]|2[0-2]|X|Y)[[:space:]]' "$ORIG_BED" | \
+awk -v OFS='\t' '{split($4, a, "___"); $4=a[1]; print $1, $2, $3, $4, $5, $6, $3-$2}' | \
+sort -k7,7rn | \
+head -n 500 | \
+cut -f1-6 > "$TARGET_BED"
+
+echo "BED file created at $TARGET_BED"
 
 # ── STEP 1: PARALLEL SKEWNESS CALCULATION ─────────────────────────────────────
 echo "Running Parallel RNA Degradation Rescue..."
