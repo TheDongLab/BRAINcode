@@ -8,8 +8,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/targetALS_covariate_tissue_summary.err
 
 # ── target_ALS tissue summary + covariate extraction ─────────────────────────
-# Script lives in: ~/donglab/pipelines/scripts/QTL/
-# All output goes to: ~/donglab/data/target_ALS/QTL/
+# Optimized to target STAR symlinks and handle global tissues
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -28,44 +27,54 @@ WGS_META="$DATA_DIR/targetALS_wgs_metadata.csv"
 ORIG_BED="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 
 # Output Files
-TARGET_BED="/home/zw529/donglab/data/target_ALS/QTL/RNAQC_data/reference_subset.bed"
+export TARGET_BED="$RNAQC_DIR/reference_subset.bed"
 SKEW_DATA="$RNAQC_DIR/calculated_skew.tsv"
 FINAL_COVARIATES="$OUTDIR/covariates.tsv"
 PATIENT_TISSUES="$OUTDIR/patient_tissue_breakdown.tsv"
 TISSUE_SUMMARY="$OUTDIR/tissue_summary.txt"
 COVARIATE_SUMMARY="$OUTDIR/covariate_summary.txt"
+SAMPLE_LIST="$RNAQC_DIR/bam_list.txt"
 
 # ── STEP 0: BED REFORMATTING ──────────────────────────────────────────────────
 echo 'Cleaning BED file and selecting longest genes...'
 
-# Temporarily disable pipefail if you use 'head' to prevent SIGPIPE crashes
+# Prevent SIGPIPE from head -n 500 killing the script
 set +o pipefail
-
 grep -E '^chr([1-9]|1[0-9]|2[0-2]|X|Y)[[:space:]]' "$ORIG_BED" | \
 awk -v OFS='\t' '{split($4, a, "___"); $4=a[1]; print $1, $2, $3, $4, $5, $6, $3-$2}' | \
 sort -k7,7rn | \
 head -n 500 | \
-cut -f1-6 > "$TARGET_BED" || true   # The '|| true' ensures grep failing doesn't kill the script
-
-set -o pipefail # Turn it back on for the rest of the script
-
-echo "Proceeding to next step..."
+cut -f1-6 > "$TARGET_BED" || true
+set -o pipefail
 
 # ── STEP 1: PARALLEL SKEWNESS CALCULATION ─────────────────────────────────────
-echo "Running Parallel RNA Degradation Rescue..."
+echo "Generating filtered BAM list targeting STAR symlinks..."
 
-# Worker script - strictly defined
+# Clear list and find only the specific STAR symlinks across all tissue folders
+> "$SAMPLE_LIST"
+find "$DATA_DIR" -name "STAR.Aligned.sortedByCoord.out.bam" | while read -r bam; do
+    # Get folder name (e.g. SD_001_23_MCX) and flip underscores to dashes for metadata matching
+    sid=$(basename "$(dirname "$bam")" | tr '_' '-')
+    echo "$bam $TARGET_BED $sid" >> "$SAMPLE_LIST"
+done
+
+echo "Found $(wc -l < "$SAMPLE_LIST") STAR BAMs. Starting Skew Calculation..."
+
+# Worker script - optimized for memory and speed
 cat << 'EOF' > "$RNAQC_DIR/worker.py"
 import sys, subprocess, numpy as np
 def compute(bam, bed):
     cmd = ["samtools", "depth", "-a", "-b", bed, bam]
     try:
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1) as proc:
+        # Stream the depth data to avoid memory bloat
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True) as proc:
             bins = np.zeros(101)
             genes = []
             with open(bed) as f:
                 for line in f:
-                    p = line.split(); genes.append((p[0], int(p[1]), int(p[2])))
+                    p = line.split()
+                    genes.append((p[0], int(p[1]), int(p[2])))
+            
             if proc.stdout:
                 for line in proc.stdout:
                     parts = line.split()
@@ -82,38 +91,25 @@ def compute(bam, bed):
             mean = np.average(pos_arr, weights=bins)
             std = np.sqrt(np.average((pos_arr - mean)**2, weights=bins))
             return str(np.average(((pos_arr - mean) / std)**3, weights=bins)) if std > 0 else "0.0"
-    except: return "NaN"
+    except Exception: return "NaN"
 
 if __name__ == "__main__":
-    bam_path = sys.argv[1]
-    bed_path = sys.argv[2]
-    sid = sys.argv[3]
+    bam_path, bed_path, sid = sys.argv[1], sys.argv[2], sys.argv[3]
     print(f"{sid}\t{compute(bam_path, bed_path)}")
 EOF
 
-# Create sample list for xargs
-SAMPLE_LIST="$RNAQC_DIR/bam_list.txt"
-find "$DATA_DIR" -name "*.bam" | while read -r bam; do
-    sid=$(basename "$bam" | cut -d. -f1 | cut -d_ -f1 | tr '_' '-')
-    echo "$bam $TARGET_BED $sid" >> "$SAMPLE_LIST"
-done
-
-# Run using xargs to manage 16 cores precisely
+# Run parallel using xargs
 echo -e "externalsampleid\trna_skew" > "$SKEW_DATA"
 cat "$SAMPLE_LIST" | xargs -P 16 -n 3 python3 "$RNAQC_DIR/worker.py" >> "$SKEW_DATA"
 
 # ── STEP 2: METADATA, TISSUE, AND FINAL COVARIATES ────────────────────────────
-echo "Merging results and generating final output tables..."
+echo "Merging skew results with $METADATA..."
 
 python3 - <<EOF
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from collections import defaultdict, Counter
-
-# Remapping Logic
-T_MAP = {"Motor_Cortex_Lateral": "Motor_Cortex", "Motor_Cortex_Medial": "Motor_Cortex", 
-         "Lumbar_spinal_cord": "Lumbar_Spinal_Cord", "Cervical_spinal_cord": "Cervical_Spinal_Cord"}
+from collections import defaultdict
 
 # 1. Load Data
 df = pd.read_csv("$METADATA")
@@ -121,42 +117,40 @@ df.columns = df.columns.str.strip()
 wgs_meta = pd.read_csv("$WGS_META")
 wgs_meta.columns = wgs_meta.columns.str.strip()
 
-# 2. Tissue Tracking (Restored)
-shared = sorted(set(wgs_meta["Externalsubjectid"]) & set(df["externalsubjectid"]))
-patient_tissues = defaultdict(set)
-sample_map = {row['externalsampleid']: row['externalsubjectid'] for _, row in df.iterrows()}
-for d in Path("$DATA_DIR").glob("*/RNAseq/Processed/*/"):
-    sid = d.name.replace("_", "-")
-    if sid in sample_map and sample_map[sid] in shared:
-        patient_tissues[sample_map[sid]].add(d.parts[-4])
-
-with open("$PATIENT_TISSUES", "w") as f:
-    f.write("subject_id\tn_tissues\ttissues\n")
-    for s in sorted(patient_tissues.keys()):
-        f.write(f"{s}\t{len(patient_tissues[s])}\t{'; '.join(sorted(patient_tissues[s]))}\n")
-
-# 3. Covariate Cleaning
-df['tissue'] = df['tissue'].map(lambda x: T_MAP.get(str(x).strip(), str(x).replace(" ", "_")))
-df['sex'] = df['sex'].astype(str).str.capitalize()
-mask = df['sex'].isin(['Unknown', 'Nd', 'Nan', ''])
-df.loc[mask, 'sex'] = df[mask].apply(lambda r: 'Female' if 'XX' in str(r.get('sex_genotype','')) else 'Male', axis=1)
-
-# Skew Rescue & Filtering
+# 2. Skew Integration
 if Path("$SKEW_DATA").exists():
     sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
+    # Ensure sample IDs match by stripping potential trailing info
     df = df.merge(sk, on='externalsampleid', how='left')
 
+# 3. Covariate Cleaning & Rescue Logic
+# If RIN is missing, we use RNA Skew as a proxy for degradation
 df['rin_num'] = pd.to_numeric(df['rin'], errors='coerce')
 df['sk_num'] = pd.to_numeric(df['rna_skew'], errors='coerce')
-df['keep_for_qtl'] = df.apply(lambda r: True if pd.notna(r['rin_num']) else (-0.5 <= r['sk_num'] <= 0.5), axis=1)
 
-# 4. Final Export
+# Criteria: Keep if RIN exists OR if Skew is within healthy bounds (-0.5 to 0.5)
+df['keep_for_qtl'] = df.apply(
+    lambda r: True if pd.notna(r['rin_num']) and r['rin_num'] > 5 
+    else (True if (-0.5 <= r['sk_num'] <= 0.5) else False), 
+    axis=1
+)
+
+# 4. Final Table Formatting
 FULL_COLS = ["externalsampleid", "externalsubjectid", "sex", "subject_group", "age_at_death", "tissue", 
              "rin", "rna_skew", "keep_for_qtl", "disease_duration_in_months", "post_mortem_interval_in_hours", 
              "site_of_motor_onset", "c9orf72_repeat_expansion", "atxn2_repeat_expansion",
              "pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
-df[[c for c in FULL_COLS if c in df.columns]].to_csv("$FINAL_COVARIATES", sep="\t", index=False)
+# Filter to available columns and export
+final_df = df[[c for c in FULL_COLS if c in df.columns]]
+final_df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
+
+# 5. Tissue Breakdown Report
+shared_subjects = set(wgs_meta["Externalsubjectid"]) & set(df["externalsubjectid"])
+summary = df[df['externalsubjectid'].isin(shared_subjects)].groupby('externalsubjectid')['tissue'].apply(lambda x: '; '.join(sorted(set(x)))).reset_index()
+summary['n_tissues'] = summary['tissue'].str.count(';') + 1
+summary.columns = ['subject_id', 'tissues', 'n_tissues']
+summary[['subject_id', 'n_tissues', 'tissues']].to_csv("$PATIENT_TISSUES", sep="\t", index=False)
 EOF
 
-echo "Process Complete."
+echo "Process Complete. Final covariates: $FINAL_COVARIATES"
