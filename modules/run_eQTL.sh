@@ -8,8 +8,7 @@
 
 ###########################################
 # run_eQTL.sh
-# Purpose: Run Matrix eQTL (cis only) for a given tissue type,
-#           then post-process results and generate figures.
+# Purpose: Run Matrix eQTL for a specific Tissue AND Sex.
 #
 # Expects prep_eQTL.sh to have been run first.
 #
@@ -23,26 +22,28 @@
 #   4.  Boxplots for top 100 gene-SNP pairs (_eQTL_boxplot.R)
 #
 # Usage:
-#   sbatch run_eQTL.sh "Cerebellum"
-#   sbatch run_eQTL.sh "Frontal Cortex"
-#   bash   run_eQTL.sh "Cerebellum"
+#   sbatch run_eQTL.sh "Cerebellum" "Male"
+#   sbatch run_eQTL.sh "Cerebellum" "Female"
 ###########################################
 
 set -euo pipefail
 module load R
 
-# ── Tissue argument ───────────────────────────────────────────────────
-if [ $# -lt 1 ]; then
-    echo "ERROR: No tissue specified."
-    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\""
+# ── Arguments ─────────────────────────────────────────────────────────
+if [ $# -lt 2 ]; then
+    echo "ERROR: Missing arguments."
+    echo "Usage: sbatch run_eQTL.sh \"<TISSUE>\" \"<SEX>\""
+    echo "Example: sbatch run_eQTL.sh \"Cerebellum\" \"Male\""
     exit 1
 fi
 
 TISSUE="$1"
+STRAT_SEX="$2"
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
 echo "============================================"
 echo "  Matrix eQTL run for tissue : $TISSUE"
+echo "  Stratification             : $STRAT_SEX"
 echo "  SLURM job ID               : ${SLURM_JOB_ID:-local}"
 echo "  $(date)"
 echo "============================================"
@@ -52,7 +53,8 @@ BASE=/home/zw529/donglab/data/target_ALS
 PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
 PLINK=$BASE/QTL/plink
 
-INDIR=$BASE/$TISSUE_DIR/QTL
+# Modified to look in the sex-specific subfolder created by prep_eQTL.sh
+INDIR=$BASE/$TISSUE_DIR/QTL/$STRAT_SEX
 OUTDIR=$INDIR/results
 mkdir -p $OUTDIR
 
@@ -62,7 +64,9 @@ COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 GENE_LOC=$INDIR/gene_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
-OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
+
+# Prefix now includes stratification for clear file naming
+OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_${STRAT_SEX}_eQTL
 
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
@@ -70,7 +74,7 @@ TOP_N=100
 
 # ── Pre-flight: check input files exist ───────────────────────────────
 echo ""
-echo "[0] Checking input files exist..."
+echo "[0] Checking stratified input files in $INDIR..."
 
 MISSING=0
 for f in "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$GENE_LOC" "$SNP_LOC"; do
@@ -84,14 +88,14 @@ for f in "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$GENE_LOC" "$SNP_LOC"; do
 done
 
 if [ "$MISSING" -eq 1 ]; then
-    echo "ERROR: One or more input files are missing."
-    echo "Run: sbatch prep_eQTL.sh \"$TISSUE\" first."
+    echo "ERROR: One or more input files are missing for $STRAT_SEX."
+    echo "Run: sbatch prep_eQTL.sh \"$TISSUE\" \"$STRAT_SEX\" first."
     exit 1
 fi
 
 # ── Pre-flight: verify sample counts match ────────────────────────────
 echo ""
-echo "[0b] Verifying sample count alignment..."
+echo "[0b] Verifying sample count alignment for $STRAT_SEX cohort..."
 
 python3 << EOF
 import sys
@@ -115,13 +119,13 @@ else:
         print(f"  ERROR: Expression ({n_expr}) != SNP ({n_snp})", flush=True)
     if n_cov != n_snp:
         print(f"  ERROR: Covariates ({n_cov}) != SNP ({n_snp})", flush=True)
-    print(f"  Re-run prep_eQTL.sh to fix alignment.", flush=True)
+    print(f"  Re-run prep_eQTL.sh for $STRAT_SEX to fix alignment.", flush=True)
     sys.exit(1)
 EOF
 
 # ── Step 1: Run Matrix eQTL ───────────────────────────────────────────
 echo ""
-echo "[1] Running Matrix eQTL (cis only)..."
+echo "[1] Running Matrix eQTL (cis only) for $STRAT_SEX group..."
 echo "  SNP file    : $SNP_FILE"
 echo "  Expr file   : $EXPR_FILE"
 echo "  Cov file    : $COV_FILE"
