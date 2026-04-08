@@ -77,13 +77,30 @@ TMP_HRA_UNDER=$OUTDIR/tmp_HRA_ids_underscore.txt
 TMP_HDA=$OUTDIR/tmp_HDA_ids.txt
 
 ##############################################
-# STEP 1: Build sample mapping table
+# STEP 1: Build sample mapping + Filter for RNA Quality
 ##############################################
 echo ""
-echo "[1] Building sample mapping (HRA <-> subjectid <-> HDA) for: $TISSUE"
+echo "[1] Building sample mapping and filtering by Quality (RIN/Skew)..."
 
+# Create a 'blacklist' of samples with missing RIN and Skew > 1.0
+python3 << EOF
+import pandas as pd
+df = pd.read_csv("$COV", sep='\t')
+
+# Logic: If RIN is NaN AND Skew > 1.0, add to blacklist
+# Adjust column names if they differ in your covariates.tsv
+bad_samples = df[df['rin'].isna() & (df['rna_skew'] > 1.0)]['externalsampleid'].tolist()
+
+with open("blacklisted_samples.txt", "w") as f:
+    for s in bad_samples:
+        f.write(s + "\n")
+print(f"  Blacklisted {len(bad_samples)} samples due to low quality (No RIN + Skew > 1.0)")
+EOF
+
+# Now filter the metadata while building the mapping
 tail -n +2 $META \
     | awk -F',' -v tissue="$TISSUE" '$3 == tissue {print $2","$1}' \
+    | grep -vFf blacklisted_samples.txt \
     | sort -t',' -k1,1 \
     > $TMP_META
 
