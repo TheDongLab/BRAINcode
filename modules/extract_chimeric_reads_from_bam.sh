@@ -216,11 +216,9 @@ echo "[STEP 5] Cleaning up intermediate files..."
 
 CLEAN_OK=true
 
-# define required success outputs
 FINAL_CIRC="${SAMPLE_DIR}/circularRNA_known.txt"
 LOWCONF_CIRC="${SAMPLE_DIR}/low_conf_circularRNA_known.txt"
 
-# verify success criteria
 [ ! -s "${FINAL_CIRC}" ] && CLEAN_OK=false
 [ ! -f "${LOWCONF_CIRC}" ] && CLEAN_OK=false
 [ ! -f "${CHIM_JXN}" ] && CLEAN_OK=false
@@ -237,8 +235,10 @@ if ${CLEAN_OK}; then
     rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
     rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
 
-    # clean remap_chimeric directory
-    # KEEP ONLY: *.remap.Chimeric.out.junction
+    # remove remap BAM symlink
+    [ -L "${REMAP_BAM_LINK}" ] && rm -f "${REMAP_BAM_LINK}"
+
+    # clean remap_chimeric directory (keep only chimeric junction file)
     find "${REMAP_DIR}" -type f ! -name "*.remap.Chimeric.out.junction" -delete
 
     echo "[STEP 5] REMAP_DIR cleaned (only Chimeric.out.junction retained)"
