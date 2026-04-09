@@ -214,15 +214,38 @@ fi
 ###########################################
 echo "[STEP 5] Cleaning up intermediate files..."
 
-# remove FASTQ
-[ -f "${UNMAPPED_FQ}" ] && rm -f "${UNMAPPED_FQ}"
+CLEAN_OK=true
 
-# remove intermediate circ files
-[ -f "${SAMPLE_DIR}/back_spliced_junction.bed" ] && rm -f "${SAMPLE_DIR}/back_spliced_junction.bed"
-[ -f "${SAMPLE_DIR}/back_spliced_junction.txt" ] && rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
+# define required success outputs
+FINAL_CIRC="${SAMPLE_DIR}/circularRNA_known.txt"
+LOWCONF_CIRC="${SAMPLE_DIR}/low_conf_circularRNA_known.txt"
 
-# remove final circ output
-[ -f "${SAMPLE_DIR}/circularRNA_known.txt" ] && rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
+# verify success criteria
+[ ! -s "${FINAL_CIRC}" ] && CLEAN_OK=false
+[ ! -f "${LOWCONF_CIRC}" ] && CLEAN_OK=false
+[ ! -f "${CHIM_JXN}" ] && CLEAN_OK=false
+[ ! -f "${REMAP_BAM}" ] && CLEAN_OK=false
+
+if ${CLEAN_OK}; then
+    echo "[STEP 5] All expected outputs detected — performing full cleanup"
+
+    # remove FASTQ
+    [ -f "${UNMAPPED_FQ}" ] && rm -f "${UNMAPPED_FQ}"
+
+    # remove circ intermediate + final files
+    rm -f "${SAMPLE_DIR}/back_spliced_junction.bed"
+    rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
+    rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
+
+    # clean remap_chimeric directory
+    # KEEP ONLY: *.remap.Chimeric.out.junction
+    find "${REMAP_DIR}" -type f ! -name "*.remap.Chimeric.out.junction" -delete
+
+    echo "[STEP 5] REMAP_DIR cleaned (only Chimeric.out.junction retained)"
+
+else
+    echo "[STEP 5] WARNING: Missing expected outputs — skipping destructive cleanup" >&2
+fi
 
 echo "[STEP 5] Cleanup complete"
 echo "[$(date)] Done: ${samplename}"
