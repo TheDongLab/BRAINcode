@@ -148,47 +148,80 @@ EOF
 # STEP 3: Subset + transpose SNP (Chunked + MAF filter)
 ##############################################
 echo ""
-echo "[3] Subsetting SNPs with Chunked Processing + Sex-specific MAF..."
+echo "[3] Subsetting SNPs with NA-safe Processing + Sex-specific MAF..."
 
 python3 << EOF
 import re, numpy as np
-ids_file, raw_file, bim_file, out_file = "$TMP_HDA", "$RAW", "$BIM", "$OUTDIR/snp_${TISSUE_DIR}.txt"
 
-with open(ids_file) as f: keep_ids = set(line.strip() for line in f if line.strip())
+ids_file = "$TMP_HDA"
+raw_file = "$RAW"
+bim_file = "$BIM"
+out_file = "$OUTDIR/snp_${TISSUE_DIR}.txt"
+
+# 1. Load IDs to keep
+with open(ids_file) as f:
+    keep_ids = set(line.strip() for line in f if line.strip())
+
+# 2. Map BIM names (chr:pos)
 chrpos_names = []
 with open(bim_file) as f:
     for line in f: 
         p = line.split()
         chrpos_names.append(f"chr{p[0]}:{p[3]}")
 
+# 3. Read RAW file, subset samples, and handle "NA" strings
+sample_ids = []
 rows = []
+
+print(f"  Reading {raw_file} and subsetting samples...")
 with open(raw_file) as f:
     header = f.readline().split()
+    # Find column indices for genotypes (usually starting at index 6)
     for line in f:
         fields = line.split()
+        # Clean IID to match metadata (remove -b suffix)
         iid = re.sub(r'-b\d+$', '', fields[1])
-        if iid in keep_ids: rows.append((iid, fields[6:]))
+        if iid in keep_ids:
+            sample_ids.append(iid)
+            # Convert "NA" to np.nan, otherwise convert to float
+            genotypes = [float(v) if v != "NA" else np.nan for v in fields[6:]]
+            rows.append(genotypes)
 
-sample_ids = [r[0] for r in rows]
-# Convert to matrix for fast MAF calculation
-geno = np.array([r[1] for r in rows], dtype=float)
-# Filter for MAF > 0.05
+# Convert list of lists to a 2D numpy array
+# This will now contain np.nan where "NA" was present
+geno = np.array(rows) 
+
+# 4. Filter for MAF > 0.05 (NA-safe)
+# Use nanmean so the "NAs" don't drag the mean to NaN
 af = np.nanmean(geno, axis=0) / 2.0
 maf = np.minimum(af, 1 - af)
-keep_idx = np.where(maf > 0.05)[0]
+
+# Handle cases where all values were NA (maf becomes NaN)
+maf = np.nan_to_num(maf, nan=0.0)
+keep_idx = np.where(maf >= 0.05)[0]
 
 print(f"  Samples in SNP matrix: {len(sample_ids)}")
-print(f"  Variants passing Sex-MAF 0.05: {len(keep_idx)} of {len(chrpos_names)}")
+print(f"  Variants passing MAF 0.05: {len(keep_idx)} of {len(chrpos_names)}")
 
+# 5. Write transposed output for Matrix eQTL
 CHUNK = 50000
 with open(out_file, 'w') as out:
+    # Write header
     out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
+    
     for start in range(0, len(keep_idx), CHUNK):
         end = min(start + CHUNK, len(keep_idx))
         for i in range(start, end):
             idx = keep_idx[i]
-            # Matrix eQTL prefers integers or NA
-            vals = [str(int(v)) if not np.isnan(v) else "NA" for v in geno[:, idx]]
+            # Convert back to string; Matrix eQTL accepts "NA"
+            # We use int(v) for 0,1,2 to keep file size smaller
+            vals = []
+            for v in geno[:, idx]:
+                if np.isnan(v):
+                    vals.append("NA")
+                else:
+                    vals.append(str(int(v)))
+            
             out.write(chrpos_names[idx] + '\t' + '\t'.join(vals) + '\n')
         print(f"  Processed SNPs {start}-{end}")
 EOF
