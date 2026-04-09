@@ -98,7 +98,7 @@ EOF
 fi
 
 # ── STEP 2: METADATA, TISSUE, AND FINAL COVARIATES ────────────────────────────
-echo "Generating detailed summaries..."
+echo "Generating detailed summaries with cleaning and remapping..."
 
 python3 - <<EOF
 import pandas as pd
@@ -112,20 +112,66 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
-# 2. Cleanup & QC Logic
+# 2. REMAPPING DICTIONARIES (The stuff we built!)
+TISSUE_REMAP = {
+    'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
+    'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
+    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
+    'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
+    'Lateral motor cortex': 'Motor_Cortex', 'Cortex_Motor_Unspecified': 'Motor_Cortex',
+    'Motor Cortex': 'Motor_Cortex', 'Motor_Cortex': 'Motor_Cortex',
+    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
+    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical spinal cord': 'Cervical_Spinal_Cord',
+    'Spinal Cord Cervical': 'Cervical_Spinal_Cord', 'Spinal cord Cervical': 'Cervical_Spinal_Cord',
+    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Lumbar spinal cord': 'Lumbar_Spinal_Cord',
+    'Spinal Cord Lumbar': 'Lumbar_Spinal_Cord', 'Lumbosacral Spinal Cord': 'Lumbar_Spinal_Cord',
+    'Lumbosacaral spinal cord': 'Lumbar_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord',
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord'
+}
+
+ONSET_REMAP = {
+    'limb': 'Limb', 'Lower Limb': 'Limb', 'Upper Limb': 'Limb', 
+    'Lower Extremity': 'Limb', 'Upper Extremity': 'Limb',
+    'Lower limb': 'Limb', 'Upper limb': 'Limb', 'Upper and Lower Limbs': 'Limb',
+    'Bulbar/Limb': 'Bulbar and Limb', 'Not Applicable': 'Not Applicable/NaN',
+    'nan': 'Not Applicable/NaN'
+}
+
+# 3. CLEANING LOGIC
+# Sex
+df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
+
+# Tissue & Onset
+df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
+df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
+
+# C9orf72
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].replace({
+    'yes': 'Yes', 'Negative': 'No', 'ND': 'Unknown', 'Not Applicable': 'Not Applicable/NaN'
+})
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
+
+# Ancestry (Fixing the negative means)
+anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
+for col in anc_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+    # If values are -999 or negative, set to NaN so they don't ruin the mean
+    df.loc[df[col] < 0, col] = np.nan
+
+# 4. QC Logic
 df['rin_num'] = pd.to_numeric(df['rin'], errors='coerce')
 df['sk_num'] = pd.to_numeric(df['rna_skew'], errors='coerce')
 df['keep_for_qtl'] = df.apply(lambda r: True if (pd.notna(r['rin_num']) and r['rin_num'] > 5) or (-0.5 <= r['sk_num'] <= 0.5) else False, axis=1)
 
+# Export Final Table
 FULL_COLS = ["externalsampleid", "externalsubjectid", "sex", "subject_group", "age_at_death", "tissue", 
              "rin", "rna_skew", "keep_for_qtl", "disease_duration_in_months", "post_mortem_interval_in_hours", 
-             "site_of_motor_onset", "c9orf72_repeat_expansion", "pct_african", "pct_south_asian", 
-             "pct_east_asian", "pct_european", "pct_americas"]
+             "site_of_motor_onset", "c9orf72_repeat_expansion"] + anc_cols
 
 final_df = df[[c for c in FULL_COLS if c in df.columns]]
 final_df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 3. Covariate Summary Report
+# 5. GENERATE COVARIATE SUMMARY (The pretty one)
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(f" target_ALS Covariate Summary\n Total samples: {len(df)} | Total subjects: {df['externalsubjectid'].nunique()}\n")
@@ -146,12 +192,10 @@ with open("$COVARIATE_SUMMARY", "w") as f:
         f.write(f"    mean: {data.mean():.2f} | median: {data.median():.2f} | std: {data.std():.2f}\n\n")
 
     f.write("── ANCESTRY ───────────────────────────────────────────\n\n")
-    anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
     bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
     labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
-    
     for col in anc_cols:
-        data = pd.to_numeric(df[col], errors='coerce').dropna()
+        data = df[col].dropna()
         f.write(f"{col} (n={len(data)}, {len(df)-len(data)} missing/invalid)\n")
         f.write(f"    mean: {data.mean():.4f} | median: {data.median():.4f}\n")
         binned = pd.cut(data, bins=bins, labels=labels, right=False).value_counts().sort_index()
@@ -160,12 +204,11 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"      {b:<15} {c:>5} ({pct:>4.1f}%)\n")
         f.write("\n")
 
-# 4. Tissue Tracking & Shared Summary
+# 6. TISSUE TRACKING (WGS + RNAseq)
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 rna_subs = set(df["externalsubjectid"].dropna())
 shared = sorted(wgs_subs & rna_subs)
 
-# Map subjects to tissues for those in shared set
 shared_df = df[df['externalsubjectid'].isin(shared)]
 pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
 
@@ -181,7 +224,7 @@ with open("$TISSUE_SUMMARY", "w") as f:
     f.write(f"{'COUNT':<8} {'TISSUE'}\n")
     f.write(f"{'-----':<8} {'------------------------------'}\n")
     for t, c in sorted(t_counts.items(), key=lambda x: -x[1]):
-        f.write(f"{c:<8} {str(t).replace(' ', '_')}\n")
+        f.write(f"{c:<8} {str(t)}\n")
 EOF
 
 echo "Process Complete."
