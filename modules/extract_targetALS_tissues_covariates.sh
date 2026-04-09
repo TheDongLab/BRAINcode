@@ -112,6 +112,9 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
+# Define Ancestry Columns here so they are available for cleaning and export
+anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
+
 # 2. REMAPPING DICTIONARIES
 TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
@@ -144,16 +147,12 @@ ONSET_REMAP = {
 }
 
 # 3. CLEANING LOGIC
-# Apply string stripping to ALL columns first to remove hidden newlines/tabs
-df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+# Apply string stripping to ALL columns to remove hidden newlines
+df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
-# Sex
+# Sex, Subject Group, Tissue, Onset
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-
-# Subject Group Remapping
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
-
-# Tissue & Onset
 df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
 df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
 
@@ -163,15 +162,22 @@ df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].replace({
 })
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
+# Ancestry Cleaning (Remove negative placeholder values)
+for col in anc_cols:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df.loc[df[col] < 0, col] = np.nan
+
 # 4. QC Logic
 df['rin_num'] = pd.to_numeric(df['rin'], errors='coerce')
 df['sk_num'] = pd.to_numeric(df['rna_skew'], errors='coerce')
 df['keep_for_qtl'] = df.apply(lambda r: True if (pd.notna(r['rin_num']) and r['rin_num'] > 5) or (-0.5 <= r['sk_num'] <= 0.5) else False, axis=1)
 
 # Export Final Table
-FULL_COLS = ["externalsampleid", "externalsubjectid", "sex", "subject_group", "age_at_death", "tissue", 
+base_cols = ["externalsampleid", "externalsubjectid", "sex", "subject_group", "age_at_death", "tissue", 
              "rin", "rna_skew", "keep_for_qtl", "disease_duration_in_months", "post_mortem_interval_in_hours", 
-             "site_of_motor_onset", "c9orf72_repeat_expansion"] + anc_cols
+             "site_of_motor_onset", "c9orf72_repeat_expansion"]
+FULL_COLS = base_cols + [c for c in anc_cols if c in df.columns]
 
 final_df = df[[c for c in FULL_COLS if c in df.columns]]
 final_df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
@@ -200,14 +206,15 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
     labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
     for col in anc_cols:
-        data = df[col].dropna()
-        f.write(f"{col} (n={len(data)}, {len(df)-len(data)} missing/invalid)\n")
-        f.write(f"    mean: {data.mean():.4f} | median: {data.median():.4f}\n")
-        binned = pd.cut(data, bins=bins, labels=labels, right=False).value_counts().sort_index()
-        for b, c in binned.items():
-            pct = (c / len(data)) * 100 if len(data)>0 else 0
-            f.write(f"      {b:<15} {c:>5} ({pct:>4.1f}%)\n")
-        f.write("\n")
+        if col in df.columns:
+            data = df[col].dropna()
+            f.write(f"{col} (n={len(data)}, {len(df)-len(data)} missing/invalid)\n")
+            f.write(f"    mean: {data.mean():.4f} | median: {data.median():.4f}\n")
+            binned = pd.cut(data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+            for b, c in binned.items():
+                pct = (c / len(data)) * 100 if len(data)>0 else 0
+                f.write(f"      {b:<15} {c:>5} ({pct:>4.1f}%)\n")
+            f.write("\n")
 
 # 6. TISSUE TRACKING (WGS + RNAseq)
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
@@ -231,6 +238,3 @@ with open("$TISSUE_SUMMARY", "w") as f:
     for t, c in sorted(t_counts.items(), key=lambda x: -x[1]):
         f.write(f"{c:<8} {str(t)}\n")
 EOF
-
-echo "Process Complete."
-echo "Summary available at: $COVARIATE_SUMMARY"
