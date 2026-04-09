@@ -235,9 +235,6 @@ if ${CLEAN_OK}; then
     rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
     rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
 
-    # remove remap BAM symlink
-    [ -L "${REMAP_BAM_LINK}" ] && rm -f "${REMAP_BAM_LINK}"
-
     # clean remap_chimeric directory (keep only chimeric junction file)
     find "${REMAP_DIR}" -type f ! -name "*.remap.Chimeric.out.junction" -delete
 
