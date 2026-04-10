@@ -293,10 +293,36 @@ with open(out_file, 'w') as out:
 EOF
 
 ##############################################
-# STEP 5: Align (Full Logging)
+# STEP 5: Final Triple-Alignment (The "Force Match")
 ##############################################
 echo ""
-echo "[5] Aligning matrices..."
+echo "[5] Forcing final alignment between SNP, Expression, and Covariates..."
+
+python3 << EOF
+import pandas as pd
+
+# 1. Get the authoritative list of samples from the SNP file we just wrote
+with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'r') as f:
+    snp_samples = f.readline().strip().split('\t')[1:] # Skip 'snpid'
+
+print(f"  Authoritative SNP sample count: {len(snp_samples)}")
+
+# 2. Align Expression
+df_expr = pd.read_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index_col=0)
+# Only keep columns that are in our SNP list
+df_expr_aligned = df_expr[snp_samples]
+df_expr_aligned.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+print(f"  Expression aligned: {df_expr_aligned.shape[1]} samples")
+
+# 3. Align Covariates
+df_cov = pd.read_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t', index_col=0)
+# Note: Covariates might use HRA IDs while SNPs use HDA. 
+# If your prep script already handled the ID mapping in Step 4, 
+# you just need to ensure the columns match the SNP sample names.
+df_cov_aligned = df_cov[snp_samples]
+df_cov_aligned.to_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t')
+print(f"  Covariates aligned: {df_cov_aligned.shape[1]} samples")
+EOF
 
 ##############################################
 # STEP 6: Encode (Full One-Hot and Numeric Logic)
