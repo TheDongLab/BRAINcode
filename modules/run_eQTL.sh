@@ -15,10 +15,8 @@
 # Steps:
 #   0.  Pre-flight checks (file existence + sample count alignment)
 #   1.  Run Matrix eQTL via _eQTL.R
-#   2.  Post-process: join coordinates, flag telomeric SNPs,
-#       filter FDR, identify lead SNPs (_eQTL_postprocess.R)
-#   3.  Manhattan plots by SNP position and gene position
-#       (_eQTL_manhattan.R)
+#   2.  Post-process: join coordinates, flag telomeric SNPs, filter FDR, identify lead SNPs (_eQTL_postprocess.R)
+#   3.  Manhattan plots by SNP position and gene position (_eQTL_manhattan.R)
 #   4.  Boxplots for top 100 gene-SNP pairs (_eQTL_boxplot.R)
 #
 # Usage:
@@ -54,7 +52,7 @@ PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
 PLINK=$BASE/QTL/plink
 
 # Modified to look in the sex-specific subfolder created by prep_eQTL.sh
-INDIR=$BASE/$TISSUE_DIR/QTL/$STRAT_SEX
+INDIR=$BASE/$TISSUE_DIR/eQTL/$STRAT_SEX
 OUTDIR=$INDIR/results
 mkdir -p $OUTDIR
 
