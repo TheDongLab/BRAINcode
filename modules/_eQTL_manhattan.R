@@ -3,7 +3,6 @@
 # _eQTL_manhattan.R
 # Purpose: Generate two Manhattan plots from annotated cis-eQTL results:
 #   1. By SNP position  (standard — where is the variant?)
-#   2. By gene position (where is the affected gene?)
 #
 # Telomeric SNPs are plotted in a distinct colour but not removed.
 # Lead SNPs (one per gene) are highlighted with a diamond shape.
@@ -70,8 +69,11 @@ extreme_hits <- snp_plot[log10p > 100]
 
 message("## Creating Plot...")
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
-    geom_point(data=snp_plot[!telomeric_flag], aes(colour=as.character(chr_num %% 2)), size=0.6, alpha=0.7) +
+    # Use explicit logical checks to satisfy data.table scoping
+    geom_point(data=snp_plot[telomeric_flag == FALSE], aes(colour=as.character(chr_num %% 2)), size=0.6, alpha=0.7) +
     geom_point(data=snp_plot[telomeric_flag == TRUE], colour="#E69F00", size=0.6, alpha=0.9) +
+    
+    # Lead SNPs (Diamonds)
     geom_point(data=lead_plot, aes(x=cum_pos, y=log10p), shape=18, size=2, colour="red") +
     geom_hline(yintercept=-log10(fdr_pval_cutoff), linetype="dashed", colour="red", linewidth=0.5) +
     
@@ -81,6 +83,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p + 5, label=geneid), 
                     size=3, colour="darkgreen", fontface="italic", box.padding = 0.5) +
 
+    # Scales and Theme
     scale_colour_manual(values=c("0"="#555555", "1"="#AAAAAA")) +
     scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), breaks=snp_axis$centre, expand=c(0.01,0.01)) +
     scale_y_continuous(expand=c(0.01, 0.1)) +
