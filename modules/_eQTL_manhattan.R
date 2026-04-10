@@ -88,9 +88,14 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), breaks=snp_axis$centre, expand=c(0.01,0.01)) +
     scale_y_continuous(expand=c(0.01, 0.1)) +
     labs(title="cis-eQTL Manhattan (SNP Position)", x="Chromosome", y=expression(-log[10](p))) +
-    theme_bw() + 
-    theme(legend.position="none", panel.grid=element_blank(), axis.text.x=element_text(angle=45, hjust=1))
+theme_bw() + 
+    theme(
+        legend.position="none", 
+        panel.grid=element_blank(), 
+        axis.text.x=element_text(angle=45, hjust=1, size=8) # Smaller text to fit all chrs
+    )
 
 out_file <- paste0(out_prefix, ".manhattan_by_SNP.pdf")
-ggsave(out_file, p1, width=14, height=5)
+# WIDER CANVAS: 18x5 ensures all 22 chromosomes fit comfortably
+ggsave(out_file, p1, width=18, height=5, limitsize=FALSE)
 message("## Done: ", out_file)
