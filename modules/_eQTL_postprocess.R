@@ -61,10 +61,27 @@ eqtl_lead <- eqtl_lead[!duplicated(geneid)]
 ########################################################################
 message("## Selecting top ", top_n, " gene-SNP pairs for boxplot (N >= 3 check)...")
 
-# Load SNP matrix to check genotype counts
-# Path logic: .../eQTL/Male/results/prefix -> .../eQTL/Male/snp_TISSUE.txt
-tissue_dir_name <- basename(dirname(dirname(dirname(out_prefix))))
+# Robust way to find the tissue name (e.g., Cerebellum) from the path
+# out_prefix: .../target_ALS/Cerebellum/eQTL/Male/results/Cerebellum_Male_eQTL
+path_parts <- strsplit(out_prefix, "/")[[1]]
+# The tissue name is usually 5 levels up from the filename in your structure
+tissue_dir_name <- path_parts[length(path_parts) - 4] 
+
 snp_matrix_file <- file.path(dirname(dirname(out_prefix)), paste0("snp_", tissue_dir_name, ".txt"))
+
+# Add a safety check to the script
+if(!file.exists(snp_matrix_file)) {
+    # Fallback: look for any file starting with 'snp_' in the parent directory
+    parent_dir <- dirname(dirname(out_prefix))
+    possible_files <- list.files(parent_dir, pattern = "^snp_.*\\.txt$", full.names = TRUE)
+    if(length(possible_files) > 0) {
+        snp_matrix_file <- possible_files[1]
+    } else {
+        stop(paste("Could not find SNP matrix file in", parent_dir))
+    }
+}
+
+message(paste("## Using SNP matrix:", snp_matrix_file))
 snp_mat <- fread(snp_matrix_file, header=TRUE)
 
 # Sort all non-telomeric associations by p-value
