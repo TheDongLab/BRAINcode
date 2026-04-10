@@ -321,7 +321,7 @@ out_rows = []
 for name, vals in rows.items():
     if name.lower() in DROP: continue
     if name.lower() in NUMERIC:
-        out_rows.append((name, [str(float(v)) if v!='NA' else 'NA' for v in vals]))
+        out_rows.append((name, [str(float(v)) if v and v!='NA' else 'NA' for v in vals]))
     elif name.lower() in ONEHOT:
         levels = sorted(set(v for v in vals if v not in ('NA', '')))
         for lv in levels[1:]:
