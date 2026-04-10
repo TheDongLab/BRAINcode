@@ -168,7 +168,8 @@ if (file.exists(other_sex_file)) {
     meta[, FDR_meta := p.adjust(p_meta, method="BH")]
     
     # Save Combined Results
-    tissue_name <- basename(dirname(dirname(dirname(out_full))))
+    # dirname x4: results -> Female -> eQTL -> Cerebellum
+    tissue_name <- basename(dirname(dirname(dirname(dirname(out_full)))))
     out_meta <- file.path(combined_dir, paste0(tissue_name, "_Combined_Meta_eQTL.txt"))
     fwrite(meta[order(p_meta)], file=out_meta, sep="\t", quote=FALSE)
     
