@@ -293,35 +293,52 @@ with open(out_file, 'w') as out:
 EOF
 
 ##############################################
-# STEP 5: Final Triple-Alignment (The "Force Match")
+# STEP 5: ID Translation & Final Alignment
 ##############################################
 echo ""
-echo "[5] Forcing final alignment between SNP, Expression, and Covariates..."
+echo "[5] Translating IDs and forcing final alignment..."
 
 python3 << EOF
 import pandas as pd
 
-# 1. Get the authoritative list of samples from the SNP file we just wrote
+# 1. Load the Rosetta Stone (HRA <-> HDA mapping)
+# tmp_matched.txt format: SubjectID,HRA_ID,HDA_ID
+mapping = pd.read_csv("$TMP_MATCHED", header=None, names=['sub', 'hra', 'hda'])
+# Create a dictionary to go from HDA (Genotype) -> HRA (RNA)
+hda_to_hra = dict(zip(mapping['hda'], mapping['hra']))
+
+# 2. Get the authoritative HDA samples from the SNP file
 with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'r') as f:
-    snp_samples = f.readline().strip().split('\t')[1:] # Skip 'snpid'
+    snp_hda_samples = f.readline().strip().split('\t')[1:]
 
-print(f"  Authoritative SNP sample count: {len(snp_samples)}")
+# Translate those HDA IDs into the HRA IDs used in Expression/Covariates
+# We also apply the underscore fix used in Step 2 (HRA-001 -> HRA_001)
+target_hra_samples = [hda_to_hra[h].replace('-', '_') for h in snp_hda_samples if h in hda_to_hra]
 
-# 2. Align Expression
+print(f"  Authoritative SNP count (HDA): {len(snp_hda_samples)}")
+print(f"  Mapped RNA target count (HRA): {len(target_hra_samples)}")
+
+# 3. Align Expression
 df_expr = pd.read_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index_col=0)
-# Only keep columns that are in our SNP list
-df_expr_aligned = df_expr[snp_samples]
+# Subset and reorder to match the EXACT order of the SNP file
+df_expr_aligned = df_expr[target_hra_samples]
 df_expr_aligned.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
 print(f"  Expression aligned: {df_expr_aligned.shape[1]} samples")
 
-# 3. Align Covariates
+# 4. Align Covariates
+# Note: Covariates usually keep the hyphens in HRA IDs (un-fix the underscore)
+target_hra_cov = [h.replace('_', '-') for h in target_hra_samples]
 df_cov = pd.read_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t', index_col=0)
-# Note: Covariates might use HRA IDs while SNPs use HDA. 
-# If your prep script already handled the ID mapping in Step 4, 
-# you just need to ensure the columns match the SNP sample names.
-df_cov_aligned = df_cov[snp_samples]
+df_cov_aligned = df_cov[target_hra_cov]
+# Rename columns to match the SNP HDA IDs so Matrix eQTL sees 1:1 matches
+df_cov_aligned.columns = snp_hda_samples
 df_cov_aligned.to_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t')
-print(f"  Covariates aligned: {df_cov_aligned.shape[1]} samples")
+
+# Also update the Expression headers to HDA IDs so all 3 files use the same names
+df_expr_aligned.columns = snp_hda_samples
+df_expr_aligned.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+
+print(f"  Covariates aligned and renamed to HDA: {df_cov_aligned.shape[1]} samples")
 EOF
 
 ##############################################
