@@ -8,6 +8,7 @@
 #   4. Filter to FDR < 0.05
 #   5. Identify lead SNP per gene (lowest p-value)
 #   6. Write clean output files for downstream plotting
+#   7. Perform Sex Meta-Analysis if both sexes exist
 #
 # Usage:
 #   Rscript _eQTL_postprocess.R \
@@ -104,10 +105,76 @@ out_top <- paste0(out_prefix, ".top", top_n, "_for_boxplot.txt")
 fwrite(eqtl_top[, .(geneid, snpid)], file=out_top, sep="\t", quote=FALSE, col.names=FALSE)
 message(sprintf("   Top %d boxplot pairs   -> %s", top_n, out_top))
 
-message("## Summary:")
-message(sprintf("   Raw associations       : %d", nrow(eqtl)))
-message(sprintf("   Telomeric (flagged)    : %d", n_telo))
-message(sprintf("   FDR < %.2f            : %d", fdr_thresh, nrow(eqtl_fdr)))
-message(sprintf("   Unique genes           : %d", nrow(eqtl_lead)))
-message(sprintf("   Top %d for boxplot    : %d", top_n, nrow(eqtl_top)))
+eqtl_lead <- eqtl_fdr[order(geneid, `p-value`, pos)]
+eqtl_lead <- eqtl_lead[!duplicated(geneid)]
+
+# [EXISTING CODE] Selecting top N for boxplot...
+eqtl_top <- eqtl_fdr[!telomeric_flag == TRUE][order(`p-value`)][seq_len(min(top_n, .N))]
+
+# [EXISTING CODE] Writing standard output files...
+out_full <- paste0(out_prefix, ".full_annotated.txt")
+fwrite(eqtl, file=out_full, sep="\t", quote=FALSE)
+out_fdr <- paste0(out_prefix, ".FDR", fdr_thresh, ".txt")
+fwrite(eqtl_fdr, file=out_fdr, sep="\t", quote=FALSE)
+out_lead <- paste0(out_prefix, ".lead_snps.txt")
+fwrite(eqtl_lead, file=out_lead, sep="\t", quote=FALSE)
+out_top <- paste0(out_prefix, ".top", top_n, "_for_boxplot.txt")
+fwrite(eqtl_top[, .(geneid, snpid)], file=out_top, sep="\t", quote=FALSE, col.names=FALSE)
+
+########################################################################
+# NEW SECTION: Sex-Stratified Meta-Analysis
+########################################################################
+message("## Checking for meta-analysis opportunity...")
+
+# Determine current and opposite sex based on the output prefix path
+current_sex <- ifelse(grepl("Male", out_prefix), "Male", "Female")
+other_sex   <- ifelse(current_sex == "Male", "Female", "Male")
+
+# Construct path to the 'other' sex results
+# Assuming structure: .../eQTL/Male/results/Cerebellum_Male_eQTL.full_annotated.txt
+other_sex_file <- gsub(paste0("/", current_sex, "/"), 
+                       paste0("/", other_sex, "/"), 
+                       out_full)
+other_sex_file <- gsub(paste0("_", current_sex, "_"), 
+                       paste0("_", other_sex, "_"), 
+                       other_sex_file)
+
+if (file.exists(other_sex_file)) {
+    message(sprintf("   Found %s results. Generating Combined Meta-Analysis...", other_sex))
+    
+    # Setup Combined Directory
+    combined_dir <- gsub(paste0("/", current_sex, "/results.*"), "/Combined/results", out_full)
+    dir.create(combined_dir, showWarnings=FALSE, recursive=TRUE)
+    
+    # Load other sex
+    eqtl_other <- fread(other_sex_file, sep="\t")
+    
+    # Merge datasets on Gene and SNP
+    meta <- merge(eqtl[, .(geneid, snpid, chr, pos, beta_curr = beta, tstat_curr = `t-stat`, pval_curr = `p-value`)],
+                  eqtl_other[, .(geneid, snpid, beta_other = beta, tstat_other = `t-stat`, pval_other = `p-value`)],
+                  by=c("geneid", "snpid"))
+    
+    # Calculate Meta-P using Stouffer's Z-score method (unweighted)
+    # Z = sum(z_i) / sqrt(k)
+    meta[, z_curr  := qnorm(pval_curr / 2, lower.tail=FALSE) * sign(tstat_curr)]
+    meta[, z_other := qnorm(pval_other / 2, lower.tail=FALSE) * sign(tstat_other)]
+    meta[, z_meta  := (z_curr + z_other) / sqrt(2)]
+    meta[, p_meta  := 2 * pnorm(abs(z_meta), lower.tail=FALSE)]
+    
+    # Calculate simple average Beta for visualization
+    meta[, beta_meta := (beta_curr + beta_other) / 2]
+    
+    # FDR correction on Meta-P
+    meta[, FDR_meta := p.adjust(p_meta, method="BH")]
+    
+    # Save Combined Results
+    tissue_name <- basename(dirname(dirname(dirname(out_full))))
+    out_meta <- file.path(combined_dir, paste0(tissue_name, "_Combined_Meta_eQTL.txt"))
+    fwrite(meta[order(p_meta)], file=out_meta, sep="\t", quote=FALSE)
+    
+    message(sprintf("   Meta-analysis complete -> %s", out_meta))
+} else {
+    message(sprintf("   %s results not found yet. Skipping Meta-analysis.", other_sex))
+}
+
 message("## Done.")
