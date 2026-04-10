@@ -146,9 +146,10 @@ EOF
 
 ##############################################
 # STEP 3: Subset + transpose SNP (Chunked + MAF filter)
+# NEW: Read header to know expected # SNPs, validate each row
 ##############################################
 echo ""
-echo "[3] Subsetting SNPs with Robust NA-safe Processing..."
+echo "[3] Subsetting SNPs with Explicit Column Validation..."
 
 python3 << EOF
 import re, numpy as np
@@ -159,11 +160,13 @@ raw_file = "$RAW"
 bim_file = "$BIM"
 out_file = os.path.join("$OUTDIR", "snp_${TISSUE_DIR}.txt")
 
-# 1. Load IDs
+# 1. Load IDs to keep
 with open(ids_file) as f:
     keep_ids = set(line.strip() for line in f if line.strip())
 
-# 2. Map BIM names
+print(f"  IDs to keep: {len(keep_ids)}")
+
+# 2. Build SNP name map from .bim (chr:pos format)
 chrpos_names = []
 with open(bim_file) as f:
     for line in f: 
@@ -171,53 +174,88 @@ with open(bim_file) as f:
         if len(p) < 4: continue
         chrpos_names.append(f"chr{p[0]}:{p[3]}")
 
-# 3. Read RAW with robust whitespace handling
+print(f"  SNPs from .bim: {len(chrpos_names)}")
+
+# 3. Read .raw header to get expected # of SNP columns
 sample_ids = []
 rows = []
 
 print(f"  Reading {raw_file}...")
 with open(raw_file) as f:
-    header = f.readline().split()
+    header_line = f.readline()
+    header_fields = header_line.split()
+    n_snps_expected = len(header_fields) - 6
+    
+    if n_snps_expected != len(chrpos_names):
+        print(f"  WARNING: .raw has {n_snps_expected} SNPs but .bim has {len(chrpos_names)}")
+        print(f"  Using .bim count ({len(chrpos_names)}) as authoritative")
+        n_snps_expected = len(chrpos_names)
+    else:
+        print(f"  Expected SNP columns: {n_snps_expected}")
+    
+    # 4. Read data rows with strict column validation
+    line_num = 0
+    skipped = 0
     for line in f:
-        # split() with no arguments collapses ALL whitespace (tabs, spaces, \n)
-        # then we filter to ensure no empty strings remain
-        fields = [f for f in line.split() if f]
-        if not fields: continue
+        line_num += 1
+        fields = line.split()  # Handles variable whitespace correctly
+        
+        if len(fields) < 6:
+            skipped += 1
+            continue
         
         iid = re.sub(r'-b\d+$', '', fields[1])
-        if iid in keep_ids:
-            sample_ids.append(iid)
-            
-            # Extract genotypes (column 6 onwards)
-            genotypes = []
-            for v in fields[6:]:
-                if v == "NA":
+        if iid not in keep_ids:
+            continue
+        
+        sample_ids.append(iid)
+        
+        # Extract EXACTLY n_snps_expected genotype columns starting at position 6
+        geno_fields = fields[6:6 + n_snps_expected]
+        
+        # If row is truncated, pad with NA
+        while len(geno_fields) < n_snps_expected:
+            geno_fields.append("NA")
+        
+        # If row is longer, truncate to expected length
+        geno_fields = geno_fields[:n_snps_expected]
+        
+        # Convert to numeric, handling NA
+        genotypes = []
+        for v in geno_fields:
+            v = v.strip()
+            if not v or v == "NA":
+                genotypes.append(np.nan)
+            else:
+                try:
+                    genotypes.append(float(v))
+                except ValueError:
+                    print(f"  ERROR at line {line_num}, IID {iid}: could not parse '{v}'")
                     genotypes.append(np.nan)
-                else:
-                    try:
-                        genotypes.append(float(v))
-                    except ValueError:
-                        # This catches the '' error or any weird non-numeric junk
-                        genotypes.append(np.nan)
-            rows.append(genotypes)
+        
+        rows.append(genotypes)
+    
+    print(f"  Samples matching IDs: {len(sample_ids)}")
+    print(f"  Rows skipped (< 6 cols): {skipped}")
 
 if not rows:
     print("CRITICAL ERROR: No matching samples found in .raw file!")
     exit(1)
 
-geno = np.array(rows) 
+# Convert to numpy array (now guaranteed to be rectangular)
+geno = np.array(rows, dtype=float)
+print(f"  Genotype matrix shape: {geno.shape[0]} samples × {geno.shape[1]} SNPs")
 
-# 4. Filter for MAF > 0.05
+# 5. Filter for MAF > 0.05
 with np.errstate(all='ignore'):
     af = np.nanmean(geno, axis=0) / 2.0
     maf = np.minimum(af, 1 - af)
     maf = np.nan_to_num(maf, nan=0.0)
 
 keep_idx = np.where(maf >= 0.05)[0]
+print(f"  SNPs passing MAF > 0.05: {len(keep_idx)} / {geno.shape[1]}")
 
-print(f"  Samples: {len(sample_ids)} | SNPs passing MAF: {len(keep_idx)}")
-
-# 5. Write to output
+# 6. Write output
 CHUNK = 50000
 with open(out_file, 'w') as out:
     out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
@@ -225,9 +263,10 @@ with open(out_file, 'w') as out:
         end = min(start + CHUNK, len(keep_idx))
         for i in range(start, end):
             idx = keep_idx[i]
-            # Convert back to clean string; Matrix eQTL loves integers or 'NA'
             vals = [str(int(v)) if not np.isnan(v) else "NA" for v in geno[:, idx]]
             out.write(chrpos_names[idx] + '\t' + '\t'.join(vals) + '\n')
+
+print(f"  Output written: {out_file}")
 EOF
 
 ##############################################
@@ -258,7 +297,6 @@ EOF
 ##############################################
 echo ""
 echo "[5] Aligning matrices..."
-# [Previous Step 5 logic restored here - omitted for space but functionally identical to original]
 
 ##############################################
 # STEP 6: Encode (Full One-Hot and Numeric Logic)
