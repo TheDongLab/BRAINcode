@@ -51,9 +51,10 @@ for (i in seq_len(nrow(pairs))) {
     expr_row <- expr_mat[gene_id == G]
     if (nrow(snp_row) == 0 || nrow(expr_row) == 0) next
     
+    # FIX: unlist() ensures these are vectors, not data.table rows
     df <- data.frame(
-        expression = as.numeric(expr_row[, -1, with=FALSE]),
-        SNP        = as.numeric(snp_row[, -1, with=FALSE])
+        expression = as.numeric(unlist(expr_row[, -1, with=FALSE])),
+        SNP        = as.numeric(unlist(snp_row[, -1, with=FALSE]))
     )
     df <- df[!is.na(df$SNP) & !is.na(df$expression), ]
     df$SNP_factor <- factor(df$SNP, levels=2:0)
