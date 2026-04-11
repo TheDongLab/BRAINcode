@@ -68,9 +68,9 @@ for (i in seq_len(nrow(candidates))) {
     geno_vec <- unlist(snp_mat[snpid == sid, -1, with=FALSE])
     counts <- table(factor(geno_vec, levels=0:2))
     # Standard: At least 2 groups with at least 3 people
-    if (sum(counts >= 3) >= 2) {
-        eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
-    }
+    if (sum(counts >= 2) >= 2) {    ### adjust filter here
+    eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
+}
 }
 
 eqtl_top <- unique(rbind(eqtl_extremes, eqtl_diversity))
