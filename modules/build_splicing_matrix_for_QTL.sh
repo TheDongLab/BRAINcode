@@ -26,7 +26,7 @@ from pathlib import Path
 pd.set_option("future.no_silent_downcasting", True)
 
 BASE = Path("/home/zw529/donglab/data/target_ALS")
-OUT  = BASE / "sQTL"
+OUT  = BASE / "QTL"
 OUT.mkdir(exist_ok=True)
 
 def norm_id(x):
