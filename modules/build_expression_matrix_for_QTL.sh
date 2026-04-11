@@ -8,8 +8,14 @@
 
 set -euo pipefail
 
-# Load required modules
-module load Python/3.12.3-GCCcore-13.3.0 Python-bundle-PyPI/2024.06-GCCcore-13.3.0
+# 1. Clear existing Python paths to prevent loading 3.10 libraries
+unset PYTHONPATH
+
+# 2. Load the specific 2024a toolchain and Python 3.12
+# We use the bundle which includes compatible numpy, scipy, and pandas
+module purge
+module load Python/3.12.3-GCCcore-13.3.0
+module load Python-bundle-PyPI/2024.06-GCCcore-13.3.0
 
 python3 - <<'EOF'
 import pandas as pd
