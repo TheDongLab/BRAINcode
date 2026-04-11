@@ -113,8 +113,12 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
         plot.title = element_text(face="bold")
     )
 
-# Save output with a wide aspect ratio to fit all chromosomes
-out_file <- paste0(out_prefix, ".manhattan_by_SNP.pdf")
-ggsave(out_file, p1, width=18, height=6, units="in", limitsize=FALSE)
+# Using png() allows the cluster to "flatten" the 7 million dots into pixels
+out_file_png <- paste0(out_prefix, ".manhattan_by_SNP.png")
 
-message("## Done: ", out_file)
+# 300 DPI is high-enough quality for publication/presentation
+png(out_file_png, width=18, height=6, units="in", res=300)
+print(p1)
+dev.off()
+
+message("## Done: ", out_file_png)
