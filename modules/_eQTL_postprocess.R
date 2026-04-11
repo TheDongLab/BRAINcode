@@ -57,21 +57,33 @@ snp_mat <- fread(snp_matrix_file, header=TRUE)
 # 1. Extremes (Strongest Signal)
 eqtl_extremes <- eqtl_fdr[order(`p-value`)][1:min(500, .N), .(geneid, snpid)]
 
-# 2. Diversity Hits (Ensuring usable boxplots)
+# 2: The Diversity Hits (Target: 500 with visible effect)
 candidates <- eqtl_fdr[!(snpid %in% eqtl_extremes$snpid)][telomeric_flag == FALSE][order(`p-value`)]
 eqtl_diversity <- data.table()
 
+message("## Filtering candidates for Beta > 0.2 and Genotype Diversity...")
+
 for (i in seq_len(nrow(candidates))) {
     if (nrow(eqtl_diversity) >= 500) break
+    
+    # NEW: Effect Size Filter
+    # Ensures we don't waste time plotting "flat" significant hits
+    if (abs(candidates$beta[i]) < 0.2) next 
+    
     sid <- candidates$snpid[i]
+    
     # Check genotype distribution in SNP matrix
+    # (Using unlist on a filtered data.table row is efficient)
     geno_vec <- unlist(snp_mat[snpid == sid, -1, with=FALSE])
     counts <- table(factor(geno_vec, levels=0:2))
-    # Standard: At least 2 groups with at least 3 people
-    if (sum(counts >= 2) >= 2) {    ### adjust filter here
-    eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
+    
+    # Diversity: At least 2 groups with at least 2 people (inclusive filter)
+    if (sum(counts >= 2) >= 2) {
+        eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
+    }
 }
-}
+
+message(sprintf("## Selected %d high-diversity, high-effect pairs.", nrow(eqtl_diversity)))
 
 eqtl_top <- unique(rbind(eqtl_extremes, eqtl_diversity))
 
