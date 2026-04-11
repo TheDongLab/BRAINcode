@@ -91,13 +91,15 @@ def inverse_normal_transform(series):
 print("Applying Rank-Based Inverse Normal Transformation to PSI values...")
 junction_ids = expr['junction_id']
 numeric_data = expr.drop('junction_id', axis=1)
+sample_names = numeric_data.columns
 
-# Apply INT per junction (across samples)
-# Skip junctions with no variation (standard deviation ~ 0)
 transformed = numeric_data.apply(
     lambda x: inverse_normal_transform(x) if x.std() > 1e-9 else np.zeros(len(x)), 
-    axis=1
+    axis=1, 
+    result_type='expand'
 )
+
+transformed.columns = sample_names
 
 expr_final = pd.concat([junction_ids, transformed], axis=1)
 
