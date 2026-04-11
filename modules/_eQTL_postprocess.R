@@ -74,30 +74,26 @@ if(!file.exists(snp_matrix_file)) {
 message(paste("## Using SNP matrix for diversity check:", snp_matrix_file))
 snp_mat <- fread(snp_matrix_file, header=TRUE)
 
-# CATEGORY 1: The Extremes (Top 500 by P-value regardless of diversity)
-# This ensures you get your most significant peaks even if distribution is skewed
+# CATEGORY 1: The Extremes (Top 500 by P-value)
 eqtl_extremes <- eqtl_fdr[order(`p-value`)][1:min(500, .N), .(geneid, snpid)]
+message(sprintf("   Found %d extreme p-value hits", nrow(eqtl_extremes)))
 
-# CATEGORY 2: The High-Diversity Hits (Top 500 with N >= 3 in 2+ groups)
-# This captures the 'pretty' plots with lots of samples in each column
-candidates <- eqtl_fdr[telomeric_flag == FALSE][order(`p-value`)]
+# CATEGORY 2: The Diversity Hits (Next 500 with N >= 3)
+candidates <- eqtl_fdr[!(snpid %in% eqtl_extremes$snpid)][telomeric_flag == FALSE][order(`p-value`)]
 eqtl_diversity <- data.table()
 
 for (i in seq_len(nrow(candidates))) {
     if (nrow(eqtl_diversity) >= 500) break
-    
     sid <- candidates$snpid[i]
     geno_vec <- unlist(snp_mat[snpid == sid, -1, with=FALSE])
     counts <- table(factor(geno_vec, levels=0:2))
-    
     if (sum(counts >= 3) >= 2) {
         eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
     }
 }
+message(sprintf("   Found %d additional high-diversity hits", nrow(eqtl_diversity)))
 
-# Merge Categories
 eqtl_top <- unique(rbind(eqtl_extremes, eqtl_diversity))
-message(sprintf("   %d total pairs selected (Extremes + High-Diversity)", nrow(eqtl_top)))
 
 ########################################################################
 # Writing Output Files
