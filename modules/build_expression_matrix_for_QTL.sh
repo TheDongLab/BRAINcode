@@ -85,13 +85,17 @@ def inverse_normal_transform(series):
 print("Applying Rank-Based Inverse Normal Transformation...")
 gene_ids = expr['gene_id']
 numeric_data = expr.drop('gene_id', axis=1)
+sample_names = numeric_data.columns
 
-# Apply INT per gene (row-wise)
-# If a gene has 0 variance (all zeros), we keep it as 0 to avoid errors
+# The 'result_type=expand' is the critical fix
 transformed = numeric_data.apply(
     lambda x: inverse_normal_transform(x) if x.std() > 1e-9 else np.zeros(len(x)), 
-    axis=1
+    axis=1, 
+    result_type='expand'
 )
+
+# Restore the sample names as column headers
+transformed.columns = sample_names
 
 # Reassemble
 expr_final = pd.concat([gene_ids, transformed], axis=1)
