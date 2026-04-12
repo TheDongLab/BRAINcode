@@ -355,29 +355,29 @@ try:
     with io.open("$RAW", 'r', encoding='latin1') as f:
         header = f.readline().split()
         n_snps = len(chrpos_names)
+        
+        for line_num, line in enumerate(f, 1):
+            fields = line.split()
+            if len(fields) < 6 + n_snps:
+                continue
+            
+            # Extract individual ID and remove batch suffix if present
+            iid = fields[1]
+            iid = re.sub(r'-b\d+$', '', iid)
+            
+            if iid in keep_ids:
+                sample_ids.append(iid)
                 
-                for line_num, line in enumerate(f, 1):
-                    fields = line.split()
-                    if len(fields) < 6 + n_snps:
-                        continue
-                    
-                    # Extract individual ID and remove batch suffix if present
-                    iid = fields[1]
-                    iid = re.sub(r'-b\d+$', '', iid)
-                    
-                    if iid in keep_ids:
-                        sample_ids.append(iid)
-                        
-                        # Extract genotypes (0, 1, 2, or NA)
-                        geno_fields = fields[6:6+n_snps]
-                        geno_row = []
-                        for v in geno_fields:
-                            try:
-                                geno_row.append(float(v))
-                            except (ValueError, TypeError):
-                                geno_row.append(np.nan)
-                        
-                        rows.append(geno_row)
+                # Extract genotypes (0, 1, 2, or NA)
+                geno_fields = fields[6:6+n_snps]
+                geno_row = []
+                for v in geno_fields:
+                    try:
+                        geno_row.append(float(v))
+                    except (ValueError, TypeError):
+                        geno_row.append(np.nan)
+                
+                rows.append(geno_row)
     
     if not rows:
         print("ERROR: No matching genomic samples found.", file=sys.stderr)
