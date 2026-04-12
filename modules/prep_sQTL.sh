@@ -329,13 +329,16 @@ python3 << EOF
 import re
 import numpy as np
 import sys
+import io
 
 try:
+    # Read HDA (WGS) sample IDs
     with open("$TMP_HDA", 'r') as f:
         keep_ids = set(line.strip() for line in f if line.strip())
     
     print(f"Looking for {len(keep_ids)} WGS samples", file=sys.stderr)
     
+    # Read BIM file to get SNP names and positions
     chrpos_names = []
     with open("$BIM", 'r') as f:
         for line in f:
@@ -345,26 +348,35 @@ try:
     
     print(f"Found {len(chrpos_names)} SNPs in BIM file", file=sys.stderr)
     
+    # Read RAW file and extract genotypes - use latin1 which accepts all bytes
     sample_ids = []
     rows = []
     
-    # Read RAW file line by line, splitting on tab
-    with open("$RAW", 'r', encoding='latin1') as f:
+    with io.open("$RAW", 'r', encoding='utf-8', errors='surrogateescape') as f:
+        header = f.readline().split()
+        n_snps = len(chrpos_names)
+        
         for line_num, line in enumerate(f, 1):
             fields = line.split()
-            if line_num == 1:
-                continue  # Skip header
-            
-            if len(fields) < 6 + len(chrpos_names):
+            if len(fields) < 6 + n_snps:
                 continue
             
+            # Extract individual ID and remove batch suffix if present
             iid = fields[1]
             iid = re.sub(r'-b\d+$', '', iid)
             
             if iid in keep_ids:
                 sample_ids.append(iid)
-                geno_fields = fields[6:6+len(chrpos_names)]
-                geno_row = [float(v) if v != 'NA' else np.nan for v in geno_fields]
+                
+                # Extract genotypes (0, 1, 2, or NA)
+                geno_fields = fields[6:6+n_snps]
+                geno_row = []
+                for v in geno_fields:
+                    try:
+                        geno_row.append(float(v))
+                    except (ValueError, TypeError):
+                        geno_row.append(np.nan)
+                
                 rows.append(geno_row)
     
     if not rows:
@@ -373,17 +385,26 @@ try:
     
     print(f"Found genotypes for {len(sample_ids)} samples", file=sys.stderr)
     
+    # Convert to numpy array
     geno = np.array(rows, dtype=float)
+    
+    # Calculate allele frequency and MAF
     af = np.nanmean(geno, axis=0) / 2.0
     maf = np.minimum(af, 1 - af)
     keep_idx = np.where(np.nan_to_num(maf) >= 0.05)[0]
     
     print(f"Keeping {len(keep_idx)} SNPs with MAF >= 0.05", file=sys.stderr)
     
+    # Write output
     with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'w') as out:
         out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
         for idx in keep_idx:
-            vals = ['NA' if np.isnan(v) else str(int(v)) for v in geno[:, idx]]
+            vals = []
+            for v in geno[:, idx]:
+                if np.isnan(v):
+                    vals.append('NA')
+                else:
+                    vals.append(str(int(v)))
             out.write(chrpos_names[idx] + '\t' + '\t'.join(vals) + '\n')
     
     print("SNP file written successfully", file=sys.stderr)
