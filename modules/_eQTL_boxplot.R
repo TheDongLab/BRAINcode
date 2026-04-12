@@ -56,31 +56,49 @@ for (i in seq_len(nrow(pairs))) {
         }, error = function(e) list(p="Err", beta=0))
     }
 
-    # Plotting Layout
-    par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,2,0))
-    
-    # PANEL 1: Additive
+    # Layout Setup
+    par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
+    ylab_text <- "Normalized Expression (Z-score)"
+
+    # Helper function to generate labels with N=
+    get_n_labels <- function(vec, base_labels) {
+        counts <- table(factor(vec, levels = 0:(length(base_labels)-1)))
+        paste0(base_labels, "\n(N=", counts, ")")
+    }
+
+    # PANEL 1: Additive Model
     res <- get_stats(expression ~ SNP, df)
-    df$SNP_f <- factor(df$SNP, levels=0:2, labels=c("0","1","2"))
+    add_labels <- get_n_labels(df$SNP, c("Ref/Ref", "Het", "Hom Alt"))
+    df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
+    
     boxplot(expression ~ SNP_f, data=df, col="lightgreen", outline=F,
-            ylab="Z-score", main=paste0("Additive (p=", res$p, ")"))
+            ylab=ylab_text, xlab="Genotype",
+            main=paste0("Additive Model\n(p = ", res$p, ")"))
     stripchart(expression ~ SNP_f, data=df, vertical=T, method="jitter", add=T, pch=1, col="darkred")
 
-    # PANEL 2: Dominant
-    df$dom <- factor(ifelse(df$SNP > 0, 1, 0), levels=0:1, labels=c("0", "1+"))
-    res_d <- get_stats(expression ~ dom, df)
+    # PANEL 2: Dominant Model
+    df$dom_val <- ifelse(df$SNP > 0, 1, 0)
+    dom_labels <- get_n_labels(df$dom_val, c("Ref/Ref", "Any Alt"))
+    df$dom <- factor(df$dom_val, levels=0:1, labels=dom_labels)
+    res_d <- get_stats(expression ~ dom_val, df)
+    
     boxplot(expression ~ dom, data=df, col="lightblue", outline=F,
-            main=paste0("Dom (p=", res_d$p, ")"))
+            ylab=ylab_text, xlab="Genotype Grouping",
+            main=paste0("Dominant Model\n(p = ", res_d$p, ")"))
     stripchart(expression ~ dom, data=df, vertical=T, method="jitter", add=T, pch=1, col="darkred")
 
-    # PANEL 3: Recessive
-    df$rec <- factor(ifelse(df$SNP == 2, 1, 0), levels=0:1, labels=c("<2", "2"))
-    res_r <- get_stats(expression ~ rec, df)
+    # PANEL 3: Recessive Model
+    df$rec_val <- ifelse(df$SNP == 2, 1, 0)
+    rec_labels <- get_n_labels(df$rec_val, c("Non-Hom Alt", "Hom Alt"))
+    df$rec <- factor(df$rec_val, levels=0:1, labels=rec_labels)
+    res_r <- get_stats(expression ~ rec_val, df)
+    
     boxplot(expression ~ rec, data=df, col="lightpink", outline=F,
-            main=paste0("Rec (p=", res_r$p, ")"))
+            ylab=ylab_text, xlab="Genotype Grouping",
+            main=paste0("Recessive Model\n(p = ", res_r$p, ")"))
     stripchart(expression ~ rec, data=df, vertical=T, method="jitter", add=T, pch=1, col="darkred")
 
-    mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.2, font=2)
+    mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.3, font=2, line=0.5)
 }
 
 dev.off()
