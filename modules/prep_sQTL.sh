@@ -64,7 +64,7 @@ try:
     
     for enc in encodings:
         try:
-            with open(sys.argv[1] if len(sys.argv) > 1] else "/dev/null", 'r', encoding=enc, errors='replace') as f:
+            with open(sys.argv[1] if len(sys.argv) > 1 else "/dev/null", 'r', encoding=enc, errors='replace') as f:
                 header = f.readline()  # Skip header
                 with open(sys.argv[2] if len(sys.argv) > 2 else "/dev/null", 'w') as out:
                     for line in f:
