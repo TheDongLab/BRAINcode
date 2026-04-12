@@ -356,7 +356,7 @@ try:
     
     for enc in encodings:
         try:
-            with open("$RAW", 'r', encoding=enc, errors='replace') as f:
+            with open("$RAW", 'r', encoding=enc, errors='ignore') as f:
                 header = f.readline().split()
                 n_snps = len(chrpos_names)
                 
