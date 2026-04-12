@@ -33,7 +33,7 @@ SPLICING_RAW=$BASE/QTL/splicing_matrix.txt
 SPLICING_LOC_SRC=$BASE/QTL/splicing_events_hg38.bed 
 
 RAW=$PLINK/joint_autosomes_matrixEQTL.raw
-META=$BASE/QTL/splicing_sample_metadata.csv
+META=$BASE/QTL/expression_sample_metadata.csv
 WGS_MAP=$BASE/QTL/wgs_samples_for_vcf_merge.csv
 COV=$BASE/QTL/covariates.tsv
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
@@ -217,10 +217,10 @@ import sys
 try:
     # Read the temp files
     meta = pd.read_csv("$TMP_META", header=None, names=['sample_id', 'subject_id'])
-    wgs = pd.read_csv("$TMP_WGS", header=None, names=['sample_id', 'wgs_id'])
+    wgs = pd.read_csv("$TMP_WGS", header=None, names=['subject_id', 'wgs_id'])
     
-    # Merge on sample_id
-    merged = meta.merge(wgs, on='sample_id', how='inner')
+    # Merge on subject_id (WGS file is keyed by subject, not sample)
+    merged = meta.merge(wgs, on='subject_id', how='inner')
     
     # Write matched file
     with open("$TMP_MATCHED", 'w') as f:
