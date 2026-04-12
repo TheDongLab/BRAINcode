@@ -33,7 +33,7 @@ SPLICING_RAW=$BASE/QTL/splicing_matrix.txt
 SPLICING_LOC_SRC=$BASE/QTL/splicing_events_hg38.bed 
 
 RAW=$PLINK/joint_autosomes_matrixEQTL.raw
-META=$BASE/QTL/expression_sample_metadata.csv
+META=$BASE/QTL/splicing_sample_metadata.csv
 WGS_MAP=$BASE/QTL/wgs_samples_for_vcf_merge.csv
 COV=$BASE/QTL/covariates.tsv
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
@@ -181,9 +181,9 @@ try:
         raise ValueError("Could not read WGS map file with any encoding")
     
     # Filter metadata by tissue
-    tissue_col = df_meta.columns[2]  # Assume tissue is 3rd column
-    sample_col = df_meta.columns[1]  # Assume sample ID is 2nd column
-    subject_col = df_meta.columns[0]  # Assume subject ID is 1st column
+    sample_col = df_meta.columns[0]  # externalsampleid is 1st column
+    subject_col = df_meta.columns[1]  # externalsubjectid is 2nd column
+    tissue_col = df_meta.columns[2]  # tissue is 3rd column
     
     df_meta_filt = df_meta[df_meta[tissue_col] == "$TISSUE"]
     df_meta_filt = df_meta_filt[df_meta_filt[sample_col].isin(keep_samples)]
