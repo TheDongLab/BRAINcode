@@ -255,14 +255,21 @@ EOF
 # STEP 2: Subset Splicing Matrix
 ##############################################
 echo "[2] Processing Splicing Matrix..."
-Rscript - << EOF
+
+# Write R script to temp file (avoids heredoc variable expansion issues)
+cat > "$OUTDIR/step2.R" << 'REOF'
 library(data.table)
 
 tryCatch({
-    keep_ids <- fread("$TMP_HRA_UNDER", header=FALSE)[, V1]
+    tmp_hra_under <- Sys.getenv("TMP_HRA_UNDER")
+    splicing_raw <- Sys.getenv("SPLICING_RAW")
+    outdir <- Sys.getenv("OUTDIR")
+    tissue_dir <- Sys.getenv("TISSUE_DIR")
     
-    print(paste("Reading splicing matrix from:", "$SPLICING_RAW"))
-    full_data <- fread("$SPLICING_RAW", header=TRUE, fill=TRUE)
+    keep_ids <- fread(tmp_hra_under, header=FALSE)[, V1]
+    
+    print(paste("Reading splicing matrix from:", splicing_raw))
+    full_data <- fread(splicing_raw, header=TRUE, fill=TRUE)
     
     print(paste("Found", nrow(full_data), "rows and", ncol(full_data), "columns"))
     
@@ -285,14 +292,22 @@ tryCatch({
     print(paste("After variance filtering:", nrow(splicing), "rows"))
     
     # Write output
-    fwrite(splicing, "$OUTDIR/splicing_${TISSUE_DIR}.txt", sep="\t", quote=FALSE)
+    output_file <- paste0(outdir, "/splicing_", tissue_dir, ".txt")
+    fwrite(splicing, output_file, sep="\t", quote=FALSE)
     print("Splicing matrix written successfully")
     
 }, error = function(e) {
     print(paste("ERROR in STEP 2:", e$message))
     quit(status=1)
 })
-EOF
+REOF
+
+# Run with environment variables
+TMP_HRA_UNDER="$TMP_HRA_UNDER" \
+SPLICING_RAW="$SPLICING_RAW" \
+OUTDIR="$OUTDIR" \
+TISSUE_DIR="$TISSUE_DIR" \
+Rscript "$OUTDIR/step2.R"
 
 ##############################################
 # STEP 3: Subset + Transpose SNPs
