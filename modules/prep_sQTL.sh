@@ -54,7 +54,7 @@ CLEAN_COV=$OUTDIR/covariates_stratified.tsv
 # STEP 0: Generate BED from Matrix IDs
 ##############################################
 echo "[0] Generating BED file from matrix IDs..."
-python3 << 'EOF'
+python3 << EOF
 import sys
 
 # Read splicing matrix and extract coordinates
@@ -95,7 +95,7 @@ EOF
 # STEP 1: Build sample mapping
 ##############################################
 echo "[1] Building sample mapping..."
-python3 << 'EOF'
+python3 << EOF
 import pandas as pd
 import sys
 import os
@@ -210,7 +210,7 @@ except Exception as e:
 EOF
 
 # Join metadata with WGS mapping using Python (more robust than bash join)
-python3 << 'EOF'
+python3 << EOF
 import pandas as pd
 
 try:
@@ -254,7 +254,7 @@ EOF
 # STEP 2: Subset Splicing Matrix
 ##############################################
 echo "[2] Processing Splicing Matrix..."
-Rscript - << 'EOF'
+Rscript - << EOF
 library(data.table)
 
 tryCatch({
@@ -297,7 +297,7 @@ EOF
 # STEP 3: Subset + Transpose SNPs
 ##############################################
 echo "[3] Subsetting SNPs..."
-python3 << 'EOF'
+python3 << EOF
 import re
 import numpy as np
 import sys
@@ -391,7 +391,7 @@ EOF
 # STEP 4: Subset Covariates
 ##############################################
 echo "[4] Subsetting Covariates..."
-python3 << 'EOF'
+python3 << EOF
 import pandas as pd
 
 try:
@@ -431,7 +431,7 @@ EOF
 # STEP 5: ID Translation & Final Alignment
 ##############################################
 echo "[5] Final Alignment..."
-python3 << 'EOF'
+python3 << EOF
 import pandas as pd
 import sys
 
@@ -511,7 +511,7 @@ EOF
 # STEP 6: Encode Covariates
 ##############################################
 echo "[6] Encoding Covariates..."
-python3 << 'EOF'
+python3 << EOF
 import csv
 import sys
 
@@ -570,7 +570,7 @@ EOF
 # STEP 7: SNP location
 ##############################################
 echo "[7] Generating SNP location file..."
-python3 << 'EOF'
+python3 << EOF
 import sys
 
 try:
@@ -597,7 +597,7 @@ EOF
 # STEP 8: Splicing location
 ##############################################
 echo "[8] Generating splicing location file..."
-python3 << 'EOF'
+python3 << EOF
 import sys
 
 try:
