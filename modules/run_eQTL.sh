@@ -83,7 +83,7 @@ Rscript $PIPELINE/_eQTL_postprocess.R \
 
 ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
 LEAD_FILE="${OUTPUT_PREFIX}.lead_snps.txt"
-TOP_PAIRS="${OUTPUT_PREFIX}.top${TOP_N}_for_boxplot.txt"
+TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
 # Updated: Now only generates the SNP-position plot with "needle" labels.
@@ -92,7 +92,7 @@ Rscript $PIPELINE/_eQTL_manhattan.R \
     "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
-# Updated: Now includes diversity checks (skips plots with N < 3 per group).
+# Updated: Now includes diversity checks
 echo "[4] Generating boxplots for top $TOP_N pairs..."
 BOXPLOT_DIR=$OUTDIR/boxplots
 mkdir -p $BOXPLOT_DIR
@@ -104,7 +104,7 @@ Rscript $PIPELINE/_eQTL_boxplot.R \
 echo "============================================"
 echo "  Matrix eQTL complete for : $TISSUE ($STRAT_SEX)"
 echo "  Results: $OUTDIR"
-echo "  Manhattan Plot: ${OUTPUT_PREFIX}.manhattan_by_SNP.pdf"
+echo "  Manhattan Plot: ${OUTPUT_PREFIX}.manhattan_by_SNP.png"
 echo "  Boxplots: $BOXPLOT_DIR/"
 echo "  $(date)"
 echo "============================================"
