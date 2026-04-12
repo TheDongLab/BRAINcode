@@ -212,6 +212,7 @@ EOF
 # Join metadata with WGS mapping using Python (more robust than bash join)
 python3 << EOF
 import pandas as pd
+import sys
 
 try:
     # Read the temp files
