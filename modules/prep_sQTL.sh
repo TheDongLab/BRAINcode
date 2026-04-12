@@ -329,6 +329,7 @@ python3 << EOF
 import re
 import numpy as np
 import sys
+import io
 
 try:
     # Read HDA (WGS) sample IDs
@@ -347,18 +348,13 @@ try:
     
     print(f"Found {len(chrpos_names)} SNPs in BIM file", file=sys.stderr)
     
-    # Read RAW file and extract genotypes with encoding fallback
+    # Read RAW file and extract genotypes - use latin1 which accepts all bytes
     sample_ids = []
     rows = []
     
-    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-    raw_opened = False
-    
-    for enc in encodings:
-        try:
-            with open("$RAW", 'r', encoding=enc, errors='ignore') as f:
-                header = f.readline().split()
-                n_snps = len(chrpos_names)
+    with io.open("$RAW", 'r', encoding='latin1') as f:
+        header = f.readline().split()
+        n_snps = len(chrpos_names)
                 
                 for line_num, line in enumerate(f, 1):
                     fields = line.split()
@@ -382,14 +378,6 @@ try:
                                 geno_row.append(np.nan)
                         
                         rows.append(geno_row)
-            raw_opened = True
-            print(f"Successfully read RAW file with encoding: {enc}", file=sys.stderr)
-            break
-        except UnicodeDecodeError:
-            continue
-    
-    if not raw_opened:
-        raise ValueError("Could not read RAW file with any encoding")
     
     if not rows:
         print("ERROR: No matching genomic samples found.", file=sys.stderr)
