@@ -32,8 +32,8 @@ for (i in seq_len(nrow(pairs))) {
     if (nrow(expr_row) == 0 || nrow(snp_row) == 0) next
     
     df <- data.frame(
-        expression = as.numeric(expr_row[, -1, with=FALSE]),
-        SNP = as.numeric(snp_row[, -1, with=FALSE])
+        expression = as.numeric(unlist(expr_row[, -1, with = FALSE])),
+        SNP = as.numeric(unlist(snp_row[, -1, with=FALSE])),
     )
     df <- df[!is.na(df$SNP), ]
     
