@@ -26,14 +26,14 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: FORCE VCF → PLINK2 IMPORT
+# STEP 1: VCF → PLINK2 (MANDATORY IMPORT LOGIC)
 #----------------------------------------
-# --allow-no-sex is the key here. It stops the crash.
-# --split-par hg38 handles the PAR regions correctly for hg38 coordinates.
+# PLINK2 requires --impute-sex HERE to handle chrX during import.
+# Step 3: Satisfied by limiting to chr1-22, X, Y, M (primary hg38 assembly).
 plink2 --vcf ${VCF} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
-       --allow-no-sex \
+       --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
        --make-pgen \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
@@ -41,7 +41,6 @@ plink2 --vcf ${VCF} \
 #----------------------------------------
 # STEP 2 & 5: THE "FEEL" REPORTS (Histograms)
 #----------------------------------------
-# We do this immediately so you can see why the 95% filter is failing.
 plink2 --pfile ${RAW_PREFIX} --missing --out ${OUTDIR}/qc_distribution
 
 Rscript -e "
@@ -49,47 +48,46 @@ Rscript -e "
     vmiss <- read.table('${OUTDIR}/qc_distribution.vmiss', header=TRUE);
     pdf('${OUTDIR}/qc_histograms.pdf', width=10, height=5);
     par(mfrow=c(1,2));
+    # Step 2: Subject Call Rate
     hist(1 - smiss\$F_MISS, main='Subject Call Rates', xlab='Call Rate', col='skyblue', breaks=50);
     abline(v=0.95, col='red', lty=2);
+    # Step 5: SNP Genotyping Rate
     hist(1 - vmiss\$F_MISS, main='SNP Genotyping Rates', xlab='Genotyping Rate', col='salmon', breaks=50);
     abline(v=0.95, col='red', lty=2);
     dev.off();
 "
 
 #----------------------------------------
-# STEP 4: IMPUTE & CHECK SEX (The logic you needed)
+# STEP 4, 9, 10: QC CHECKS
 #----------------------------------------
-# 1. First, we impute sex and create a NEW .psam file.
+# Step 4: Check Sex (Thresholds: 0.2/0.8)
 plink2 --pfile ${RAW_PREFIX} \
-       --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
-       --make-psam \
-       --out ${OUTDIR}/imputed_metadata
+       --check-sex max-female-xf=0.2 min-male-xf=0.8 \
+       --out ${QC_SAMPLE_PREFIX}
 
-# 2. IMPORTANT: We replace the "empty" psam with the "imputed" one.
-# This "teaches" PLINK the sex of your samples.
-cp ${OUTDIR}/imputed_metadata.psam ${RAW_PREFIX}.psam
-
-# 3. Now run the check-sex and other checks.
-plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
+# Step 9: Heterozygosity
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
+
+# Step 10: Relatedness (KING PI_HAT > 0.9)
 plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
 
-#----------------------------------------
-# EXTRACTION & FINAL FILTER
-#----------------------------------------
-grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print \$1, \$2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
-awk 'NR>1 && (\$6 > 0.2 || \$6 < -0.2) {print \$1, \$2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
-
+# --- ID EXTRACTION ---
+grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+awk 'NR>1 && ($6 > 0.2 || $6 < -0.2) {print $1, $2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
 cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
 
-# Final Step: If this still results in "No samples remaining", your histograms 
-# from the R script will show you exactly how much to lower the 0.05 thresholds.
+#----------------------------------------
+# STEP 2, 5, 6, 8: FINAL FILTERING
+#----------------------------------------
+# Step 6: HWE (catch artifacts/mishaps)
+# Step 8: MAF 0.05
 plink2 --pfile ${RAW_PREFIX} \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
        --geno 0.05 \
        --hwe 1e-6 \
        --maf 0.05 \
+       --max-alleles 2 \
        --make-pgen \
        --out ${FILTERED_PREFIX}
 
