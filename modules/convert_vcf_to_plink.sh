@@ -25,7 +25,7 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: VCF → PLINK2 (Fixing the Sex Metadata Error)
+# VCF → PLINK2 (Fixing the Sex Metadata Error)
 #----------------------------------------
 # We impute sex and split PAR here so the resulting .psam is "complete"
 plink2 --vcf ${VCF} \
@@ -39,14 +39,18 @@ plink2 --vcf ${VCF} \
 #----------------------------------------
 # SAMPLE-LEVEL QC (Steps 4, 9, 10)
 #----------------------------------------
-# Step 4: Check Sex (Now that sex exists in the .psam)
-plink2 --pfile ${RAW_PREFIX} --check-sex 0.2 0.8 --out ${QC_SAMPLE_PREFIX}
+# Step 4: Check Sex (Updated PLINK2 Syntax)
+plink2 --pfile ${RAW_PREFIX} \
+       --check-sex max-female-xf=0.2 min-male-xf=0.8 \
+       --out ${QC_SAMPLE_PREFIX}
 
 # Step 9: Heterozygosity (Inbreeding coefficient F)
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 
-# Step 10: Relatedness (KING-robust) - Cutoff 0.45 is PI_HAT 0.9
-plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
+# Step 10: Relatedness (KING-robust)
+plink2 --pfile ${RAW_PREFIX} \
+       --king-cutoff 0.45 \
+       --out ${QC_SAMPLE_PREFIX}_relatedness
 
 # Generate Exclusion List
 # 1. Sex Mismatches
