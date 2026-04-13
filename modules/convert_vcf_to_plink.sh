@@ -12,19 +12,12 @@ set -euo pipefail
 module load PLINK2/avx2_20250707
 
 #----------------------------------------
-# INPUT (joint VCF)
+# PATHS
 #----------------------------------------
 VCF=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped.vcf.gz
-
-#----------------------------------------
-# OUTPUT DIRECTORY
-#----------------------------------------
 OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
-#----------------------------------------
-# STEP 0: define prefixes
-#----------------------------------------
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
 FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
@@ -32,68 +25,55 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: VCF → PLINK2 binary (Updated for Sex QC)
+# STEP 1: VCF → PLINK2 (Fixing the Sex Metadata Error)
 #----------------------------------------
-# Added X, Y, MT to --chr
-# Added --split-par hg38 to handle X-chr PAR regions
+# We impute sex and split PAR here so the resulting .psam is "complete"
 plink2 --vcf ${VCF} \
-       --chr 1-22, X, Y, MT \
+       --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
+       --impute-sex \
        --make-pgen \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# NEW: SAMPLE-LEVEL QC (Steps 4, 9, 10)
+# SAMPLE-LEVEL QC (Steps 4, 9, 10)
 #----------------------------------------
-# Step 4: Impute and Check Sex
-# --impute-sex calculates sex based on F-stat for you
-plink2 --pfile ${RAW_PREFIX} \
-       --impute-sex \
-       --check-sex 0.2 0.8 \
-       --out ${QC_SAMPLE_PREFIX}
+# Step 4: Check Sex (Now that sex exists in the .psam)
+plink2 --pfile ${RAW_PREFIX} --check-sex 0.2 0.8 --out ${QC_SAMPLE_PREFIX}
 
 # Step 9: Heterozygosity (Inbreeding coefficient F)
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 
-# Step 10: Relatedness (KING-robust)
-plink2 --pfile ${RAW_PREFIX} \
-       --king-cutoff 0.45 \
-       --out ${QC_SAMPLE_PREFIX}_relatedness
-       
+# Step 10: Relatedness (KING-robust) - Cutoff 0.45 is PI_HAT 0.9
+plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
+
+# Generate Exclusion List
+# 1. Sex Mismatches
+grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+# 2. Het Outliers (|F| > 0.2)
+awk 'NR>1 && ($6 > 0.2 || $6 < -0.2) {print $1, $2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
+# 3. Combine with KING failures
+cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
+
 #----------------------------------------
-# STEP 2: Filter SNPs & Subjects (Steps 2, 5, 6, 8)
+# FILTERING (Steps 2, 5, 6, 8)
 #----------------------------------------
-# Integrating:
-# Step 2: --mind 0.05 (Subject call rate < 95%) [cite: 5]
-# Step 5: --geno 0.05 (SNP genotype rate < 95%) [cite: 15]
-# Step 6: --hwe 1e-6 (Hardy-Weinberg Equilibrium) [cite: 16]
-# Step 8: --maf 0.05 (Minor Allele Frequency) [cite: 20]
 plink2 --pfile ${RAW_PREFIX} \
        --mind 0.05 \
        --geno 0.05 \
        --hwe 1e-6 \
        --maf 0.05 \
        --max-alleles 2 \
-       --remove ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id \
+       --remove ${OUTDIR}/all_fail_samples.txt \
        --make-pgen \
        --out ${FILTERED_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 3: Create BED/BIM/FAM
+# OUTPUT GENERATION
 #----------------------------------------
-plink2 --pfile ${FILTERED_PREFIX} \
-       --make-bed \
-       --out ${BED_PREFIX} \
-       --threads ${SLURM_CPUS_PER_TASK}
+plink2 --pfile ${FILTERED_PREFIX} --make-bed --out ${BED_PREFIX}
+plink2 --pfile ${FILTERED_PREFIX} --recode A --out ${MATRIX_PREFIX}
 
-#----------------------------------------
-# STEP 4: Numeric allele matrix for MatrixEQTL
-#----------------------------------------
-plink2 --pfile ${FILTERED_PREFIX} \
-       --recode A \
-       --out ${MATRIX_PREFIX} \
-       --threads ${SLURM_CPUS_PER_TASK}
-
-echo "Finished QC and PLINK conversion."
+echo "QC Pipeline Complete. Final outputs in ${OUTDIR}"
