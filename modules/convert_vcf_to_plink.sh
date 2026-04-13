@@ -35,7 +35,7 @@ MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 # STEP 1: VCF → PLINK2 binary
 #----------------------------------------
 plink2 --vcf ${VCF} \
-       --chr 1-22 \
+       --chr 1-22, X, Y, MT \
        --make-pgen \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
