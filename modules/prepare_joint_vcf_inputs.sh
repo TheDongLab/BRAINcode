@@ -85,8 +85,15 @@ found["vcf_path"].to_csv(out_dir/"vcf_merge_list.txt", index=False, header=False
 found[["externalsubjectid","externalsampleid","vcf_path"]].to_csv(out_dir/"wgs_samples_for_vcf_merge.csv", index=False)
 
 # Sample Map for reheadering: [VCF_Internal_ID] [Subject_ID]
-# This ensures MatrixEQTL sees 'CGND-HDA-...' instead of 'NEUXT...'
-found[['externalsampleid', 'externalsubjectid']].to_csv(out_dir/"sample_map.txt", sep="\t", index=False, header=False)
+# Added logic to handle the common "-b38" suffix found in internal headers
+mapping = []
+for _, row in found.iterrows():
+    # Map the clean ID
+    mapping.append([row['externalsampleid'], row['externalsubjectid']])
+    # Map the ID with the b38 suffix to ensure no samples are skipped
+    mapping.append([f"{row['externalsampleid']}-b38", row['externalsubjectid']])
+
+pd.DataFrame(mapping).to_csv(out_dir/"sample_map.txt", sep="\t", index=False, header=False)
 
 if len(missing) > 0:
     print("\n--- Subjects missing SNP VCFs ---")
@@ -101,16 +108,17 @@ SAMPLE_MAP=/home/zw529/donglab/data/target_ALS/QTL/sample_map.txt
 echo "Re-indexing VCFs to ensure .tbi existence..."
 cat $VCF_LIST | xargs -I {} -P 4 tabix -f -p vcf {}
 
-echo "Merging VCFs using GT-only (bypassing AD/Header conflicts)..."
-# We use --columns GT to ignore the clashing Number=R vs Number=. AD tags
+echo "Merging 437 samples..."
+# 1. bcftools merge -i - : Ignores complex INFO merging rules
+# 2. bcftools annotate -x ^FORMAT/GT : Strips everything except Genotypes (kills AD/DP mismatch)
 bcftools merge -f PASS \
-    --columns GT \
+    -i - \
     -l $VCF_LIST \
     --threads 4 \
-    -O z \
-    -o $JOINT_VCF
+    -O v | bcftools annotate -x ^FORMAT/GT -O z -o $JOINT_VCF
 
 echo "Reheadering to map sequencing IDs to Subject IDs..."
+# This maps IDs like NEUXT... to CGND... so your Genotype matrix matches Expression matrix
 bcftools reheader -s $SAMPLE_MAP -o ${JOINT_VCF}.tmp $JOINT_VCF
 mv ${JOINT_VCF}.tmp $JOINT_VCF
 tabix -p vcf $JOINT_VCF
