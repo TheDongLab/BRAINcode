@@ -25,13 +25,14 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# VCF → PLINK2 (Fixing the Sex Metadata Error)
+# STEP 1: VCF → PLINK2 (With Corrected Sex Thresholds)
 #----------------------------------------
-# We impute sex and split PAR here so the resulting .psam is "complete"
+# Fix: Added specific parameter names for thresholds.
+# Step 3 Integration: --chr chr1-22, chrX, chrY ensures we only keep mapped variants.
 plink2 --vcf ${VCF} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
-       --impute-sex \
+       --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
        --make-pgen \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
@@ -39,29 +40,30 @@ plink2 --vcf ${VCF} \
 #----------------------------------------
 # SAMPLE-LEVEL QC (Steps 4, 9, 10)
 #----------------------------------------
-# Step 4: Check Sex (Updated PLINK2 Syntax)
+# Step 4: Check Sex 
+# Corrected Syntax: PLINK2 requires the labels max-female-xf and min-male-xf
 plink2 --pfile ${RAW_PREFIX} \
        --check-sex max-female-xf=0.2 min-male-xf=0.8 \
        --out ${QC_SAMPLE_PREFIX}
 
-# Step 9: Heterozygosity (Inbreeding coefficient F)
+# Step 9: Heterozygosity
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 
-# Step 10: Relatedness (KING-robust)
-plink2 --pfile ${RAW_PREFIX} \
-       --king-cutoff 0.45 \
-       --out ${QC_SAMPLE_PREFIX}_relatedness
+# Step 10: Relatedness
+plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
 
-# Generate Exclusion List
-# 1. Sex Mismatches
+# --- ID EXTRACTION ---
+# Identify Sex Mismatches (Now that thresholds are applied)
 grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
-# 2. Het Outliers (|F| > 0.2)
+
+# Identify Heterozygosity Outliers (|F| > 0.2)
 awk 'NR>1 && ($6 > 0.2 || $6 < -0.2) {print $1, $2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
-# 3. Combine with KING failures
+
+# Combine all exclusion lists
 cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
 
 #----------------------------------------
-# FILTERING (Steps 2, 5, 6, 8)
+# STEP 2: Filter SNPs & Subjects (Steps 2, 5, 6, 8)
 #----------------------------------------
 plink2 --pfile ${RAW_PREFIX} \
        --mind 0.05 \
