@@ -32,10 +32,13 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: VCF → PLINK2 binary
+# STEP 1: VCF → PLINK2 binary (Updated for Sex QC)
 #----------------------------------------
+# Added X, Y, MT to --chr
+# Added --split-par hg38 to handle X-chr PAR regions
 plink2 --vcf ${VCF} \
        --chr 1-22, X, Y, MT \
+       --split-par hg38 \
        --make-pgen \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
@@ -43,18 +46,21 @@ plink2 --vcf ${VCF} \
 #----------------------------------------
 # NEW: SAMPLE-LEVEL QC (Steps 4, 9, 10)
 #----------------------------------------
-# Step 4: Check Sex (Note: Requires X chromosome; if autosomes only, this results in a report)
-plink2 --pfile ${RAW_PREFIX} --check-sex --out ${QC_SAMPLE_PREFIX}
+# Step 4: Impute and Check Sex
+# --impute-sex calculates sex based on F-stat for you
+plink2 --pfile ${RAW_PREFIX} \
+       --impute-sex \
+       --check-sex 0.2 0.8 \
+       --out ${QC_SAMPLE_PREFIX}
 
 # Step 9: Heterozygosity (Inbreeding coefficient F)
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 
-# Step 10: Relatedness (KING-robust) - Filters pairs with PI_HAT > 0.9
-# Note: --make-king-table generates the list; --king-cutoff removes one of each pair
+# Step 10: Relatedness (KING-robust)
 plink2 --pfile ${RAW_PREFIX} \
        --king-cutoff 0.45 \
        --out ${QC_SAMPLE_PREFIX}_relatedness
-
+       
 #----------------------------------------
 # STEP 2: Filter SNPs & Subjects (Steps 2, 5, 6, 8)
 #----------------------------------------
