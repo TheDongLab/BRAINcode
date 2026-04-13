@@ -26,10 +26,10 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: VCF → PLINK2 (NO FILTERS YET)
+# STEP 1: FORCE VCF → PLINK2 IMPORT
 #----------------------------------------
-# We import everything first to avoid the "No samples remaining" crash.
-# Step 3: Satisfied by restricting to main hg38 chromosomes.
+# --allow-no-sex is the key here. It stops the crash.
+# --split-par hg38 handles the PAR regions correctly for hg38 coordinates.
 plink2 --vcf ${VCF} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
@@ -39,64 +39,59 @@ plink2 --vcf ${VCF} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 2 & 5 DIAGNOSTICS: The "Feel" Reports
+# STEP 2 & 5: THE "FEEL" REPORTS (Histograms)
 #----------------------------------------
-# 1. Generate missingness raw data (.smiss and .vmiss)
-plink2 --pfile ${RAW_PREFIX} \
-       --missing \
-       --out ${OUTDIR}/qc_distribution
+# We do this immediately so you can see why the 95% filter is failing.
+plink2 --pfile ${RAW_PREFIX} --missing --out ${OUTDIR}/qc_distribution
 
-# 2. Generate Histograms using an R one-liner
-# This creates 'qc_histograms.pdf' in your output directory
 Rscript -e "
     smiss <- read.table('${OUTDIR}/qc_distribution.smiss', header=TRUE);
     vmiss <- read.table('${OUTDIR}/qc_distribution.vmiss', header=TRUE);
     pdf('${OUTDIR}/qc_histograms.pdf', width=10, height=5);
     par(mfrow=c(1,2));
-    # Subject Call Rate Histogram (Step 2)
-    hist(1 - smiss\$F_MISS, main='Subject Call Rates (Step 2)', 
-         xlab='Call Rate', col='skyblue', breaks=50);
+    hist(1 - smiss\$F_MISS, main='Subject Call Rates', xlab='Call Rate', col='skyblue', breaks=50);
     abline(v=0.95, col='red', lty=2);
-    # SNP Genotyping Rate Histogram (Step 5)
-    hist(1 - vmiss\$F_MISS, main='SNP Genotyping Rates (Step 5)', 
-         xlab='Genotyping Rate', col='salmon', breaks=50);
+    hist(1 - vmiss\$F_MISS, main='SNP Genotyping Rates', xlab='Genotyping Rate', col='salmon', breaks=50);
     abline(v=0.95, col='red', lty=2);
     dev.off();
 "
 
 #----------------------------------------
-# STEP 4, 9, 10: SAMPLE QC
+# STEP 4: IMPUTE & CHECK SEX (The logic you needed)
 #----------------------------------------
-# We impute sex and run checks without killing the script if they fail.
+# 1. First, we impute sex and create a NEW .psam file.
 plink2 --pfile ${RAW_PREFIX} \
        --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
-       --check-sex max-female-xf=0.2 min-male-xf=0.8 \
-       --out ${QC_SAMPLE_PREFIX}
+       --make-psam \
+       --out ${OUTDIR}/imputed_metadata
 
+# 2. IMPORTANT: We replace the "empty" psam with the "imputed" one.
+# This "teaches" PLINK the sex of your samples.
+cp ${OUTDIR}/imputed_metadata.psam ${RAW_PREFIX}.psam
+
+# 3. Now run the check-sex and other checks.
+plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
 
-# Extraction (using "|| true" to keep script running even if failures=0)
-grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || true
-awk 'NR>1 && ($6 > 0.2 || $6 < -0.2) {print $1, $2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || true
+#----------------------------------------
+# EXTRACTION & FINAL FILTER
+#----------------------------------------
+grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print \$1, \$2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+awk 'NR>1 && (\$6 > 0.2 || \$6 < -0.2) {print \$1, \$2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
+
 cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
 
-#----------------------------------------
-# FINAL FILTERING (Applying the 95% threshold carefully)
-#----------------------------------------
-# Based on your notes, we apply Step 2 and Step 5 here. 
-# If this STILL results in "No samples remaining," you MUST 
-# change 0.05 to 0.1 or 0.2 after checking your histograms.
+# Final Step: If this still results in "No samples remaining", your histograms 
+# from the R script will show you exactly how much to lower the 0.05 thresholds.
 plink2 --pfile ${RAW_PREFIX} \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
        --geno 0.05 \
        --hwe 1e-6 \
        --maf 0.05 \
-       --max-alleles 2 \
        --make-pgen \
-       --out ${FILTERED_PREFIX} \
-       --threads ${SLURM_CPUS_PER_TASK}
+       --out ${FILTERED_PREFIX}
 
 #----------------------------------------
 # OUTPUT GENERATION
