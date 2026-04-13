@@ -26,12 +26,13 @@ mkdir -p ${OUTDIR}
 # STEP 0: define prefixes
 #----------------------------------------
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
+QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
 FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
 BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 1: VCF → PLINK2 binary (PGEN/PSAM/PVAR) keeping all variants
+# STEP 1: VCF → PLINK2 binary
 #----------------------------------------
 plink2 --vcf ${VCF} \
        --chr 1-22 \
@@ -40,17 +41,41 @@ plink2 --vcf ${VCF} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 2: Filter multiallelic + MAF ≥ 0.01 → new PGEN
+# NEW: SAMPLE-LEVEL QC (Steps 4, 9, 10)
 #----------------------------------------
+# Step 4: Check Sex (Note: Requires X chromosome; if autosomes only, this results in a report)
+plink2 --pfile ${RAW_PREFIX} --check-sex --out ${QC_SAMPLE_PREFIX}
+
+# Step 9: Heterozygosity (Inbreeding coefficient F)
+plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
+
+# Step 10: Relatedness (KING-robust) - Filters pairs with PI_HAT > 0.9
+# Note: --make-king-table generates the list; --king-cutoff removes one of each pair
 plink2 --pfile ${RAW_PREFIX} \
-       --maf 0.01 \
+       --king-cutoff 0.45 \
+       --out ${QC_SAMPLE_PREFIX}_relatedness
+
+#----------------------------------------
+# STEP 2: Filter SNPs & Subjects (Steps 2, 5, 6, 8)
+#----------------------------------------
+# Integrating:
+# Step 2: --mind 0.05 (Subject call rate < 95%) [cite: 5]
+# Step 5: --geno 0.05 (SNP genotype rate < 95%) [cite: 15]
+# Step 6: --hwe 1e-6 (Hardy-Weinberg Equilibrium) [cite: 16]
+# Step 8: --maf 0.05 (Minor Allele Frequency) [cite: 20]
+plink2 --pfile ${RAW_PREFIX} \
+       --mind 0.05 \
+       --geno 0.05 \
+       --hwe 1e-6 \
+       --maf 0.05 \
        --max-alleles 2 \
+       --remove ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id \
        --make-pgen \
        --out ${FILTERED_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
 #----------------------------------------
-# STEP 3: Optional: create BED/BIM/FAM (PLINK1 format)
+# STEP 3: Create BED/BIM/FAM
 #----------------------------------------
 plink2 --pfile ${FILTERED_PREFIX} \
        --make-bed \
@@ -65,8 +90,4 @@ plink2 --pfile ${FILTERED_PREFIX} \
        --out ${MATRIX_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
-#----------------------------------------
-# DONE
-#----------------------------------------
-echo "Finished PLINK conversion for joint cohort."
-echo "All outputs (PGEN, PSAM, PVAR, BED, numeric matrix) are in ${OUTDIR}"
+echo "Finished QC and PLINK conversion."
