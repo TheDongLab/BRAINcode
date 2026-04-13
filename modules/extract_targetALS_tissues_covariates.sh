@@ -4,6 +4,8 @@
 #SBATCH --mem=180G
 #SBATCH --time=23:00:00
 #SBATCH -p day
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%j.err
 
 set -euo pipefail
 module load SAMtools
@@ -41,7 +43,7 @@ if [ ! -f "$TARGET_BED" ]; then
     set -o pipefail
 fi
 
-# ── STEP 1: PARALLEL SKEWNESS CALCULATION (WITH SKIP LOGIC) ───────────────────
+# ── STEP 1: PARALLEL SKEWNESS CALCULATION ─────────────────────────────────────
 if [ ! -f "$SKEW_DATA" ]; then
     echo -e "externalsampleid\trna_skew" > "$SKEW_DATA"
 fi
@@ -112,25 +114,6 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
-# Define Ancestry Columns here so they are available for cleaning and export
-anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
-
-# ── STEP 2: METADATA, TISSUE, AND FINAL COVARIATES ────────────────────────────
-echo "Generating detailed summaries with cleaning and remapping..."
-
-python3 - <<EOF
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from collections import Counter
-
-# 1. Load Data
-df = pd.read_csv("$METADATA")
-wgs_meta = pd.read_csv("$WGS_META")
-sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
-df = df.merge(sk, on='externalsampleid', how='left')
-
-# Define Ancestry Columns
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
 # 2. REMAPPING DICTIONARIES
@@ -177,17 +160,15 @@ df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].replace({
 })
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
-# Ancestry Cleaning and Binary Encoding
+# Ancestry Cleaning and Binary Encoding (Majority Ancestry >= 50%)
 anc_binary_cols = []
 for col in anc_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
         df.loc[df[col] < 0, col] = np.nan
-        
-        # Create Binary Categorical Column (>= 50%)
-        binary_name = "is_" + col.replace("pct_", "")
-        df[binary_name] = (df[col] >= 0.50).astype(int)
-        anc_binary_cols.append(binary_name)
+        bin_name = "is_" + col.replace("pct_", "")
+        df[bin_name] = (df[col] >= 0.50).astype(int)
+        anc_binary_cols.append(bin_name)
 
 # 4. QC Logic
 df['rin_num'] = pd.to_numeric(df['rin'], errors='coerce')
@@ -203,7 +184,7 @@ FULL_COLS = base_cols + anc_cols + anc_binary_cols
 final_df = df[[c for c in FULL_COLS if c in df.columns]]
 final_df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 5. GENERATE COVARIATE SUMMARY (Standard output continues as before)
+# 5. GENERATE COVARIATE SUMMARY
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(f" target_ALS Covariate Summary\n Total samples: {len(df)} | Total subjects: {df['externalsubjectid'].nunique()}\n")
@@ -217,15 +198,32 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"    {str(val):<45} {count:>5} ({pct:>4.1f}%)\n")
         f.write("\n")
 
+    f.write("── NUMERICAL COVARIATES ────────────────────────────────\n\n")
+    for col in ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours']:
+        data = pd.to_numeric(df[col], errors='coerce').dropna()
+        f.write(f"{col} (n={len(data)}, {len(df)-len(data)} missing)\n")
+        f.write(f"    mean: {data.mean():.2f} | median: {data.median():.2f} | std: {data.std():.2f}\n\n")
+
+    f.write("── ANCESTRY ───────────────────────────────────────────\n\n")
+    bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
+    labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
+    for col in anc_cols:
+        if col in df.columns:
+            data = df[col].dropna()
+            f.write(f"{col} (n={len(data)}, {len(df)-len(data)} missing/invalid)\n")
+            f.write(f"    mean: {data.mean():.4f} | median: {data.median():.4f}\n")
+            binned = pd.cut(data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+            for b, c in binned.items():
+                pct = (c / len(data)) * 100 if len(data)>0 else 0
+                f.write(f"      {b:<15} {c:>5} ({pct:>4.1f}%)\n")
+            f.write("\n")
+
 # 6. TISSUE TRACKING (WGS + RNAseq)
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 rna_subs = set(df["externalsubjectid"].dropna())
 shared_subs = sorted(wgs_subs & rna_subs)
 
-# Filter for shared subjects only
 shared_df = df[df['externalsubjectid'].isin(shared_subs)]
-
-# Subject mapping: {subject: [tissues]}
 pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
 
 with open("$PATIENT_TISSUES", "w") as f:
@@ -234,20 +232,17 @@ with open("$PATIENT_TISSUES", "w") as f:
         ts = pt_tissues[sub]
         f.write(f"{sub}\t{len(ts)}\t{'; '.join(ts)}\n")
 
-# TISSUE SUMMARY: Split by Subjects and Samples
-# Calculate sample counts per tissue
-sample_counts = shared_df['tissue'].value_counts().to_dict()
-# Calculate unique subject counts per tissue
-subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique().to_dict()
+sample_counts = shared_df['tissue'].value_counts()
+subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 
 with open("$TISSUE_SUMMARY", "w") as f:
     f.write(f"============================================================\n")
     f.write(f" target_ALS Tissue Summary (Shared WGS/RNA Patients)\n Shared Patients: {len(shared_subs)}\n")
     f.write(f"============================================================\n\n")
-    f.write(f"{'TISSUE':<35} {'SUBJECTS':<12} {'SAMPLES':<10}\n")
-    f.write(f"{'-'*34:<35} {'-'*10:<12} {'-'*8:<10}\n")
-    
-    # Sort by subject count descending
-    for t in sorted(subject_counts.keys(), key=lambda x: -subject_counts[x]):
-        f.write(f"{str(t):<35} {subject_counts[t]:<12} {sample_counts[t]:<10}\n")
+    f.write(f"{'TISSUE':<35} {'SUBJECT_SIZE':<15} {'SAMPLE_SIZE':<15}\n")
+    f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
+    for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
+        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
 EOF
+
+echo "Done. Outputs saved to $OUTDIR"
