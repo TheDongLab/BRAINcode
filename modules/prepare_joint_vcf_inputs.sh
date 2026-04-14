@@ -24,6 +24,7 @@ find "$BASE" -name "*.vcf.gz" -printf '%h\n' | sort -u | while read -r dir; do
     
     # 2. Select the "Best" SNP VCF based on priority and size
     BEST_VCF=$(find "$dir" -maxdepth 1 -name "*.vcf.gz" \
+        ! -path "*/QTL/*" \
         ! -name "*annotated*" \
         ! -name "*cnv*" \
         ! -name "*sv*" \
