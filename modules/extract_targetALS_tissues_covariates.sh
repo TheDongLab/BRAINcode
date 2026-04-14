@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=targetALS_complete_audit
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
+#SBATCH --job-name=extract_targetALS_tissues_covariates
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=150G
 #SBATCH --time=23:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/extract_targetALS_tissues_covariates.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/extract_targetALS_tissues_covariates.err
 
 set -euo pipefail
 module load SAMtools
