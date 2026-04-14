@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=extract_targetALS_tissues_covariates
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=150G
+#SBATCH --job-name=targetALS_complete_audit
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=180G
 #SBATCH --time=23:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/extract_targetALS_tissues_covariates.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/extract_targetALS_tissues_covariates.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%j.err
 
 set -euo pipefail
 module load SAMtools
@@ -116,23 +116,18 @@ anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", 
 TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
-    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
+    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex', 'Cortex_Motor_Unspecified': 'Motor_Cortex',
     'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
-    'Lateral_motor_cortex': 'Motor_Cortex', 'Cortex_Motor_Unspecified': 'Motor_Cortex',
     'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
-    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord',
-    'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord',
-    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord',
-    'Spinal_Cord_Lumbar': 'Lumbar_Spinal_Cord', 'Lumbosacaral_spinal_cord': 'Lumbar_Spinal_Cord',
-    'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord',
-    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord'
+    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
 }
 
 SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
     'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'Alzheimer\'s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
     'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
@@ -156,14 +151,10 @@ C9_REMAP = {
 # 3. GLOBAL CLEANING (Preserving logic exactly as requested)
 df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_') if str(x) != 'nan' else 'Not Applicable/NaN'))
-df['tissue'] = df['tissue'].replace('nan', 'Not Applicable/NaN')
+df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
-df['subject_group'] = df['subject_group'].replace('nan', 'Not Applicable/NaN')
 df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
-df['site_of_motor_onset'] = df['site_of_motor_onset'].replace('nan', 'Not Applicable/NaN')
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
-df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].replace('nan', 'Not Applicable/NaN')
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
 anc_binary_cols = []
@@ -185,7 +176,7 @@ df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
 # 5. COVARIATE SUMMARY (Audit)
 with open("$COVARIATE_SUMMARY", "w") as f:
-    
+
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Frequency Audit\n")
     f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
@@ -195,7 +186,6 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     cat_cols = ['sex', 'subject_group', 'tissue', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
     for col in cat_cols:
         if col not in df.columns: continue
-        
         f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
         g_counts = df[col].value_counts(dropna=False)
         s_counts = shared_df[col].value_counts(dropna=False)
@@ -233,7 +223,6 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"{label} (n={len(vals)}, {missing} missing)\n")
             f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
     # -------------------------------------
-
 
 # 6. TISSUE SUMMARY
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
