@@ -117,10 +117,10 @@ TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
     'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex', 'Cortex_Motor_Unspecified': 'Motor_Cortex',
-    'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
-    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
+    'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex', 'Lateral_motor_cortex': 'Motor_Cortex',
+    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum', 'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 
     'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
-    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord', 'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
 
 SUBJECT_GROUP_REMAP = {
