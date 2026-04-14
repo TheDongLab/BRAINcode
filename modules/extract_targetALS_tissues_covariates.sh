@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=targetALS_covariate_audit
+#SBATCH --job-name=targetALS_complete_audit
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=180G
 #SBATCH --time=23:00:00
@@ -59,8 +59,6 @@ find "$DATA_DIR" -name "STAR.Aligned.sortedByCoord.out.bam" | while read -r bam;
 done
 
 N_TO_DO=$(wc -l < "$SAMPLE_LIST")
-echo "Already processed: $(echo "$PROCESSED_IDS" | wc -l). Remaining: $N_TO_DO"
-
 if [ "$N_TO_DO" -gt 0 ]; then
     cat << 'EOF' > "$RNAQC_DIR/worker.py"
 import sys, subprocess, numpy as np
@@ -100,7 +98,7 @@ EOF
 fi
 
 # ── STEP 2: METADATA CONSOLIDATION AND AUDIT ──────────────────────────────────
-echo "Running metadata consolidation and shared-cohort audit..."
+echo "Consolidating metadata and generating complete audit..."
 
 python3 - <<EOF
 import pandas as pd
@@ -114,33 +112,50 @@ df = df.merge(sk, on='externalsampleid', how='left')
 
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
-# 2. DICTIONARIES
+# 2. DEFINITIVE REMAPPING
 TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
-    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex L ': 'Motor_Cortex',
-    'Primary Motor Cortex M': 'Motor_Cortex', 'Cortex_Motor_BA4': 'Motor_Cortex', 
-    'BA4 Motor Cortex': 'Motor_Cortex', 'Lateral motor cortex': 'Motor_Cortex', 
-    'Cortex_Motor_Unspecified': 'Motor_Cortex', 'Motor Cortex': 'Motor_Cortex', 
-    'Motor_Cortex': 'Motor_Cortex', 'Frontal Cortex': 'Frontal_Cortex', 
-    'Cerebellum': 'Cerebellum', 'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 
-    'Cervical spinal cord': 'Cervical_Spinal_Cord', 'Spinal Cord Cervical': 'Cervical_Spinal_Cord', 
-    'Spinal cord Cervical': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 
-    'Lumbar spinal cord': 'Lumbar_Spinal_Cord', 'Spinal Cord Lumbar': 'Lumbar_Spinal_Cord', 
-    'Lumbosacral Spinal Cord': 'Lumbar_Spinal_Cord', 'Lumbosacaral spinal cord': 'Lumbar_Spinal_Cord', 
-    'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord'
+    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
+    'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
+    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
+    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
 }
 
 SUBJECT_GROUP_REMAP = {
+    'Other MND': 'Other Neurological Disorders',
+    'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
+    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
+    'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
+    'FTLD': 'ALS/FTLD Spectrum',
+    'FTLD with tau positive inclusions': 'ALS/FTLD Spectrum',
     'Non Neurological Control': 'Non-Neurological Control'
 }
 
-# 3. CLEANING
+ONSET_REMAP = {
+    'limb': 'Limb', 'Lower Limb': 'Limb', 'Upper Limb': 'Limb', 
+    'Lower Extremity': 'Limb', 'Upper Extremity': 'Limb',
+    'Lower limb': 'Limb', 'Upper limb': 'Limb', 'Upper and Lower Limbs': 'Limb',
+    'Bulbar/Limb': 'Bulbar and Limb', 'Not Applicable': 'Not Applicable/NaN'
+}
+
+C9_REMAP = {
+    'yes': 'Yes', 'Negative': 'No', 'ND': 'Unknown', 
+    'Not Applicable': 'Not Applicable/NaN', 'Abnormal Repeat Expansion': 'Yes'
+}
+
+# 3. GLOBAL CLEANING
 df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
 df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
+df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
+df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
 anc_binary_cols = []
 for col in anc_cols:
@@ -151,65 +166,68 @@ for col in anc_cols:
         df[bin_name] = (df[col] >= 0.50).astype(int)
         anc_binary_cols.append(bin_name)
 
-# Identify Shared Cohort (The 427 Overlap)
+# Split Cohorts
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 shared_df = df[df['externalsubjectid'].isin(wgs_subs)]
 
 # 4. EXPORT MAIN TABLE
-final_df = df.copy()
-final_df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
+df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 5. GENERATE DUAL COVARIATE SUMMARY
+# 5. COVARIATE SUMMARY (Audit)
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Frequency Audit\n")
-    f.write(f" GLOBAL (All RNA):   {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
-    f.write(f" SHARED (WGS Match): {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
+    f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
+    f.write(f" SHARED (also has WGS data):   {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
     f.write("============================================================\n\n")
 
     cat_cols = ['sex', 'subject_group', 'tissue', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
     for col in cat_cols:
         if col not in df.columns: continue
-        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (WGS)':<15}\n")
-        
+        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
         g_counts = df[col].value_counts(dropna=False)
         s_counts = shared_df[col].value_counts(dropna=False)
-        
         all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
-        
         for val in all_labels:
             orig_val = next((k for k in g_counts.index if str(k) == val), val)
-            g_c = g_counts.get(orig_val, 0)
-            s_c = s_counts.get(orig_val, 0)
-            g_pct = (g_c / len(df)) * 100
-            s_pct = (s_c / len(shared_df)) * 100 if len(shared_df) > 0 else 0
-            f.write(f"    {val:<31} {g_c:>5} ({g_pct:>4.1f}%)    {s_c:>5} ({s_pct:>4.1f}%)\n")
+            g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
+            f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
-    f.write("── NUMERICAL STATS (SHARED COHORT ONLY) ────────────────\n\n")
-    for col in ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours']:
-        data = pd.to_numeric(shared_df[col], errors='coerce').dropna()
-        if len(data) > 0:
-            f.write(f"{col:<30} mean: {data.mean():.2f} | median: {data.median():.2f} | std: {data.std():.2f}\n")
+    f.write("── ANCESTRY PERCENTAGE BINS ───────────────────────────\n\n")
+    bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
+    labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
+    for col in anc_cols:
+        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
+        g_data, s_data = df[col].dropna(), shared_df[col].dropna()
+        g_binned = pd.cut(g_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        s_binned = pd.cut(s_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        for b in labels:
+            gc, sc = g_binned.get(b, 0), s_binned.get(b, 0)
+            f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
+        f.write("\n")
 
-# 6. TISSUE TRACKING
+# 6. TISSUE SUMMARY (Detailed tracking)
+subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
+sample_counts = shared_df['tissue'].value_counts()
+
+with open("$TISSUE_SUMMARY", "w") as f:
+    f.write(f"============================================================\n")
+    f.write(f" target_ALS Tissue Summary (Shared Patients Only)\n")
+    f.write(f" Shared Patients: {len(wgs_subs & set(df['externalsubjectid']))}\n")
+    f.write(f"============================================================\n\n")
+    f.write(f"{'TISSUE':<35} {'SUBJECTS':<15} {'SAMPLES':<15}\n")
+    f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
+    for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
+        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
+
+# 7. PATIENT TISSUE BREAKDOWN
 pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
 with open("$PATIENT_TISSUES", "w") as f:
     f.write("subject_id\tn_tissues\ttissues\n")
     for sub in sorted(pt_tissues.keys()):
         ts = pt_tissues[sub]
         f.write(f"{sub}\t{len(ts)}\t{'; '.join(ts)}\n")
-
-sample_counts = shared_df['tissue'].value_counts()
-subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
-with open("$TISSUE_SUMMARY", "w") as f:
-    f.write(f"============================================================\n")
-    f.write(f" target_ALS Tissue Summary (Shared Patients Only)\n")
-    f.write(f"============================================================\n\n")
-    f.write(f"{'TISSUE':<35} {'SUBJECTS':<15} {'SAMPLES':<15}\n")
-    f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
-    for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
-        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
 EOF
 
-echo "Done. Detailed audit saved to $COVARIATE_SUMMARY"
+echo "Done. Complete audit outputs in $OUTDIR"
