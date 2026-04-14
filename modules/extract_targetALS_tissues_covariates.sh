@@ -118,16 +118,21 @@ TISSUE_REMAP = {
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
     'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
     'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
+    'Lateral_motor_cortex': 'Motor_Cortex',
     'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
-    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
-    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
+    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord',
+    'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord',
+    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord',
+    'Spinal_Cord_Lumbar': 'Lumbar_Spinal_Cord', 'Lumbosacaral_spinal_cord': 'Lumbar_Spinal_Cord',
+    'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord',
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord'
 }
 
 SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
     'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    'Alzheimer\'s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
     'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
@@ -176,7 +181,50 @@ df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
 # 5. COVARIATE SUMMARY (Audit)
 with open("$COVARIATE_SUMMARY", "w") as f:
-    # --- ADDED NUMERICAL SUMMARY BLOCK ---
+    
+    f.write("============================================================\n")
+    f.write(" target_ALS Covariate Frequency Audit\n")
+    f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
+    f.write(f" SHARED (also has WGS data):   {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
+    f.write("============================================================\n\n")
+
+    cat_cols = ['sex', 'subject_group', 'tissue', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
+    for col in cat_cols:
+        if col not in df.columns: continue
+        
+        # For tissue column, apply the remap to the dataframes for the covariate summary output
+        if col == 'tissue':
+            working_df = df.copy()
+            working_shared_df = shared_df.copy()
+            working_df['tissue'] = working_df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x)))
+            working_shared_df['tissue'] = working_shared_df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x)))
+        else:
+            working_df = df
+            working_shared_df = shared_df
+        
+        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
+        g_counts = working_df[col].value_counts(dropna=False)
+        s_counts = working_shared_df[col].value_counts(dropna=False)
+        all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
+        for val in all_labels:
+            orig_val = next((k for k in g_counts.index if str(k) == val), val)
+            g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
+            f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(working_df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(working_shared_df))*100 if len(working_shared_df)>0 else 0:>4.1f}%)\n")
+        f.write("\n")
+
+    f.write("── ANCESTRY PERCENTAGE BINS ───────────────────────────\n\n")
+    bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
+    labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
+    for col in anc_cols:
+        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
+        g_data, s_data = df[col].dropna(), shared_df[col].dropna()
+        g_binned = pd.cut(g_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        s_binned = pd.cut(s_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        for b in labels:
+            gc, sc = g_binned.get(b, 0), s_binned.get(b, 0)
+            f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
+        f.write("\n")
+
     f.write("── NUMERICAL COVARIATES ────────────────────────────────────\n\n")
     num_cols = {
         'age_at_death': 'age_at_death', 
@@ -192,37 +240,6 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
     # -------------------------------------
 
-    f.write("============================================================\n")
-    f.write(" target_ALS Covariate Frequency Audit\n")
-    f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
-    f.write(f" SHARED (also has WGS data):   {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
-    f.write("============================================================\n\n")
-
-    cat_cols = ['sex', 'subject_group', 'tissue', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
-    for col in cat_cols:
-        if col not in df.columns: continue
-        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
-        g_counts = df[col].value_counts(dropna=False)
-        s_counts = shared_df[col].value_counts(dropna=False)
-        all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
-        for val in all_labels:
-            orig_val = next((k for k in g_counts.index if str(k) == val), val)
-            g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
-            f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
-        f.write("\n")
-
-    f.write("── ANCESTRY PERCENTAGE BINS ───────────────────────────\n\n")
-    bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
-    labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
-    for col in anc_cols:
-        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
-        g_data, s_data = df[col].dropna(), shared_df[col].dropna()
-        g_binned = pd.cut(g_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
-        s_binned = pd.cut(s_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
-        for b in labels:
-            gc, sc = g_binned.get(b, 0), s_binned.get(b, 0)
-            f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
-        f.write("\n")
 
 # 6. TISSUE SUMMARY
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
