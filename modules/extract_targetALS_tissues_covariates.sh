@@ -110,9 +110,6 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
-# Robust Global Cleaning: Only strip if it is a string!
-df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
-
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
 # 2. DEFINITIVE REMAPPING
@@ -121,21 +118,15 @@ TISSUE_REMAP = {
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
     'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
     'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
-    'Cortex_Motor_Unspecified': 'Motor_Cortex', 'Lateral_motor_cortex': 'Motor_Cortex',
     'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
-    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord',
-    'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord',
-    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord',
-    'Spinal_Cord_Lumbar': 'Lumbar_Spinal_Cord', 'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 
-    'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord',
-    'Lumbosacaral_spinal_cord': 'Lumbar_Spinal_Cord'
+    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
+    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
 }
 
 SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
     'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'ALS Spectrum MND, Other Neurological Disorders': 'ALS Spectrum MND, Other Neurological Disorders',
     'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
@@ -157,7 +148,8 @@ C9_REMAP = {
     'Not Applicable': 'Not Applicable/NaN', 'Abnormal Repeat Expansion': 'Yes'
 }
 
-# 3. GLOBAL CATEGORICAL CLEANING
+# 3. GLOBAL CLEANING (Preserving logic exactly as requested)
+df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
 df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
@@ -165,30 +157,41 @@ df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
-# 4. ANCESTRY & NUMERICAL COVARIATES
 anc_binary_cols = []
 for col in anc_cols:
     if col in df.columns:
+        # Re-establishing numeric type specifically for these columns
         df[col] = pd.to_numeric(df[col], errors='coerce')
         df.loc[df[col] < 0, col] = np.nan
         bin_name = "is_" + col.replace("pct_", "")
         df[bin_name] = (df[col] >= 0.50).astype(int)
         anc_binary_cols.append(bin_name)
 
-# RE-ENFORCE OTHER NUMERICAL COVARIATES (age, rna_skew, RIN, etc)
-for col in ['age_at_death', 'age_at_onset', 'rna_skew', 'rin']:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
 # Split Cohorts
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 shared_df = df[df['externalsubjectid'].isin(wgs_subs)]
 
-# 5. EXPORT MAIN TABLE
+# 4. EXPORT MAIN TABLE
 df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 6. COVARIATE SUMMARY (Audit)
+# 5. COVARIATE SUMMARY (Audit)
 with open("$COVARIATE_SUMMARY", "w") as f:
+    # --- ADDED NUMERICAL SUMMARY BLOCK ---
+    f.write("── NUMERICAL COVARIATES ────────────────────────────────────\n\n")
+    num_cols = {
+        'age_at_death': 'age_at_death', 
+        'rin': 'rin', 
+        'disease_duration_in_months': 'disease_duration_in_months', 
+        'post_mortem_interval_in_hours': 'post_mortem_interval_in_hours'
+    }
+    for label, col in num_cols.items():
+        if col in df.columns:
+            vals = pd.to_numeric(df[col], errors='coerce').dropna()
+            missing = len(df) - len(vals)
+            f.write(f"{label} (n={len(vals)}, {missing} missing)\n")
+            f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
+    # -------------------------------------
+
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Frequency Audit\n")
     f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
@@ -221,7 +224,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
-# 7. TISSUE SUMMARY (Detailed tracking)
+# 6. TISSUE SUMMARY
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 sample_counts = shared_df['tissue'].value_counts()
 
@@ -235,7 +238,7 @@ with open("$TISSUE_SUMMARY", "w") as f:
     for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
         f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
 
-# 8. PATIENT TISSUE BREAKDOWN
+# 7. PATIENT TISSUE BREAKDOWN
 pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
 with open("$PATIENT_TISSUES", "w") as f:
     f.write("subject_id\tn_tissues\ttissues\n")
