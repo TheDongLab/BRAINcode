@@ -113,11 +113,10 @@ df = df.merge(sk, on='externalsampleid', how='left')
 # Helper for robust remapping
 def clean_value(val, mapping):
     if pd.isna(val): return "Not Applicable/NaN"
-    # Normalize: lowercase and underscores
     clean = str(val).strip().lower().replace(" ", "_")
     return mapping.get(clean, str(val).strip())
 
-# 2. DEFINITIVE REMAPPING DICTIONARIES (Keys normalized to lower+underscore)
+# 2. DEFINITIVE REMAPPING DICTIONARIES
 T_REMAP = {
     'motor_cortex_lateral': 'Motor_Cortex', 'motor_cortex_medial': 'Motor_Cortex',
     'lateral_motor_cortex': 'Motor_Cortex', 'medial_motor_cortex': 'Motor_Cortex',
@@ -164,14 +163,18 @@ df['subject_group'] = df['subject_group'].apply(lambda x: clean_value(x, G_REMAP
 df['site_of_motor_onset'] = df['site_of_motor_onset'].apply(lambda x: clean_value(x, O_REMAP))
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].apply(lambda x: clean_value(x, C_REMAP))
 
+# ── ANCESTRY FIX ──────────────────────────────────────────────────────────────
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 anc_binary_cols = []
 for col in anc_cols:
     if col in df.columns:
+        # Force numeric conversion in case strip/map turned them into objects
         df[col] = pd.to_numeric(df[col], errors='coerce')
         bin_name = "is_" + col.replace("pct_", "")
-        df[bin_name] = (df[col] >= 0.50).astype(int)
+        # Create binary flag: 1 if >= 0.5, 0 otherwise (NaNs become 0)
+        df[bin_name] = (df[col] >= 0.5).astype(int)
         anc_binary_cols.append(bin_name)
+# ──────────────────────────────────────────────────────────────────────────────
 
 # Split Cohorts
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
@@ -204,10 +207,12 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
     labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
     for col in anc_cols:
+        if col not in df.columns: continue
         f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
-        g_data, s_data = df[col].dropna(), shared_df[col].dropna()
-        g_binned = pd.cut(g_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
-        s_binned = pd.cut(s_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        g_valid = df[col].dropna()
+        s_valid = shared_df[col].dropna()
+        g_binned = pd.cut(g_valid, bins=bins, labels=labels, right=False).value_counts().sort_index()
+        s_binned = pd.cut(s_valid, bins=bins, labels=labels, right=False).value_counts().sort_index()
         for b in labels:
             gc, sc = g_binned.get(b, 0), s_binned.get(b, 0)
             f.write(f"    {b:<31} {gc:>5} ({ (gc/len(df))*100:>4.1f}%)    {sc:>5} ({ (sc/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
