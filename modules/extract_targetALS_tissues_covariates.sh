@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=targetALS_complete_audit
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=160G
 #SBATCH --time=23:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/%j.out
@@ -110,58 +110,65 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
-anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
+# Helper for robust remapping
+def clean_value(val, mapping):
+    if pd.isna(val): return "Not Applicable/NaN"
+    # Normalize: lowercase and underscores
+    clean = str(val).strip().lower().replace(" ", "_")
+    return mapping.get(clean, str(val).strip())
 
-# 2. DEFINITIVE REMAPPING
-TISSUE_REMAP = {
-    'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
-    'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
-    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
-    'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
-    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
-    'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
-    'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord'
+# 2. DEFINITIVE REMAPPING DICTIONARIES (Keys normalized to lower+underscore)
+T_REMAP = {
+    'motor_cortex_lateral': 'Motor_Cortex', 'motor_cortex_medial': 'Motor_Cortex',
+    'lateral_motor_cortex': 'Motor_Cortex', 'medial_motor_cortex': 'Motor_Cortex',
+    'primary_motor_cortex_l': 'Motor_Cortex', 'primary_motor_cortex_m': 'Motor_Cortex',
+    'cortex_motor_ba4': 'Motor_Cortex', 'ba4_motor_cortex': 'Motor_Cortex',
+    'cortex_motor_unspecified': 'Motor_Cortex', 'motor_cortex': 'Motor_Cortex',
+    'frontal_cortex': 'Frontal_Cortex', 'cerebellum': 'Cerebellum',
+    'cervical_spinal_cord': 'Cervical_Spinal_Cord', 'spinal_cord_cervical': 'Cervical_Spinal_Cord',
+    'lumbar_spinal_cord': 'Lumbar_Spinal_Cord', 'spinal_cord_lumbar': 'Lumbar_Spinal_Cord',
+    'lumbosacral_spinal_cord': 'Lumbar_Spinal_Cord', 'lumbosacaral_spinal_cord': 'Lumbar_Spinal_Cord',
+    'thoracic_spinal_cord': 'Thoracic_Spinal_Cord'
 }
 
-SUBJECT_GROUP_REMAP = {
-    'Other MND': 'Other Neurological Disorders',
-    'Other Neurological Disorders': 'Other Neurological Disorders',
-    'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
-    'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
-    'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
-    'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
-    'FTLD': 'ALS/FTLD Spectrum',
-    'FTLD with tau positive inclusions': 'ALS/FTLD Spectrum',
-    'Non Neurological Control': 'Non-Neurological Control'
+G_REMAP = {
+    'other_mnd': 'Other Neurological Disorders',
+    'other_neurological_disorders': 'Other Neurological Disorders',
+    'als_spectrum_mnd,_other_neurological_diseases': 'ALS Spectrum MND, Other Neurological Disorders',
+    'als_spectrum_mnd,_other_neurological_disorders': 'ALS Spectrum MND, Other Neurological Disorders',
+    'alzheimer’s_disease,_definite:_cerad_criteria,ftld-mnd/mni,amyotrophic_lateral_sclerosis': 'ALS/FTLD Spectrum',
+    'ftld-mnd/mni,amyotrophic_lateral_sclerosis': 'ALS/FTLD Spectrum',
+    'ftld-tdp,_cerebrovascular_disease': 'ALS/FTLD Spectrum',
+    'ftd,_tdp43_subtype': 'ALS/FTLD Spectrum',
+    'ftld': 'ALS/FTLD Spectrum',
+    'ftld_with_tau_positive_inclusions': 'ALS/FTLD Spectrum',
+    'non_neurological_control': 'Non-Neurological Control'
 }
 
-ONSET_REMAP = {
-    'limb': 'Limb', 'Lower Limb': 'Limb', 'Upper Limb': 'Limb', 
-    'Lower Extremity': 'Limb', 'Upper Extremity': 'Limb',
-    'Lower limb': 'Limb', 'Upper limb': 'Limb', 'Upper and Lower Limbs': 'Limb',
-    'Bulbar/Limb': 'Bulbar and Limb', 'Not Applicable': 'Not Applicable/NaN'
+O_REMAP = {
+    'limb': 'Limb', 'lower_limb': 'Limb', 'upper_limb': 'Limb', 
+    'lower_extremity': 'Limb', 'upper_extremity': 'Limb',
+    'upper_and_lower_limbs': 'Limb', 'bulbar/limb': 'Bulbar and Limb',
+    'not_applicable': 'Not Applicable/NaN'
 }
 
-C9_REMAP = {
-    'yes': 'Yes', 'Negative': 'No', 'ND': 'Unknown', 
-    'Not Applicable': 'Not Applicable/NaN', 'Abnormal Repeat Expansion': 'Yes'
+C_REMAP = {
+    'yes': 'Yes', 'negative': 'No', 'nd': 'Unknown', 
+    'not_applicable': 'Not Applicable/NaN', 'abnormal_repeat_expansion': 'Yes'
 }
 
 # 3. GLOBAL CLEANING
-df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
-df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
-df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
-df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
-df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
-df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
+df['sex'] = df['sex'].str.strip().str.capitalize().replace({'Male': 'Male', 'Female': 'Female', 'Nd': 'Unknown'})
+df['tissue'] = df['tissue'].apply(lambda x: clean_value(x, T_REMAP))
+df['subject_group'] = df['subject_group'].apply(lambda x: clean_value(x, G_REMAP))
+df['site_of_motor_onset'] = df['site_of_motor_onset'].apply(lambda x: clean_value(x, O_REMAP))
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].apply(lambda x: clean_value(x, C_REMAP))
 
+anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 anc_binary_cols = []
 for col in anc_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-        df.loc[df[col] < 0, col] = np.nan
         bin_name = "is_" + col.replace("pct_", "")
         df[bin_name] = (df[col] >= 0.50).astype(int)
         anc_binary_cols.append(bin_name)
@@ -189,8 +196,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
         s_counts = shared_df[col].value_counts(dropna=False)
         all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
         for val in all_labels:
-            orig_val = next((k for k in g_counts.index if str(k) == val), val)
-            g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
+            g_c, s_c = g_counts.get(val, 0), s_counts.get(val, 0)
             f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
@@ -204,17 +210,16 @@ with open("$COVARIATE_SUMMARY", "w") as f:
         s_binned = pd.cut(s_data, bins=bins, labels=labels, right=False).value_counts().sort_index()
         for b in labels:
             gc, sc = g_binned.get(b, 0), s_binned.get(b, 0)
-            f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
+            f.write(f"    {b:<31} {gc:>5} ({ (gc/len(df))*100:>4.1f}%)    {sc:>5} ({ (sc/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
-# 6. TISSUE SUMMARY (Detailed tracking)
+# 6. TISSUE SUMMARY
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 sample_counts = shared_df['tissue'].value_counts()
-
 with open("$TISSUE_SUMMARY", "w") as f:
     f.write(f"============================================================\n")
     f.write(f" target_ALS Tissue Summary (Shared Patients Only)\n")
-    f.write(f" Shared Patients: {len(wgs_subs & set(df['externalsubjectid']))}\n")
+    f.write(f" Shared Patients Total: {shared_df['externalsubjectid'].nunique()}\n")
     f.write(f"============================================================\n\n")
     f.write(f"{'TISSUE':<35} {'SUBJECTS':<15} {'SAMPLES':<15}\n")
     f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
