@@ -52,9 +52,7 @@ find "$BASE" -name "*.vcf.gz" -printf '%h\n' | sort -u | while read -r dir; do
     fi
 done
 
-# --- STEP 2: METADATA RECONCILIATION ---
-echo "Mapping subjects to sidecar files..."
-
+# --- STEP 2: METADATA RECONCILIATION (FIXED) ---
 python3 - <<'EOF'
 import pandas as pd
 from pathlib import Path
@@ -63,16 +61,17 @@ import subprocess
 BASE = Path("/home/zw529/donglab/data/target_ALS")
 QTL_DIR = BASE / "QTL"
 
-# Load and clean metadata
+# Load Metadata
 wgs_meta = pd.read_csv(BASE/"targetALS_wgs_metadata.csv", encoding='utf-8-sig')
 rnaseq_meta = pd.read_csv(BASE/"targetALS_rnaseq_metadata.csv")
 wgs_meta.columns = wgs_meta.columns.str.strip().str.lower()
 rnaseq_meta.columns = rnaseq_meta.columns.str.strip().str.lower()
 
+# Identify shared subjects
 shared_subjects = set(wgs_meta["externalsubjectid"].dropna()).intersection(set(rnaseq_meta["externalsubjectid"].dropna()))
 wgs_subset = wgs_meta[wgs_meta["externalsubjectid"].isin(shared_subjects)].copy()
 
-# Find our new standardized sidecars
+# Find ONLY our new sidecar files
 all_sidecars = list(BASE.glob("**/genotypes_quality.vcf.gz"))
 
 def find_sidecar(sample_id):
@@ -80,23 +79,31 @@ def find_sidecar(sample_id):
     sid_alt = sid.replace('-', '_')
     for s in all_sidecars:
         s_path = str(s).lower()
-        if sid in s_path or sid_alt in s_path:
+        # Strictly match our sidecar filename
+        if (sid in s_path or sid_alt in s_path) and s.name == "genotypes_quality.vcf.gz":
             return str(s)
     return None
 
 wgs_subset["vcf_path"] = wgs_subset["externalsampleid"].apply(find_sidecar)
-found = wgs_subset[wgs_subset["vcf_path"].notna()].drop_duplicates(subset=["vcf_path"])
+
+# --- THE CRITICAL FIX ---
+# 1. Remove rows where no VCF was found
+# 2. Ensure each SUBJECT ID only appears ONCE to prevent bcftools merge duplicates
+found = wgs_subset[wgs_subset["vcf_path"].notna()].drop_duplicates(subset=["externalsubjectid"])
+
+print(f"Final subject count for merge (Duplicates removed): {len(found)}")
 
 # Save merge list
 found["vcf_path"].to_csv(QTL_DIR/"vcf_merge_list.txt", index=False, header=False)
 
-# Build sample map for reheadering
+# Build sample map
 vcf_sample_map = []
 for _, row in found.iterrows():
     result = subprocess.run(['bcftools', 'query', '-l', row['vcf_path']], capture_output=True, text=True)
     v_id = result.stdout.strip()
     if v_id:
         vcf_sample_map.append({'vcf_id': v_id, 'subject_id': row['externalsubjectid']})
+
 pd.DataFrame(vcf_sample_map).to_csv(QTL_DIR/"sample_map.txt", sep="\t", index=False, header=False)
 
 print(f"Final subject count for merge: {len(found)}")
