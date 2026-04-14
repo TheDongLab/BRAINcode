@@ -140,12 +140,14 @@ ONSET_REMAP = {
     'limb': 'Limb', 'Lower Limb': 'Limb', 'Upper Limb': 'Limb', 
     'Lower Extremity': 'Limb', 'Upper Extremity': 'Limb',
     'Lower limb': 'Limb', 'Upper limb': 'Limb', 'Upper and Lower Limbs': 'Limb',
-    'Bulbar/Limb': 'Bulbar and Limb', 'Not Applicable': 'Not Applicable/NaN'
+    'Bulbar/Limb': 'Bulbar and Limb', 'Not Applicable': 'Not Applicable/NaN',
+    'nan': 'Not Applicable/NaN', 'Unknown': 'Not Applicable/NaN'
 }
 
 C9_REMAP = {
     'yes': 'Yes', 'Negative': 'No', 'ND': 'Unknown', 
-    'Not Applicable': 'Not Applicable/NaN', 'Abnormal Repeat Expansion': 'Yes'
+    'Not Applicable': 'Not Applicable/NaN', 'Abnormal Repeat Expansion': 'Yes',
+    'nan': 'Not Applicable/NaN', 'Unknown': 'Not Applicable/NaN'
 }
 
 # 3. GLOBAL CLEANING (Preserving logic exactly as requested)
@@ -183,7 +185,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     f.write(f" SHARED (also has WGS data):   {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
     f.write("============================================================\n\n")
 
-    cat_cols = ['sex', 'subject_group', 'tissue', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
+    cat_cols = ['sex', 'subject_group', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
     for col in cat_cols:
         if col not in df.columns: continue
         f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
