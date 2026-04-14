@@ -118,7 +118,7 @@ TISSUE_REMAP = {
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
     'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
     'Cortex_Motor_BA4': 'Motor_Cortex', 'BA4 Motor Cortex': 'Motor_Cortex',
-    'Lateral_motor_cortex': 'Motor_Cortex',
+    'Lateral_motor_cortex': 'Motor_Cortex', 'Cortex_Motor_Unspecified': 'Motor_Cortex',
     'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
     'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord',
     'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord',
@@ -156,10 +156,14 @@ C9_REMAP = {
 # 3. GLOBAL CLEANING (Preserving logic exactly as requested)
 df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
+df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_') if str(x) != 'nan' else 'Not Applicable/NaN'))
+df['tissue'] = df['tissue'].replace('nan', 'Not Applicable/NaN')
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
+df['subject_group'] = df['subject_group'].replace('nan', 'Not Applicable/NaN')
 df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
+df['site_of_motor_onset'] = df['site_of_motor_onset'].replace('nan', 'Not Applicable/NaN')
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
+df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].replace('nan', 'Not Applicable/NaN')
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Applicable/NaN')
 
 anc_binary_cols = []
@@ -192,24 +196,14 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     for col in cat_cols:
         if col not in df.columns: continue
         
-        # For tissue column, apply the remap to the dataframes for the covariate summary output
-        if col == 'tissue':
-            working_df = df.copy()
-            working_shared_df = shared_df.copy()
-            working_df['tissue'] = working_df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x)))
-            working_shared_df['tissue'] = working_shared_df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x)))
-        else:
-            working_df = df
-            working_shared_df = shared_df
-        
         f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
-        g_counts = working_df[col].value_counts(dropna=False)
-        s_counts = working_shared_df[col].value_counts(dropna=False)
+        g_counts = df[col].value_counts(dropna=False)
+        s_counts = shared_df[col].value_counts(dropna=False)
         all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
         for val in all_labels:
             orig_val = next((k for k in g_counts.index if str(k) == val), val)
             g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
-            f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(working_df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(working_shared_df))*100 if len(working_shared_df)>0 else 0:>4.1f}%)\n")
+            f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
     f.write("── ANCESTRY PERCENTAGE BINS ───────────────────────────\n\n")
