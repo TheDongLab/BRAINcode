@@ -15,6 +15,7 @@ module load HTSlib/1.21-GCC-13.3.0
 python3 - <<'EOF'
 import pandas as pd
 from pathlib import Path
+import subprocess
 
 BASE = Path("/home/zw529/donglab/data/target_ALS")
 
@@ -38,7 +39,7 @@ print(f"Subjects with BOTH (Expected Merge Size): {len(shared_subjects)}")
 # 3. Subset WGS metadata to shared subjects
 wgs_subset = wgs_meta[wgs_meta["externalsubjectid"].isin(shared_subjects)].copy()
 
-# 4. Robust VCF searching
+# 4. Robust VCF searching for both CGND and TALS
 print("Scanning for VCF files (ignoring SV/CNV/Repeats)...")
 all_vcfs = list(BASE.glob("**/*.vcf.gz"))
 
@@ -50,6 +51,7 @@ def find_best_vcf(sid):
     matches = []
     for v in all_vcfs:
         v_name = v.name.lower()
+        # Match both externalsampleid (e.g., NEUYY221HZA) and externalsubjectid (e.g., CGND-HDA-00169)
         if (sid.lower() in v_name or sid_underscore.lower() in v_name):
             if not any(b in v_name for b in blacklist):
                 matches.append(v)
@@ -57,7 +59,7 @@ def find_best_vcf(sid):
     if not matches:
         return None
     
-    # Priority: 1. Recalibrated + Annotated, 2. Hard-Filtered, 3. Any SNP VCF
+    # Priority: 1. Recalibrated + Annotated (CGND), 2. Hard-Filtered (TALS), 3. Any SNP VCF
     for m in matches:
         if "recalibrated" in m.name and "annotated" in m.name:
             return str(m)
@@ -74,7 +76,22 @@ missing = wgs_subset[wgs_subset["vcf_path"].isna()]
 print(f"VCFs successfully matched: {len(found)}")
 print(f"VCFs missing: {len(missing)}")
 
-# 5. Export lists and Sample Mapping for Reheadering
+# 5. Extract actual sample names from VCF headers
+print("Extracting sample names from VCF headers...")
+vcf_sample_map = {}  # Maps VCF internal ID to subject ID
+for _, row in found.iterrows():
+    vcf_path = row['vcf_path']
+    subject_id = row['externalsubjectid']
+    try:
+        result = subprocess.run(['bcftools', 'query', '-l', vcf_path], 
+                              capture_output=True, text=True, check=True)
+        vcf_sample_names = result.stdout.strip().split('\n')
+        for sample_name in vcf_sample_names:
+            vcf_sample_map[sample_name] = subject_id
+    except Exception as e:
+        print(f"Warning: Could not extract sample from {vcf_path}: {e}")
+
+# 6. Export lists and Sample Mapping for Reheadering
 out_dir = BASE / "QTL"
 out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,19 +102,15 @@ found["vcf_path"].to_csv(out_dir/"vcf_merge_list.txt", index=False, header=False
 found[["externalsubjectid","externalsampleid","vcf_path"]].to_csv(out_dir/"wgs_samples_for_vcf_merge.csv", index=False)
 
 # Sample Map for reheadering: [VCF_Internal_ID] [Subject_ID]
-# Added logic to handle the common "-b38" suffix found in internal headers
-mapping = []
-for _, row in found.iterrows():
-    # Map the clean ID
-    mapping.append([row['externalsampleid'], row['externalsubjectid']])
-    # Map the ID with the b38 suffix to ensure no samples are skipped
-    mapping.append([f"{row['externalsampleid']}-b38", row['externalsubjectid']])
-
-pd.DataFrame(mapping).to_csv(out_dir/"sample_map.txt", sep="\t", index=False, header=False)
+# Now uses actual VCF header names extracted above
+mapping_df = pd.DataFrame(list(vcf_sample_map.items()), columns=['vcf_id', 'subject_id'])
+mapping_df.to_csv(out_dir/"sample_map.txt", sep="\t", index=False, header=False)
 
 if len(missing) > 0:
     print("\n--- Subjects missing SNP VCFs ---")
     print(missing[["externalsubjectid", "externalsampleid"]].to_string(index=False))
+
+print(f"\nSample mapping contains {len(vcf_sample_map)} entries")
 EOF
 
 # 6. Indexing and Merging
@@ -108,9 +121,13 @@ SAMPLE_MAP=/home/zw529/donglab/data/target_ALS/QTL/sample_map.txt
 echo "Re-indexing VCFs to ensure .tbi existence..."
 cat $VCF_LIST | xargs -I {} -P 4 tabix -f -p vcf {}
 
-echo "Merging 437 samples..."
-# 1. bcftools merge -i - : Ignores complex INFO merging rules
-# 2. bcftools annotate -x ^FORMAT/GT : Strips everything except Genotypes (kills AD/DP mismatch)
+echo "Merging samples..."
+SAMPLE_COUNT=$(wc -l < $VCF_LIST)
+echo "Processing $SAMPLE_COUNT VCF files..."
+
+# 1. bcftools merge -i - : Ignores complex INFO merging rules (handles CGND vs TALS INFO differences)
+# 2. bcftools annotate -x ^FORMAT/GT : Strips everything except Genotypes (normalizes TALS extra fields: AF, F1R2, F2R1, etc.)
+# 3. bcftools reheader : Maps sequencing IDs (NEUYY..., NEUGN...) to subject IDs (CGND..., TALS...)
 bcftools merge -f PASS \
     -i - \
     -l $VCF_LIST \
@@ -118,7 +135,7 @@ bcftools merge -f PASS \
     -O v | bcftools annotate -x ^FORMAT/GT -O z -o $JOINT_VCF
 
 echo "Reheadering to map sequencing IDs to Subject IDs..."
-# This maps IDs like NEUXT... to CGND... so your Genotype matrix matches Expression matrix
+# This maps IDs like NEUXT..., NEUGN... to CGND..., TALS... so genotypes match expression matrix
 bcftools reheader -s $SAMPLE_MAP -o ${JOINT_VCF}.tmp $JOINT_VCF
 mv ${JOINT_VCF}.tmp $JOINT_VCF
 tabix -p vcf $JOINT_VCF
