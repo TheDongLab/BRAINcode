@@ -84,17 +84,22 @@ fi
 #----------------------------------------
 # STEP 3: FINAL QC FILTERING
 #----------------------------------------
-echo "Applying final variant and sample filters..."
+# 1. Filter out the "sparse" variants first (keep variants present in 95% of people)
 plink2 --pfile ${RAW_PREFIX} \
+       --geno 0.05 \
+       --make-pgen \
+       --out ${OUTDIR}/temp_variant_filtered
+
+# 2. NOW check the samples. 
+# Because the sparse noise is gone, the samples will suddenly look 99% complete.
+plink2 --pfile ${OUTDIR}/temp_variant_filtered \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
-       --geno 0.05 \
-       --hwe 1e-6 \
        --maf 0.05 \
+       --hwe 1e-6 \
        --max-alleles 2 \
        --make-pgen \
-       --out ${FILTERED_PREFIX} \
-       --threads ${SLURM_CPUS_PER_TASK}
+       --out ${FILTERED_PREFIX}
        
 #----------------------------------------
 # STEP 4: PCA & OUTPUT
