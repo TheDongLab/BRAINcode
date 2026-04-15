@@ -16,7 +16,7 @@ VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz
 OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
-VCF_FILTERED=${OUTDIR}/joint_GQ20_temp.vcf.gz
+VCF_FILTERED=${OUTDIR}/joint_GQ0_temp.vcf.gz
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
 FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
@@ -26,14 +26,15 @@ MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 #----------------------------------------
 # STEP 0: THE GQ FILTER (Isolated Environment)
 #----------------------------------------
-echo "Running Step 1 (GQ Filter) in isolated BCFtools environment..."
+# Setting GQ to 0 effectively bypasses the quality filter, 
+# allowing all called genotypes to pass into PLINK.
+echo "Running Step 1 (GQ Filter 0) in isolated BCFtools environment..."
 module --force purge
 module load StdEnv
 module load GCC/13.3.0
 module load BCFtools/1.21-GCC-13.3.0
 
-# This implements Step 1 of your protocol [cite: 13, 21]
-bcftools filter -e 'FORMAT/GQ < 20' -S . ${VCF_IN} -O z -o ${VCF_FILTERED}
+bcftools filter -e 'FORMAT/GQ < 0' -S . ${VCF_IN} -O z -o ${VCF_FILTERED}
 tabix -f -p vcf ${VCF_FILTERED}
 
 #----------------------------------------
@@ -45,7 +46,7 @@ module load StdEnv
 module load PLINK2/avx2_20250707
 module load R
 
-echo "Importing Filtered VCF to PLINK2..."
+echo "Importing VCF to PLINK2..."
 plink2 --vcf ${VCF_FILTERED} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
@@ -57,40 +58,50 @@ plink2 --vcf ${VCF_FILTERED} \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
-# Cleanup the temp VCF to save space (it's redundant once PGEN is made)
+# Cleanup the temp VCF to save space
 rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
 
 #----------------------------------------
 # STEP 2: DIAGNOSTICS & HISTOGRAMS
 #----------------------------------------
-# Generates missingness reports to "feel" the data distribution.
+echo "Generating missingness reports..."
 plink2 --pfile ${RAW_PREFIX} --missing --out ${OUTDIR}/qc_distribution
 
 Rscript -e "
-    smiss <- read.table('${OUTDIR}/qc_distribution.smiss', header=TRUE);
-    vmiss <- read.table('${OUTDIR}/qc_distribution.vmiss', header=TRUE);
+    # Load data with robust column handling for PLINK2 headers
+    smiss <- read.table('${OUTDIR}/qc_distribution.smiss', header=TRUE, check.names=FALSE);
+    vmiss <- read.table('${OUTDIR}/qc_distribution.vmiss', header=TRUE, check.names=FALSE);
+    
+    # Extract values safely
+    s_fmiss <- as.numeric(smiss[['F_MISS']]);
+    v_fmiss <- as.numeric(vmiss[['F_MISS']]);
+    
     pdf('${OUTDIR}/qc_histograms.pdf', width=10, height=5);
     par(mfrow=c(1,2));
+    
     # Step 2: Subject Call Rate
-    hist(1 - smiss\$F_MISS, main='Subject Call Rates (Step 2)', xlab='Call Rate', col='skyblue', breaks=50);
+    hist(1 - s_fmiss, main='Subject Call Rates (Step 2)', xlab='Call Rate', col='skyblue', breaks=50, xlim=c(0,1));
     abline(v=0.95, col='red', lty=2);
+    
     # Step 5: SNP Genotyping Rate
-    hist(1 - vmiss\$F_MISS, main='SNP Genotyping Rates (Step 5)', xlab='Genotyping Rate', col='salmon', breaks=50);
+    hist(1 - v_fmiss, main='SNP Genotyping Rates (Step 5)', xlab='Genotyping Rate', col='salmon', breaks=50, xlim=c(0,1));
     abline(v=0.95, col='red', lty=2);
+    
     dev.off();
 "
 
 #----------------------------------------
 # STEP 3: SAMPLE-LEVEL QC
 #----------------------------------------
-# Identify sex discrepancies, heterozygosity outliers, and relatives.
+echo "Performing sample-level checks (Sex, Heterozygosity, Relatedness)..."
 plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
 plink2 --pfile ${RAW_PREFIX} --het --out ${QC_SAMPLE_PREFIX}
 plink2 --pfile ${RAW_PREFIX} --king-cutoff 0.45 --out ${QC_SAMPLE_PREFIX}_relatedness
 
-# Extract failed IDs (using touch to ensure files exist for 'cat' even if empty)
-grep \"PROBLEM\" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print \$1, \$2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
-awk 'NR>1 && (\$6 > 0.2 || \$6 < -0.2) {print \$1, \$2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
+# Extract failed IDs
+# Use touch/grep logic to ensure scripts don't crash if no failures are found
+grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+awk 'NR>1 && ($6 > 0.2 || $6 < -0.2) {print $1, $2}' ${QC_SAMPLE_PREFIX}.het > ${OUTDIR}/fail_het.txt || touch ${OUTDIR}/fail_het.txt
 
 # Merge all sample failures into one list
 cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
@@ -98,7 +109,9 @@ cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatednes
 #----------------------------------------
 # STEP 4: FINAL FILTERING
 #----------------------------------------
-# Added --max-alleles 2 to ensure MatrixEQTL gets clean biallelic data
+echo "Applying final thresholds from protocol..."
+# Note: We apply --geno 0.05 here. Since GQ was 0, this will filter 
+# variants based solely on original VCF missingness.
 plink2 --pfile ${RAW_PREFIX} \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
@@ -113,19 +126,18 @@ plink2 --pfile ${RAW_PREFIX} \
 #----------------------------------------
 # STEP 5 PREP: PRINCIPAL COMPONENT ANALYSIS (PCA)
 #----------------------------------------
-# Generates the top 10 PCs to be used as ancestry covariates.
 echo "Running PCA for population stratification..."
 plink2 --pfile ${FILTERED_PREFIX} \
        --pca 10 \
        --out ${OUTDIR}/joint_pca
 
 #----------------------------------------
-# OUTPUT GENERATION (Legacy & MatrixEQTL)
+# OUTPUT GENERATION
 #----------------------------------------
-# 1. Generate Legacy BED files for downstream tool compatibility
+# 1. Generate Legacy BED files
 plink2 --pfile ${FILTERED_PREFIX} --make-bed --out ${BED_PREFIX}
 
-# 2. Generate the large .raw text matrix (Additive 0/1/2 format) for MatrixEQTL
+# 2. Generate .raw text matrix (Additive 0/1/2 format) for MatrixEQTL
 plink2 --pfile ${FILTERED_PREFIX} --recode A --out ${MATRIX_PREFIX}
 
-echo "QC Pipeline Complete. Created PGEN, BED, and MatrixEQTL .raw files in ${OUTDIR}"
+echo "QC Pipeline Complete. Output located in ${OUTDIR}"
