@@ -17,11 +17,11 @@ fi
 TISSUE="$1"
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
-# Writing directly to the tissue's eQTL directory
+# Writing directly to the tissue's eQTL directory (flattened as requested)
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL
 mkdir -p $OUTDIR
 
-### Verified Paths from ls -lA ###
+### Verified Paths from cluster inspection ###
 BASE=/home/zw529/donglab/data/target_ALS
 QTL_DIR=$BASE/QTL
 PLINK=$QTL_DIR/plink
@@ -30,17 +30,12 @@ REFS=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gen
 # Input Files
 EXPR=$QTL_DIR/expression_matrix.txt
 META=$QTL_DIR/expression_sample_metadata.csv
-SAMPLE_MAP=$QTL_DIR/sample_map.txt        # Updated from your ls
-COV=$QTL_DIR/covariates.tsv               # Updated from your ls
+SAMPLE_MAP=$QTL_DIR/sample_map.txt        
+COV=$QTL_DIR/covariates.tsv               
 RAW=$PLINK/joint_autosomes_matrixEQTL.raw
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
 PCA=$PLINK/joint_pca.eigenvec
 GTF_BED6=$REFS/gencode.v49.annotation.gene.bed6
-
-# Temp files for alignment
-TMP_MATCHED=$OUTDIR/tmp_matched.txt
-TMP_HDA=$OUTDIR/tmp_HDA_ids.txt
-CLEAN_COV=$OUTDIR/covariates_filtered.tsv
 
 echo "============================================"
 echo "  eQTL Prep for $TISSUE"
@@ -48,19 +43,20 @@ echo "  $(date)"
 echo "============================================"
 
 ##############################################
-# STEP 1: Build sample mapping
+# STEP 1: Build ID Mapping (DNA <-> RNA)
 ##############################################
-echo "[1] Filtering metadata and building ID maps..."
+echo "[1] Filtering metadata and normalizing ID maps..."
 
+# Process Covariates and create binary filters
 python3 << EOF
 import pandas as pd
 df = pd.read_csv("$COV", sep='\t')
 
-# Quality Filter: Drop samples with low RIN and high RNA skew
+# Quality Filter: Drop samples with low quality metrics
 bad_samples = df[df['rin'].isna() & (df['rna_skew'] > 1.0)]['externalsampleid'].tolist()
 df = df[~df['externalsampleid'].isin(bad_samples)]
 
-# Case/Control Encoding
+# Case/Control Encoding (Matrix eQTL needs numeric)
 def collapse(g):
     if 'ALS' in str(g): return 1
     if 'Non-Neurological' in str(g): return 0
@@ -68,124 +64,85 @@ def collapse(g):
 
 df['is_als'] = df['subject_group'].apply(collapse)
 df = df[df['is_als'].notna()]
-df.to_csv("$CLEAN_COV", sep='\t', index=False)
-
-with open("$OUTDIR/keep_samples.txt", 'w') as f:
-    for s in df['externalsampleid'].tolist(): f.write(s + "\n")
+df.to_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t', index=False)
 EOF
 
-# Mapping HRA (RNA) to HDA (DNA) using sample_map.txt
-# sample_map.txt format: SubjectID,HRA_ID,HDA_ID
-tail -n +2 $META | awk -F',' -v tissue="$TISSUE" '$3 == tissue {print $2","$1}' | grep -Ff $OUTDIR/keep_samples.txt | sort -t',' -k1,1 > $OUTDIR/tmp_meta.txt
-tail -n +2 $SAMPLE_MAP | awk -F',' '{print $1","$2","$3}' | sort -t',' -k1,1 > $OUTDIR/tmp_map_sorted.txt
+# Normalize IDs across files:
+# 1. Map: DNA_ID, Subject_ID (handling the spaces/tabs from your ls output)
+sed 's/[[:space:]]\+/,/g' $SAMPLE_MAP | sort -t',' -k2,2 > $OUTDIR/tmp_map.csv
 
-# Join on SubjectID (Column 1)
-join -t',' -1 1 -2 1 $OUTDIR/tmp_meta.txt $OUTDIR/tmp_map_sorted.txt > $TMP_MATCHED
-# Extract DNA IDs (HDA)
-awk -F',' '{print $4}' $TMP_MATCHED > $TMP_HDA
-# Extract RNA IDs with underscore fix (HRA_001)
-awk -F',' '{print $2}' $TMP_MATCHED | sed 's/-/_/g' > $OUTDIR/tmp_hra_under.txt
+# 2. Metadata: Subject_ID, RNA_ID (HRA)
+tail -n +2 $META | awk -F',' -v tissue="$TISSUE" '$3 == tissue {print $1","$2}' | sort -t',' -k1,1 > $OUTDIR/tmp_meta.csv
+
+# 3. Join to create: Subject, RNA_ID, DNA_ID
+join -t',' -1 1 -2 2 $OUTDIR/tmp_meta.csv $OUTDIR/tmp_map.csv > $OUTDIR/tmp_triplets.csv
 
 ##############################################
-# STEP 2: Subset Expression
+# STEP 2-6: Alignment and Matrix Generation
 ##############################################
-echo "[2] Subsetting expression matrix..."
-python3 << EOF
-ids_file, expr_file, out_file = "$OUTDIR/tmp_hra_under.txt", "$EXPR", "$OUTDIR/expression_${TISSUE_DIR}.txt"
-with open(ids_file) as f: keep_ids = set(line.strip() for line in f if line.strip())
-with open(expr_file) as f, open(out_file, 'w') as out:
-    header = f.readline().rstrip('\n').split('\t')
-    keep_idx = [0] + [i for i, h in enumerate(header) if h in keep_ids]
-    out.write('\t'.join(header[i] for i in keep_idx) + '\n')
-    for line in f:
-        fields = line.rstrip('\n').split('\t')
-        out.write('\t'.join(fields[i] for i in keep_idx) + '\n')
-EOF
+echo "[2-6] Aligning SNPs, Expression, and Covariates..."
 
-##############################################
-# STEP 3: Subset + Transpose SNPs
-##############################################
-echo "[3] Processing SNPs (MAF > 0.05)..."
-python3 << EOF
-import re, numpy as np
-ids_file, raw_file, bim_file = "$TMP_HDA", "$RAW", "$BIM"
-out_file = "$OUTDIR/snp_${TISSUE_DIR}.txt"
-
-with open(ids_file) as f: keep_ids = set(line.strip() for line in f if line.strip())
-chrpos_names = []
-with open(bim_file) as f:
-    for line in f:
-        p = line.split()
-        if len(p) >= 4: chrpos_names.append(f"chr{p[0]}:{p[3]}")
-
-sample_ids, rows = [], []
-with open(raw_file) as f:
-    f.readline() # Skip header
-    n_snps = len(chrpos_names)
-    for line in f:
-        fields = line.split()
-        if len(fields) < 6: continue
-        iid = re.sub(r'-b\d+$', '', fields[1])
-        if iid in keep_ids:
-            sample_ids.append(iid)
-            geno_fields = fields[6:6+n_snps]
-            rows.append([float(v) if v != "NA" else np.nan for v in geno_fields])
-
-geno = np.array(rows, dtype=float)
-af = np.nanmean(geno, axis=0) / 2.0
-maf = np.minimum(af, 1 - af)
-keep_idx = np.where(np.nan_to_num(maf) >= 0.05)[0]
-
-with open(out_file, 'w') as out:
-    out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
-    for idx in keep_idx:
-        vals = [str(int(v)) if not np.isnan(v) else "NA" for v in geno[:, idx]]
-        out.write(chrpos_names[idx] + '\t' + '\t'.join(vals) + '\n')
-EOF
-
-##############################################
-# STEP 4-5: Alignment & HDA Renaming
-##############################################
-echo "[4-5] Aligning RNA and DNA IDs..."
 python3 << EOF
 import pandas as pd
-# tmp_matched format: Subj,HRA,RNA_ID,HDA
-mapping = pd.read_csv("$TMP_MATCHED", header=None, names=['sub', 'hra', 'rna_id', 'hda'])
-hda_to_hra = dict(zip(mapping['hda'], mapping['hra']))
+import numpy as np
+import re
+import sys
 
-with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'r') as f:
-    snp_hda_samples = f.readline().strip().split('\t')[1:]
+# Load Mapping
+mapping = pd.read_csv("$OUTDIR/tmp_triplets.csv", header=None, names=['sub','hra','hda'])
 
-target_hra_expr = [hda_to_hra[h].replace('-', '_') for h in snp_hda_samples]
-target_hra_cov = [hda_to_hra[h] for h in snp_hda_samples]
+# 1. Load Genotypes
+# Using the FID (Col 0) for DNA IDs per your cluster inspection
+raw_df = pd.read_csv("$RAW", sep='\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+# Strip DNA versioning (e.g., -b38) to match mapping
+raw_df['FID'] = raw_df['FID'].str.replace(r'-b\d+$', '', regex=True)
 
-df_expr = pd.read_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index_col=0)
-df_expr = df_expr[target_hra_expr]
-df_expr.columns = snp_hda_samples
-df_expr.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+# 2. Load Expression
+expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
+# Normalize RNA IDs: Matrix uses underscores (CGND_HRA), Mapping uses hyphens (CGND-HRA)
+expr.columns = [c.replace('_', '-') for c in expr.columns]
 
-df_cov_raw = pd.read_csv("$CLEAN_COV", sep='\t', index_col=0)
-df_cov_aligned = df_cov_raw.loc[target_hra_cov]
-df_cov_aligned.index = snp_hda_samples
-df_cov_aligned.to_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t')
-EOF
-
-##############################################
-# STEP 6: Encode Covariates (Sex + PCA)
-##############################################
-echo "[6] Encoding Covariates and Adding PCA..."
-python3 << EOF
-import pandas as pd
-df = pd.read_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t', index_col=0)
-pca = pd.read_csv("$PCA", sep='\s+', header=None)
-pca = pca.iloc[:, 1:7]
+# 3. Load Covariates and PCA
+cov = pd.read_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t')
+pca = pd.read_csv("$PCA", sep='\s+', header=None).iloc[:, [1,2,3,4,5,6]]
 pca.columns = ['ID', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
-pca.set_index('ID', inplace=True)
+pca['ID'] = pca['ID'].str.replace(r'-b\d+$', '', regex=True)
 
-df['sex_binary'] = df['sex'].str.lower().map({'male': 1, 'female': 0})
-cols_to_keep = ['sex_binary', 'age_at_death', 'rin', 'rna_skew', 'is_als']
-cov_matrix = df[cols_to_keep].join(pca, how='inner')
-cov_matrix.T.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t')
+# 4. Find the Overlap (Intersection of all 4 data sources)
+overlap = mapping[
+    mapping['hda'].isin(raw_df['FID']) & 
+    mapping['hra'].isin(expr.columns) &
+    mapping['hra'].isin(cov['externalsampleid']) &
+    mapping['hda'].isin(pca['ID'])
+].copy()
+
+print(f"  Final sample overlap count: {len(overlap)}")
+
+if len(overlap) == 0:
+    print("ERROR: Zero samples overlapping. Check ID formats.")
+    sys.exit(1)
+
+# 5. Export Aligned Expression (Column names = DNA IDs for Matrix eQTL)
+expr_aligned = expr[overlap['hra']]
+expr_aligned.columns = overlap['hda']
+expr_aligned.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+
+# 6. Export Aligned SNPs
+snp_aligned = raw_df[raw_df['FID'].isin(overlap['hda'])].set_index('FID').drop(columns=['IID']).T
+# Filter for MAF > 0.05
+af = np.nanmean(snp_aligned.values, axis=1) / 2.0
+maf = np.minimum(af, 1 - af)
+keep_snps = np.where(np.nan_to_num(maf) >= 0.05)[0]
+snp_aligned.iloc[keep_snps, :].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
+
+# 7. Export Aligned Covariates
+cov_final = overlap.merge(cov, left_on='hra', right_on='externalsampleid')
+cov_final = cov_final.merge(pca, left_on='hda', right_on='ID')
+cov_final['sex_binary'] = cov_final['sex'].str.lower().map({'male': 1, 'female': 0})
+
+# Transpose for Matrix eQTL
+cov_cols = ['sex_binary', 'age_at_death', 'rin', 'rna_skew', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
+cov_final.set_index('hda')[cov_cols].T.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t')
 EOF
 
 ##############################################
@@ -201,43 +158,34 @@ awk 'BEGIN{OFS="\t"} {
     gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3
 }' $GTF_BED6 >> $OUTDIR/gene_location.txt
 
+# Final ID overlap validation check
 python3 << EOF
 expr_file = "$OUTDIR/expression_${TISSUE_DIR}.txt"
 loc_file  = "$OUTDIR/gene_location.txt"
-
 with open(loc_file) as f:
     f.readline()
     loc_genes = set(line.split('\t')[0] for line in f)
 with open(expr_file) as f:
     f.readline()
     expr_genes = [line.split('\t')[0] for line in f]
-
 found = sum(1 for g in expr_genes if g in loc_genes)
 print(f"  Validation: Found location for {found} / {len(expr_genes)} expression genes.")
 EOF
 
 ##############################################
-# STEP 9: Cleanup temp files
+# STEP 9-10: Cleanup and Summary
 ##############################################
-echo ""
 echo "[9] Cleaning up temp files..."
-rm -f $TMP_META $TMP_WGS $TMP_MATCHED $TMP_HRA $TMP_HRA_UNDER $TMP_HDA
-echo "  Done."
+rm -f $OUTDIR/tmp_*
 
-##############################################
-# STEP 10: Final summary
-##############################################
-echo ""
 echo "============================================"
-echo "  Prep complete for  : $TISSUE ($STRAT_SEX)"
-echo "  Output directory   : $OUTDIR"
+echo "  Prep complete for : $TISSUE"
+echo "  Output directory  : $OUTDIR"
 echo ""
-echo "  snp_${TISSUE_DIR}.txt                  -> args[1] SNP_file_name"
-echo "  expression_${TISSUE_DIR}.txt           -> args[2] expression_file_name"
-echo "  covariates_${TISSUE_DIR}_encoded.txt   -> args[3] covariates_file_name"
-echo "  gene_location.txt                      -> args[5] gene_location_file_name"
-echo "  snp_location.txt                       -> args[6] snp_location_file_name"
-echo ""
-echo "  Next step: sbatch run_eQTL.sh \"$TISSUE\" \"$STRAT_SEX\""
+echo "  snp_${TISSUE_DIR}.txt                  -> SNP_file_name"
+echo "  expression_${TISSUE_DIR}.txt           -> expression_file_name"
+echo "  covariates_${TISSUE_DIR}_encoded.txt   -> covariates_file_name"
+echo "  gene_location.txt                      -> gene_location_file_name"
+echo "  snp_location.txt                       -> snp_location_file_name"
 echo "  $(date)"
 echo "============================================"
