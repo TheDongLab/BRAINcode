@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vcf_to_plink_joint
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=56G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/vcf_to_plink.out
@@ -11,14 +11,19 @@ set -euo pipefail
 
 # Load required modules
 module load PLINK2/avx2_20250707
+module load BCFtools/1.21-GCC-13.3.0
 module load R
 
 #----------------------------------------
 # PATHS
 #----------------------------------------
-VCF=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped.vcf.gz
+# RENAMED to your actual successful file
+VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz
 OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
+
+# Temporary filtered VCF
+VCF_FILTERED=${OUTDIR}/joint_GQ20_temp.vcf.gz
 
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
@@ -27,12 +32,19 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
+# STEP 0: THE GQ FILTER (CRITICAL)
+#----------------------------------------
+echo "Applying GQ < 20 filter via bcftools..."
+# -S . replaces genotypes failing the filter with missing (./.)
+# We do this BEFORE plink because plink ignores GQ tags by default.
+bcftools filter -e 'FORMAT/GQ < 20' -S . ${VCF_IN} -O z -o ${VCF_FILTERED}
+tabix -f -p vcf ${VCF_FILTERED}
+
+#----------------------------------------
 # STEP 1: VCF → PLINK2 IMPORT
 #----------------------------------------
-# --new-id-max-allele-len 800: Fixes the 'allele codes too long' error for large INDELs.
-# --impute-sex & --split-par hg38: Forces sex info generation to prevent chrX crash.
-# --set-all-var-ids: Fixes the '.' IDs found in your VCF.
-plink2 --vcf ${VCF} \
+echo "Importing Filtered VCF to PLINK2..."
+plink2 --vcf ${VCF_FILTERED} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
        --set-all-var-ids @:#:\$r:\$a \
@@ -43,8 +55,11 @@ plink2 --vcf ${VCF} \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
+# Cleanup the temp VCF to save space (it's redundant once PGEN is made)
+rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
+
 #----------------------------------------
-# STEP 2 & 5: DIAGNOSTICS & HISTOGRAMS
+# STEP 2: DIAGNOSTICS & HISTOGRAMS
 #----------------------------------------
 # Generates missingness reports to "feel" the data distribution.
 plink2 --pfile ${RAW_PREFIX} --missing --out ${OUTDIR}/qc_distribution
@@ -64,7 +79,7 @@ Rscript -e "
 "
 
 #----------------------------------------
-# STEP 4, 9, 10: SAMPLE-LEVEL QC
+# STEP 3: SAMPLE-LEVEL QC
 #----------------------------------------
 # Identify sex discrepancies, heterozygosity outliers, and relatives.
 plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
@@ -79,11 +94,9 @@ awk 'NR>1 && (\$6 > 0.2 || \$6 < -0.2) {print \$1, \$2}' ${QC_SAMPLE_PREFIX}.het
 cat ${OUTDIR}/fail_sex.txt ${OUTDIR}/fail_het.txt ${QC_SAMPLE_PREFIX}_relatedness.king.cutoff.out.id | sort | uniq > ${OUTDIR}/all_fail_samples.txt
 
 #----------------------------------------
-# FINAL FILTERING (Steps 2, 5, 6, 8)
+# STEP 4: FINAL FILTERING
 #----------------------------------------
-# --mind 0.05: Keep subjects with 95%+ call rate (Confirmed 0 failures in your data).
-# --geno 0.05: Keep SNPs with 95%+ call rate (Will filter ~35M sparse variants).
-# --hwe 1e-6: Removes technical artifacts (surrogate for mishap test).
+# Added --max-alleles 2 to ensure MatrixEQTL gets clean biallelic data
 plink2 --pfile ${RAW_PREFIX} \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
@@ -94,6 +107,15 @@ plink2 --pfile ${RAW_PREFIX} \
        --make-pgen \
        --out ${FILTERED_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
+       
+#----------------------------------------
+# STEP 5 PREP: PRINCIPAL COMPONENT ANALYSIS (PCA)
+#----------------------------------------
+# Generates the top 10 PCs to be used as ancestry covariates.
+echo "Running PCA for population stratification..."
+plink2 --pfile ${FILTERED_PREFIX} \
+       --pca 10 \
+       --out ${OUTDIR}/joint_pca
 
 #----------------------------------------
 # OUTPUT GENERATION (Legacy & MatrixEQTL)
