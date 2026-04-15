@@ -9,33 +9,14 @@
 
 set -euo pipefail
 
-module --force purge
-module load StdEnv
-
-# Load PLINK2 (this usually triggers the downgrade to GCC 12.2.0)
-module load PLINK2/avx2_20250707
-
-# Load the newer toolchain for BCFtools
-module load GCC/13.3.0
-module load BCFtools/1.21-GCC-13.3.0
-module load GSL/2.8-GCC-13.3.0
-module load R
-
-# We use the exact paths from your 'module show' output to override the PLINK downgrade
-export LD_LIBRARY_PATH=/apps/software/2024a/software/GSL/2.8-GCC-13.3.0/lib:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/apps/software/2024a/software/GCCcore/13.3.0/lib64:$LD_LIBRARY_PATH
-
 #----------------------------------------
 # PATHS
 #----------------------------------------
-# RENAMED to your actual successful file
 VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz
 OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
-# Temporary filtered VCF
 VCF_FILTERED=${OUTDIR}/joint_GQ20_temp.vcf.gz
-
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
 FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
@@ -43,17 +24,27 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 0: THE GQ FILTER (CRITICAL)
+# STEP 0: THE GQ FILTER (Isolated Environment)
 #----------------------------------------
-echo "Applying GQ < 20 filter via bcftools..."
-# -S . replaces genotypes failing the filter with missing (./.)
-# We do this BEFORE plink because plink ignores GQ tags by default.
+echo "Running Step 1 (GQ Filter) in isolated BCFtools environment..."
+module --force purge
+module load StdEnv
+module load GCC/13.3.0
+module load BCFtools/1.21-GCC-13.3.0
+
+# This implements Step 1 of your protocol [cite: 13, 21]
 bcftools filter -e 'FORMAT/GQ < 20' -S . ${VCF_IN} -O z -o ${VCF_FILTERED}
 tabix -f -p vcf ${VCF_FILTERED}
 
 #----------------------------------------
 # STEP 1: VCF → PLINK2 IMPORT
 #----------------------------------------
+echo "Switching to PLINK2 environment for remaining QC steps..."
+module --force purge
+module load StdEnv
+module load PLINK2/avx2_20250707
+module load R
+
 echo "Importing Filtered VCF to PLINK2..."
 plink2 --vcf ${VCF_FILTERED} \
        --chr chr1-22, chrX, chrY, chrM \
