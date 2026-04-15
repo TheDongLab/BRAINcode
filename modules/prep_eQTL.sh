@@ -76,7 +76,7 @@ EOF
 ##############################################
 # STEP 3: Load and Intersect High-D Data
 ##############################################
-echo "[Step 3] Intersecting with Genotypes (using IID)..."
+echo "[Step 3] Intersecting with Genotypes and Expression..."
 
 python3 << EOF
 import pandas as pd
@@ -84,29 +84,45 @@ import sys
 
 triplets = pd.read_csv("$OUTDIR/tmp_triplets.csv")
 
-# PLINK RAW: FID is 0, IID is the Subject ID (e.g. NEUCW292DYJ)
-raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+# 1. Load Genotypes
+# We only care about the columns FID and IID here
+raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=[0, 1])
 
-# Expression: Normalize underscores to hyphens
-expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
-expr.columns = [c.replace('_', '-') for c in expr.columns]
+# 2. Load Expression & Normalize
+# We will create a normalized list of headers for matching
+expr_raw = pd.read_csv("$EXPR", sep='\t', index_col=0, nrows=1)
+# Create a mapping of { 'CGND-HRA-00727' : 'CGND_HRA_00727' }
+expr_mapping = {c.replace('_', '-'): c for c in expr_raw.columns}
 
-# PCA: Column 1 is IID
-pca = pd.read_csv("$PCA", sep=r'\s+', header=None).iloc[:, [1,2,3,4,5,6]]
-pca.columns = ['ID', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
-
-# FINAL INTERSECTION
-# Use 'subject' to match IID in genotypes and PCA
-# Use 'hra' to match columns in Expression
+# 3. INTERSECT
+# Check if Subject is in PLINK IID AND normalized HRA is in Expression
 overlap = triplets[
     triplets['subject'].isin(raw_df['IID']) & 
-    triplets['hra'].isin(expr.columns) &
-    triplets['subject'].isin(pca['ID'])
+    triplets['hra'].isin(expr_mapping.keys())
 ].copy()
+
+# 4. HANDLE PCA (The Broken File)
+# Since your PCA file lacks IDs, we will assume it is ordered exactly 
+# like your PLINK .raw file. If it has the same number of rows, we map them.
+pca_raw = pd.read_csv("$PCA", sep=r'\s+', header=None)
+if len(pca_raw) == len(raw_df):
+    print("  PCA file matches PLINK row count. Mapping PCs by position.")
+    # Map Subject IDs to PCs based on their position in the .raw file
+    pca_cols = ['PC1', 'PC2', 'PC3', 'PC4', 'PC5']
+    pca_data = pca_raw.iloc[:, 0:5] # Take first 5 columns
+    pca_data.columns = pca_cols
+    pca_data['ID'] = raw_df['IID'].values
+    
+    # Now check if our overlap samples have PCA data
+    overlap = overlap[overlap['subject'].isin(pca_data['ID'])]
+    pca_data.to_csv("$OUTDIR/tmp_fixed_pca.csv", index=False)
+else:
+    print(f"ERROR: PCA rows ({len(pca_raw)}) don't match PLINK rows ({len(raw_df)}).")
+    sys.exit(1)
 
 print(f"  Final intersection count: {len(overlap)} samples.")
 if overlap.empty:
-    print("ERROR: Intersection is still empty. Check Subject ID strings.")
+    print("ERROR: Intersection still 0. Check for hidden spaces in files.")
     sys.exit(1)
 
 overlap.to_csv("$OUTDIR/tmp_final_overlap.csv", index=False)
