@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=extract_targetALS_tissues_covariates
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=150G
 #SBATCH --time=23:00:00
 #SBATCH -p day
@@ -171,7 +171,9 @@ for col in anc_cols:
 
 # Split Cohorts
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
-shared_df = df[df['externalsubjectid'].isin(wgs_subs)]
+shared_df = df[df['externalsubjectid'].isin(wgs_subs)].copy()
+# FORCE tissue column normalization AGAIN
+shared_df['tissue'] = shared_df['tissue'].astype(str)
 
 # 4. EXPORT MAIN TABLE
 df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
@@ -227,6 +229,11 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     # -------------------------------------
 
 # 6. TISSUE SUMMARY
+# enforce remap BEFORE any counting
+shared_df['tissue'] = shared_df['tissue'].map(
+    lambda x: TISSUE_REMAP.get(x, x)
+)
+
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 sample_counts = shared_df['tissue'].value_counts()
 
@@ -238,7 +245,11 @@ with open("$TISSUE_SUMMARY", "w") as f:
     f.write(f"{'TISSUE':<35} {'SUBJECTS':<15} {'SAMPLES':<15}\n")
     f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
     for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
-        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
+        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}" + "\n")
+
+
+# OPTIONAL SAFETY (prevents silent mismatches like trailing spaces)
+shared_df['tissue'] = shared_df['tissue'].str.strip()
 
 # 7. PATIENT TISSUE BREAKDOWN
 pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
