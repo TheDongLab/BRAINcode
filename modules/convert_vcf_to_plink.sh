@@ -9,10 +9,21 @@
 
 set -euo pipefail
 
-# Load required modules
+module --force purge
+module load StdEnv
+
+# Load PLINK2 (this usually triggers the downgrade to GCC 12.2.0)
 module load PLINK2/avx2_20250707
+
+# Load the newer toolchain for BCFtools
+module load GCC/13.3.0
 module load BCFtools/1.21-GCC-13.3.0
+module load GSL/2.8-GCC-13.3.0
 module load R
+
+# We use the exact paths from your 'module show' output to override the PLINK downgrade
+export LD_LIBRARY_PATH=/apps/software/2024a/software/GSL/2.8-GCC-13.3.0/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/apps/software/2024a/software/GCCcore/13.3.0/lib64:$LD_LIBRARY_PATH
 
 #----------------------------------------
 # PATHS
