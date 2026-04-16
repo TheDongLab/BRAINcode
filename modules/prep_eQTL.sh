@@ -31,129 +31,84 @@ echo "  $(date)"
 echo "============================================"
 
 ##############################################
-# STEP 1: Pre-process Covariates
+# STEP 1: Process All Data in Python
 ##############################################
-echo "[Step 1] Cleaning covariates..."
-
-python3 << EOF
-import pandas as pd
-df = pd.read_csv("$COV", sep='\t')
-
-def collapse(g):
-    if 'ALS' in str(g): return 1
-    if 'Non-Neurological' in str(g): return 0
-    return None
-
-df['is_als'] = df['subject_group'].apply(collapse)
-df = df[df['is_als'].notna()]
-df.to_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t', index=False)
-EOF
-
-##############################################
-# STEP 2: ID Alignment (DNA <-> RNA)
-##############################################
-echo "[Step 2] Bridging IDs..."
-
-python3 << EOF
-import pandas as pd
-# Load Metadata (RNA ID, Subject ID, Tissue)
-meta_df = pd.read_csv("$META", header=None, names=['hra', 'subject', 'tissue'])
-meta_filt = meta_df[meta_df['tissue'] == "$TISSUE"].copy()
-
-# Load Sample Map (DNA ID, Subject ID)
-map_df = pd.read_csv("$SAMPLE_MAP", sep='\t', header=None, names=['hda', 'subject'])
-
-# Bridge them
-triplets = pd.merge(meta_filt, map_df, on='subject')
-triplets.to_csv("$OUTDIR/tmp_triplets.csv", index=False)
-EOF
-
-##############################################
-# STEP 3: Initial Data Loading
-##############################################
-echo "[Step 3] Initial data loading..."
+echo "[Step 1] Loading and aligning all data types..."
 
 python3 << EOF
 import pandas as pd
 import numpy as np
+import sys
 
-triplets = pd.read_csv("$OUTDIR/tmp_triplets.csv")
+# 1. LOAD THE BRIDGE
+meta = pd.read_csv("$META", header=None, names=['hra', 'subject', 'tissue'])
+meta = meta[meta['tissue'] == "$TISSUE"]
+samp_map = pd.read_csv("$SAMPLE_MAP", sep='\t', header=None, names=['hda', 'subject'])
+bridge = pd.merge(meta, samp_map, on='subject')
 
-# 1. Process SNPs
-# .raw files use the DNA ID (hda) in the IID column
-raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
-# Map HDA -> Subject ID for standardizing headers
-hda_to_sub = dict(zip(triplets['hda'], triplets['subject']))
-snp_subset = raw_df[raw_df['IID'].isin(triplets['hda'])].copy()
-snp_subset['SUB_ID'] = snp_subset['IID'].map(hda_to_sub)
-snp_out = snp_subset.set_index('SUB_ID').drop(columns=['FID', 'IID']).T
-snp_out.to_csv("$OUTDIR/tmp_snp_raw.txt", sep='\t')
+# Create DNA-centric mapping
+rna_to_dna = dict(zip(bridge['hra'], bridge['hda']))
 
-# 2. Process Expression
+# 2. PROCESS EXPRESSION
 expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
-# Standardize hyphens in headers
 expr.columns = [c.replace('_', '-') for c in expr.columns]
-# Map RNA ID -> Subject ID
-hra_to_sub = dict(zip(triplets['hra'], triplets['subject']))
-valid_hra = [c for c in triplets['hra'] if c in expr.columns]
-expr_out = expr[valid_hra].copy().rename(columns=hra_to_sub)
-expr_out.to_csv("$OUTDIR/tmp_expr_raw.txt", sep='\t')
+valid_expr_cols = [c for c in expr.columns if c in rna_to_dna]
+expr_final = expr[valid_expr_cols].rename(columns=rna_to_dna)
 
-# 3. Process Covariates
-cov = pd.read_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t')
+# 3. PROCESS GENOTYPES
+raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+snp_final = raw_df[raw_df['IID'].isin(bridge['hda'])].copy()
+snp_final = snp_final.set_index('IID').drop(columns=['FID']).T
+
+# 4. PROCESS COVARIATES & PCA
+cov = pd.read_csv("$COV", sep='\t')
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
-# Merge all info onto the triplets bridge
-cov_final = triplets.merge(cov, left_on='hra', right_on='externalsampleid')
-cov_final = cov_final.merge(pca, left_on='subject', right_on='IID')
-cov_final['sex_bin'] = cov_final['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
+
+cov_merged = bridge.merge(cov, left_on='hra', right_on='externalsampleid')
+cov_merged = cov_merged.merge(pca, left_on='subject', right_on='IID')
+
+def get_als(g): return 1 if 'ALS' in str(g) else 0
+cov_merged['is_als'] = cov_merged['subject_group'].apply(get_als)
+cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
+
 cov_cols = ['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
-cov_out = cov_final.set_index('subject')[cov_cols].T
-# Save without quotes and ensure ID column name is set
-cov_out.index.name = 'id'
-cov_out.to_csv("$OUTDIR/tmp_cov_raw.txt", sep='\t', quoting=0)
+cov_final = cov_merged.set_index('hda')[cov_cols].T
+
+# 5. THE THREE-WAY INTERSECTION
+common_samples = sorted(list(set(expr_final.columns) & set(snp_final.columns) & set(cov_final.columns)))
+
+print(f"--- Alignment Results ---")
+print(f"Common samples found: {len(common_samples)}")
+
+if len(common_samples) > 0:
+    expr_final[common_samples].to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+    snp_final[common_samples].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
+    cov_final[common_samples].to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', quoting=0)
+else:
+    print("Error: Intersection failed. Debugging IDs...")
+    if not expr_final.empty: print("Expr ID example:", expr_final.columns[0])
+    if not snp_final.empty: print("SNP ID example:", snp_final.columns[0])
+    if not cov_final.empty: print("Cov ID example:", cov_final.columns[0])
+    sys.exit(1)
 EOF
 
 ##############################################
-# STEP 4: STRICT FINAL ALIGNMENT
+# STEP 2: Location Files
 ##############################################
-echo "[Step 4] Performing strict three-way sample alignment..."
+echo "[Step 2] Generating location files..."
 
-python3 << EOF
-import pandas as pd
-# Load everything back with index_col=0 to treat first col as labels
-snp = pd.read_csv("$OUTDIR/tmp_snp_raw.txt", sep='\t', index_col=0)
-expr = pd.read_csv("$OUTDIR/tmp_expr_raw.txt", sep='\t', index_col=0)
-cov = pd.read_csv("$OUTDIR/tmp_cov_raw.txt", sep='\t', index_col=0)
-
-# Intersect the columns (Subject IDs)
-common = sorted(list(set(snp.columns) & set(expr.columns) & set(cov.columns)))
-
-print(f"  Final Aligned Sample Count: {len(common)}")
-
-if len(common) == 0:
-    print("ERROR: Intersection failed. Check ID formats in tmp files.")
-    import sys; sys.exit(1)
-
-# Save Final Aligned Files
-snp[common].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
-expr[common].to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
-cov[common].to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t')
-EOF
-
-##############################################
-# STEP 5: Location Files
-##############################################
-echo "[Step 5] Generating location files..."
+# SNP Locations from BIM
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
 awk 'BEGIN{OFS="\t"} {print "chr"$1":"$4, "chr"$1, $4}' $BIM >> $OUTDIR/snp_location.txt
 
+# Gene Locations from GTF (BED6)
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
 
 ##############################################
-# STEP 6: Cleanup
+# STEP 3: Cleanup
 ##############################################
-echo "[Step 6] Cleaning up..."
+echo "[Step 3] Cleaning up temporary files..."
 rm -f $OUTDIR/tmp_*
 
 echo "============================================"
