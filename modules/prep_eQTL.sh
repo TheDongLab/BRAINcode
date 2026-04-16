@@ -31,7 +31,7 @@ echo "  $(date)"
 echo "============================================"
 
 ##############################################
-# STEP 1: Process All Data in Python
+# STEP 1: Process All Data in Python (REVISED)
 ##############################################
 echo "[Step 1] Loading and aligning all data types..."
 
@@ -46,26 +46,33 @@ meta = meta[meta['tissue'] == "$TISSUE"]
 samp_map = pd.read_csv("$SAMPLE_MAP", sep='\t', header=None, names=['hda', 'subject'])
 bridge = pd.merge(meta, samp_map, on='subject')
 
-# Create DNA-centric mapping
-rna_to_dna = dict(zip(bridge['hra'], bridge['hda']))
+# 2. PROCESS GENOTYPES (The tricky part)
+raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+# Create a mapping from Short ID to the Bridge DNA ID
+# bridge['subject'] contains 'NEUCW292DYJ', bridge['hda'] contains 'NEUCW292DYJ-b38'
+sub_to_hda = dict(zip(bridge['subject'], bridge['hda']))
 
-# 2. PROCESS EXPRESSION
+# Filter SNPs where IID matches a subject in our bridge
+snp_final = raw_df[raw_df['IID'].isin(bridge['subject'])].copy()
+# Rename IID to the full hda name so it matches the other files
+snp_final['IID'] = snp_final['IID'].map(sub_to_hda)
+snp_final = snp_final.set_index('IID').drop(columns=['FID']).T
+
+# 3. PROCESS EXPRESSION
 expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
 expr.columns = [c.replace('_', '-') for c in expr.columns]
-valid_expr_cols = [c for c in expr.columns if c in rna_to_dna]
-expr_final = expr[valid_expr_cols].rename(columns=rna_to_dna)
-
-# 3. PROCESS GENOTYPES
-raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
-snp_final = raw_df[raw_df['IID'].isin(bridge['hda'])].copy()
-snp_final = snp_final.set_index('IID').drop(columns=['FID']).T
+rna_to_hda = dict(zip(bridge['hra'], bridge['hda']))
+valid_expr_cols = [c for c in expr.columns if c in rna_to_hda]
+expr_final = expr[valid_expr_cols].rename(columns=rna_to_hda)
 
 # 4. PROCESS COVARIATES & PCA
 cov = pd.read_csv("$COV", sep='\t')
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
-
 cov_merged = bridge.merge(cov, left_on='hra', right_on='externalsampleid')
-cov_merged = cov_merged.merge(pca, left_on='subject', right_on='IID')
+# Map PCA IDs if they are short (Subject) IDs
+pca_to_hda = dict(zip(bridge['subject'], bridge['hda']))
+pca['IID_hda'] = pca['IID'].map(pca_to_hda)
+cov_merged = cov_merged.merge(pca, left_on='hda', right_on='IID_hda')
 
 def get_als(g): return 1 if 'ALS' in str(g) else 0
 cov_merged['is_als'] = cov_merged['subject_group'].apply(get_als)
