@@ -83,7 +83,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle="Red Diamonds: Sig Lead SNPs | Orange: Telomeric SNPs",
+         subtitle="Red: Sig. Lead SNPs | Orange: Telomeric SNPs",
          x="Chromosome", y=expression(-log[10](p))) +
     
     theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank())
