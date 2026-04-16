@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=run_eQTL_Combined
+#SBATCH --job-name=run_eQTL
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_eQTL_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_eQTL_%j.err
 #SBATCH --time=24:00:00
@@ -42,8 +42,8 @@ GENE_LOC=$INDIR/gene_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
 
-# Output naming
-OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_Combined_eQTL
+# Output naming (Modified to keep files flat in $OUTDIR)
+OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
 TOP_N=100
@@ -57,8 +57,7 @@ for f in "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$GENE_LOC" "$SNP_LOC"; do
     fi
 done
 
-# NEW: The Alignment Guard
-# Counts columns in the three main matrices to ensure 100% agreement
+# Alignment Guard
 S_N=$(head -n 1 "$SNP_FILE" | awk -F'\t' '{print NF-1}')
 E_N=$(head -n 1 "$EXPR_FILE" | awk -F'\t' '{print NF-1}')
 C_N=$(head -n 1 "$COV_FILE" | awk -F'\t' '{print NF-1}')
@@ -91,9 +90,16 @@ Rscript $PIPELINE/_eQTL_manhattan.R \
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for top $TOP_N pairs..."
-# Passing OUTDIR directly so they print to results/ instead of a subfolder
 Rscript $PIPELINE/_eQTL_boxplot.R \
     "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$BIM" "$SNP_LOC" "$OUTDIR"
+
+# ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
+# If a folder was created with the prefix name, move contents up and delete it
+if [ -d "${OUTPUT_PREFIX}" ]; then
+    echo "[5] Cleaning up redundant subdirectories..."
+    mv "${OUTPUT_PREFIX}"/* "$OUTDIR/" 2>/dev/null || true
+    rmdir "${OUTPUT_PREFIX}" 2>/dev/null || true
+fi
 
 # ── Final summary ─────────────────────────────────────────────────────
 echo "============================================"
