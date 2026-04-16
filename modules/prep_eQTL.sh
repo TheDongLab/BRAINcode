@@ -38,8 +38,6 @@ echo "[Step 1] Cleaning covariates..."
 python3 << EOF
 import pandas as pd
 df = pd.read_csv("$COV", sep='\t')
-# Keep only those with necessary metadata
-df = df[df['externalsampleid'].notna()]
 
 def collapse(g):
     if 'ALS' in str(g): return 1
@@ -58,13 +56,11 @@ echo "[Step 2] Bridging IDs..."
 
 python3 << EOF
 import pandas as pd
-import sys
-
-# Load Metadata
+# Load Metadata (RNA ID, Subject ID, Tissue)
 meta_df = pd.read_csv("$META", header=None, names=['hra', 'subject', 'tissue'])
 meta_filt = meta_df[meta_df['tissue'] == "$TISSUE"].copy()
 
-# Load Sample Map
+# Load Sample Map (DNA ID, Subject ID)
 map_df = pd.read_csv("$SAMPLE_MAP", sep='\t', header=None, names=['hda', 'subject'])
 
 # Bridge them
@@ -73,7 +69,7 @@ triplets.to_csv("$OUTDIR/tmp_triplets.csv", index=False)
 EOF
 
 ##############################################
-# STEP 3: Initial Data Intersection
+# STEP 3: Initial Data Loading
 ##############################################
 echo "[Step 3] Initial data loading..."
 
@@ -82,34 +78,39 @@ import pandas as pd
 import numpy as np
 
 triplets = pd.read_csv("$OUTDIR/tmp_triplets.csv")
-raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
-pca_raw = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
 # 1. Process SNPs
-# Map DNA_ID (hda) to Subject for SNP file
-id_map = dict(zip(triplets['hda'], triplets['subject']))
-snp_out = raw_df[raw_df['IID'].isin(triplets['hda'])].copy()
-snp_out['SUB_ID'] = snp_out['IID'].map(id_map)
-snp_out = snp_out.set_index('SUB_ID').drop(columns=['FID', 'IID']).T
+# .raw files use the DNA ID (hda) in the IID column
+raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+# Map HDA -> Subject ID for standardizing headers
+hda_to_sub = dict(zip(triplets['hda'], triplets['subject']))
+snp_subset = raw_df[raw_df['IID'].isin(triplets['hda'])].copy()
+snp_subset['SUB_ID'] = snp_subset['IID'].map(hda_to_sub)
+snp_out = snp_subset.set_index('SUB_ID').drop(columns=['FID', 'IID']).T
 snp_out.to_csv("$OUTDIR/tmp_snp_raw.txt", sep='\t')
 
 # 2. Process Expression
 expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
+# Standardize hyphens in headers
 expr.columns = [c.replace('_', '-') for c in expr.columns]
-# Standardize Expr headers to Subject
-rna_to_sub = dict(zip(triplets['hra'], triplets['subject']))
-expr_subset = expr[[c for c in triplets['hra'] if c in expr.columns]].copy()
-expr_subset.rename(columns=rna_to_sub, inplace=True)
-expr_subset.to_csv("$OUTDIR/tmp_expr_raw.txt", sep='\t')
+# Map RNA ID -> Subject ID
+hra_to_sub = dict(zip(triplets['hra'], triplets['subject']))
+valid_hra = [c for c in triplets['hra'] if c in expr.columns]
+expr_out = expr[valid_hra].copy().rename(columns=hra_to_sub)
+expr_out.to_csv("$OUTDIR/tmp_expr_raw.txt", sep='\t')
 
 # 3. Process Covariates
 cov = pd.read_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t')
+pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
+# Merge all info onto the triplets bridge
 cov_final = triplets.merge(cov, left_on='hra', right_on='externalsampleid')
-cov_final = cov_final.merge(pca_raw, left_on='subject', right_on='IID')
+cov_final = cov_final.merge(pca, left_on='subject', right_on='IID')
 cov_final['sex_bin'] = cov_final['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 cov_cols = ['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
 cov_out = cov_final.set_index('subject')[cov_cols].T
-cov_out.to_csv("$OUTDIR/tmp_cov_raw.txt", sep='\t')
+# Save without quotes and ensure ID column name is set
+cov_out.index.name = 'id'
+cov_out.to_csv("$OUTDIR/tmp_cov_raw.txt", sep='\t', quoting=0)
 EOF
 
 ##############################################
@@ -119,17 +120,21 @@ echo "[Step 4] Performing strict three-way sample alignment..."
 
 python3 << EOF
 import pandas as pd
-
+# Load everything back with index_col=0 to treat first col as labels
 snp = pd.read_csv("$OUTDIR/tmp_snp_raw.txt", sep='\t', index_col=0)
 expr = pd.read_csv("$OUTDIR/tmp_expr_raw.txt", sep='\t', index_col=0)
 cov = pd.read_csv("$OUTDIR/tmp_cov_raw.txt", sep='\t', index_col=0)
 
-# Find samples present in all three
+# Intersect the columns (Subject IDs)
 common = sorted(list(set(snp.columns) & set(expr.columns) & set(cov.columns)))
 
 print(f"  Final Aligned Sample Count: {len(common)}")
 
-# Save final files with identical column order
+if len(common) == 0:
+    print("ERROR: Intersection failed. Check ID formats in tmp files.")
+    import sys; sys.exit(1)
+
+# Save Final Aligned Files
 snp[common].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
 expr[common].to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
 cov[common].to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t')
@@ -153,5 +158,5 @@ rm -f $OUTDIR/tmp_*
 
 echo "============================================"
 echo "  Prep Complete for $TISSUE"
-echo "  Final count verified."
+echo "  $(date)"
 echo "============================================"
