@@ -18,7 +18,6 @@ QTL_DIR=/home/zw529/donglab/data/target_ALS/QTL
 PLINK=$QTL_DIR/plink
 EXPR=$QTL_DIR/expression_matrix.txt
 META=$QTL_DIR/expression_sample_metadata.csv
-SAMPLE_MAP=$QTL_DIR/sample_map.txt
 COV=$QTL_DIR/covariates.tsv
 RAW=$PLINK/joint_autosomes_matrixEQTL.raw
 BIM=$PLINK/joint_autosomes_filtered_bed.bim
@@ -27,81 +26,76 @@ GTF_BED6=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation
 
 echo "============================================"
 echo "  eQTL Prep for $TISSUE"
-echo "  $(date)"
+echo "  Targeting Subject-Level Alignment"
 echo "============================================"
 
 ##############################################
 # STEP 1: Process All Data in Python
 ##############################################
-echo "[Step 1] Loading, Renaming, and Intersecting all data types..."
+echo "[Step 1] Aligning Genotypes, Expression, and Covariates..."
 
 python3 << EOF
 import pandas as pd
-import numpy as np
 import sys
 
-# 1. LOAD THE BRIDGE
-# meta: RNA ID (hra) -> Subject
-# samp_map: DNA ID (hda) -> Subject
+# 1. LOAD METADATA
+# This is our master key: Column 0 is the RNA ID, Column 1 is the Subject ID
 meta = pd.read_csv("$META", header=None, names=['hra', 'subject', 'tissue'])
-meta = meta[meta['tissue'] == "$TISSUE"]
-samp_map = pd.read_csv("$SAMPLE_MAP", sep='\t', header=None, names=['hda', 'subject'])
-bridge = pd.merge(meta, samp_map, on='subject')
+meta_tissue = meta[meta['tissue'] == "$TISSUE"].copy()
 
-# 2. PROCESS GENOTYPES
-# .raw file uses Short IDs (Subject) in the IID column
+# 2. LOAD GENOTYPES (The Anchor)
+# The .raw file uses Subject IDs (NEU..., JHU..., SD...) in the 'IID' column
 raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
-sub_to_hda = dict(zip(bridge['subject'], bridge['hda']))
 
-# Filter and rename to Long ID (hda)
-snp_data = raw_df[raw_df['IID'].isin(bridge['subject'])].copy()
-snp_data['IID'] = snp_data['IID'].map(sub_to_hda)
-snp_final = snp_data.set_index('IID').drop(columns=['FID']).T
+# 3. IDENTIFY COMMON SUBJECTS
+# Find subjects who have BOTH genotype data AND tissue-specific RNA-seq data
+common_subjects = set(meta_tissue['subject']) & set(raw_df['IID'])
+print(f"DEBUG: Found {len(common_subjects)} subjects with both Genotypes and $TISSUE Expression.")
 
-# 3. PROCESS EXPRESSION
+# 4. PROCESS SNPS
+# Filter genotypes to common subjects and set IID (Subject ID) as index
+snp_final = raw_df[raw_df['IID'].isin(common_subjects)].copy()
+snp_final = snp_final.set_index('IID').drop(columns=['FID']).T
+
+# 5. PROCESS EXPRESSION
 expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
 expr.columns = [c.replace('_', '-') for c in expr.columns]
-rna_to_hda = dict(zip(bridge['hra'], bridge['hda']))
 
-# Filter and rename to Long ID (hda)
-valid_expr_cols = [c for c in expr.columns if c in rna_to_hda]
-expr_final = expr[valid_expr_cols].rename(columns=rna_to_hda)
+# Create a mapping from the RNA sample ID to the Subject ID
+hra_to_sub = dict(zip(meta_tissue['hra'], meta_tissue['subject']))
 
-# 4. PROCESS COVARIATES & PCA
+# Select columns that are in our common subject list
+# We rename them to Subject IDs so they match the SNP file exactly
+valid_expr_cols = [c for c in expr.columns if c in hra_to_sub and hra_to_sub[c] in common_subjects]
+expr_final = expr[valid_expr_cols].rename(columns=hra_to_sub)
+
+# 6. PROCESS COVARIATES & PCA
 cov = pd.read_csv("$COV", sep='\t')
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
-# Merge all metadata/PCA onto the bridge
-cov_merged = bridge.merge(cov, left_on='hra', right_on='externalsampleid')
-pca_to_hda = dict(zip(bridge['subject'], bridge['hda']))
-pca['IID_hda'] = pca['IID'].map(pca_to_hda)
-cov_merged = cov_merged.merge(pca, left_on='hda', right_on='IID_hda')
+# Merge covariates and PCA using Subject ID as the join key
+cov_merged = meta_tissue[meta_tissue['subject'].isin(common_subjects)].merge(cov, left_on='hra', right_on='externalsampleid')
+cov_merged = cov_merged.merge(pca, left_on='subject', right_on='IID')
 
-# Encodings
-def get_als(g): return 1 if 'ALS' in str(g) else 0
-cov_merged['is_als'] = cov_merged['subject_group'].apply(get_als)
+# Binary encodings
+cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 
 cov_cols = ['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
-cov_final = cov_merged.set_index('hda')[cov_cols].T
+cov_final = cov_merged.set_index('subject')[cov_cols].T
 
-# 5. THE STRICT THREE-WAY INTERSECTION (The Fix)
-# Find samples present in all three processed objects
-common_samples = sorted(list(set(expr_final.columns) & set(snp_final.columns) & set(cov_final.columns)))
+# 7. FINAL ALIGNMENT AND SAVE
+# We use the sorted list of common subjects to ensure Column order is identical
+final_ids = sorted(list(common_subjects))
 
-print(f"--- Alignment Results ---")
-print(f"Common samples found: {len(common_samples)}")
+print(f"DEBUG: Final Aligned Sample Count: {len(final_ids)}")
 
-if len(common_samples) > 0:
-    # Save with EXACT same columns in EXACT same order
-    expr_final[common_samples].to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
-    snp_final[common_samples].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
-    cov_final[common_samples].to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', quoting=0)
+if len(final_ids) > 0:
+    expr_final[final_ids].to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t')
+    snp_final[final_ids].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
+    cov_final[final_ids].to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', quoting=0)
 else:
-    print("Error: Intersection failed. Printing ID examples for debug:")
-    if not expr_final.empty: print("Expr ID example:", expr_final.columns[0])
-    if not snp_final.empty: print("SNP ID example:", snp_final.columns[0])
-    if not cov_final.empty: print("Cov ID example:", cov_final.columns[0])
+    print("FATAL: No overlapping samples found. Check metadata and raw file IDs.")
     sys.exit(1)
 EOF
 
@@ -117,12 +111,6 @@ awk 'BEGIN{OFS="\t"} {print "chr"$1":"$4, "chr"$1, $4}' $BIM >> $OUTDIR/snp_loca
 # Gene Locations
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
-
-##############################################
-# STEP 3: Cleanup
-##############################################
-echo "[Step 3] Cleaning up..."
-rm -f $OUTDIR/tmp_*
 
 echo "============================================"
 echo "  Prep Complete for $TISSUE"
