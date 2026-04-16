@@ -163,24 +163,32 @@ snp_out.iloc[keep_snps, :].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t')
 EOF
 
 ##############################################
-# STEP 6: Generate Covariate Matrix
+# STEP 6: Generate Covariate Matrix (FIXED)
 ##############################################
-echo "[Step 6] Finalizing covariates..."
+echo "[Step 6] Finalizing covariates (dropping QC, fixing format)..."
 
 python3 << EOF
 import pandas as pd
 overlap = pd.read_csv("$OUTDIR/tmp_final_overlap.csv")
 cov = pd.read_csv("$OUTDIR/tmp_clean_cov.tsv", sep='\t')
-pca = pd.read_csv("$PCA", sep=r'\s+', header=None).iloc[:, [1,2,3,4,5,6]]
-pca.columns = ['ID', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
+pca = pd.read_csv("$OUTDIR/tmp_fixed_pca.csv")
 
+# Merge overlap with metadata and PCA
 cov_final = overlap.merge(cov, left_on='hra', right_on='externalsampleid')
-cov_final = cov_final.merge(pca, left_on='subject', right_on='ID')
+cov_final = cov_final.merge(pca, left_on='subject', right_on='IID')
 
+# Binary encoding for Sex
 cov_final['sex_bin'] = cov_final['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
-cov_cols = ['sex_bin', 'age_at_death', 'rin', 'rna_skew', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
-# Use hda as the column header for Matrix eQTL alignment
-cov_final.set_index('hda')[cov_cols].T.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t')
+
+# Select ONLY biological/population covariates
+# Dropped: rin, rna_skew
+cov_cols = ['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']
+
+# Format for Matrix eQTL: transpose so samples are columns and covariates are rows
+final_df = cov_final.set_index('hda')[cov_cols].T
+
+# Save with explicit index name as empty string to avoid the "" issue
+final_df.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True)
 EOF
 
 ##############################################
