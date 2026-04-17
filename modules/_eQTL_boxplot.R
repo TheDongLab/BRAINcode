@@ -1,7 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R
-# FIXED: Shape & Color differentiation for rare controls
+# _eQTL_boxplot.R - FINAL STABLE VERSION
 ###########################################
 
 suppressPackageStartupMessages({
@@ -29,17 +28,17 @@ cov_mat <- fread(cov_file, header=TRUE)
 als_idx <- which(cov_mat[[1]] == "is_als")
 als_vals <- as.numeric(as.vector(cov_mat[als_idx, -1, with=FALSE]))
 
-# Logic: Red/Circle (16) for ALS, Violet/Diamond (18) for Control
-# Using a slightly larger cex (size) for the diamonds to help them pop
-p_colors <- ifelse(als_vals > 0.5, "red", "darkorchid")
+# Red (16) for ALS, Violet Hex (18) for Control
+p_colors <- ifelse(als_vals > 0.5, "red", "#9932CC")
 p_shapes <- ifelse(als_vals > 0.5, 16, 18)
-p_sizes  <- ifelse(als_vals > 0.5, 0.7, 1.2) 
+p_sizes  <- ifelse(als_vals > 0.5, 0.7, 1.1) 
 
 run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     pdf(pdf_path, width=12, height=5)
     
     for (i in seq_len(nrow(pairs))) {
         G <- pairs$geneid[i]; S <- pairs$snpid[i]
+        
         expr_row <- expr_mat[geneid == G]
         snp_row <- snp_mat[snpid == S]
         
@@ -54,56 +53,55 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         )
         df <- df[!is.na(df$SNP), ]
         
-        get_stats <- function(model_formula, data) {
+        get_p <- function(formula, data) {
             tryCatch({
-                fit <- lm(model_formula, data=data); s <- summary(fit)$coefficients
-                if(nrow(s) < 2) return(list(p="NA"))
-                list(p=signif(s[2,4], 3))
-            }, error = function(e) list(p="Err"))
+                fit <- lm(formula, data=data)
+                signif(summary(fit)$coefficients[2,4], 3)
+            }, error = function(e) "NA")
         }
 
         par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
         
-        plot_panel <- function(formula, data, title_prefix, box_color) {
-            # 1. Create the base boxplot (no dots yet)
-            boxplot(formula, data=data, col=box_color, outline=F, 
-                    ylab="Expression (Z-score)", xlab="Genotype",
-                    main=paste0(title_prefix, "\n(p = ", get_stats(formula, data)$p, ")"))
-            
-            # 2. Manually overlay points for total control
-            # We determine the x-position based on the factor level
-            x_coords <- jitter(as.numeric(formula[[3]]), amount=0.15) 
-            y_coords <- data$expression
-            
-            # Draw every point individually
-            points(x_coords, y_coords, 
-                   pch = data$p_pch, 
-                   col = data$p_col, 
-                   cex = data$p_cex)
-            
-            if(use_status_colors && title_prefix == "Additive Model") {
-                legend("topleft", legend=c("ALS", "Control"), 
-                       col=c("red", "#9932CC"), pch=c(16, 18), 
-                       pt.cex=c(1, 1.2), cex=0.8, bty="n")
-            }
+        # 1. ADDITIVE
+        add_counts <- table(factor(df$SNP, levels=0:2))
+        add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", add_counts, ")")
+        df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
+        
+        boxplot(expression ~ SNP_f, data=df, col="lightgreen", outline=F, 
+                ylab="Expression (Z-score)", xlab="Genotype",
+                main=paste0("Additive Model\n(p = ", get_p(expression ~ SNP, df), ")"))
+        points(jitter(as.numeric(df$SNP_f), amount=0.15), df$expression, 
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        
+        if(use_status_colors) {
+            legend("topleft", legend=c("ALS", "Control"), 
+                   col=c("red", "#9932CC"), pch=c(16, 18), 
+                   pt.cex=c(1, 1.1), cex=0.8, bty="n")
         }
 
-        # Additive
-        add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", table(factor(df$SNP, levels=0:2)), ")")
-        df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
-        plot_panel(expression ~ SNP_f, df, "Additive Model", "lightgreen")
-
-        # Dominant
+        # 2. DOMINANT
         df$dom_val <- ifelse(df$SNP > 0, 1, 0)
-        dom_labels <- paste0(c("Ref/Ref", "Any Alt"), "\n(N=", table(factor(df$dom_val, levels=0:1)), ")")
-        df$dom <- factor(df$dom_val, levels=0:1, labels=dom_labels)
-        plot_panel(expression ~ dom, df, "Dominant Model", "lightblue")
+        dom_counts <- table(factor(df$dom_val, levels=0:1))
+        dom_labels <- paste0(c("Ref/Ref", "Any Alt"), "\n(N=", dom_counts, ")")
+        df$dom_f <- factor(df$dom_val, levels=0:1, labels=dom_labels)
+        
+        boxplot(expression ~ dom_f, data=df, col="lightblue", outline=F, 
+                ylab="Expression (Z-score)", xlab="Genotype",
+                main=paste0("Dominant Model\n(p = ", get_p(expression ~ dom_val, df), ")"))
+        points(jitter(as.numeric(df$dom_f), amount=0.15), df$expression, 
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
 
-        # Recessive
+        # 3. RECESSIVE
         df$rec_val <- ifelse(df$SNP == 2, 1, 0)
-        rec_labels <- paste0(c("Non-Hom Alt", "Hom Alt"), "\n(N=", table(factor(df$rec_val, levels=0:1)), ")")
-        df$rec <- factor(df$rec_val, levels=0:1, labels=rec_labels)
-        plot_panel(expression ~ rec, df, "Recessive Model", "lightpink")
+        rec_counts <- table(factor(df$rec_val, levels=0:1))
+        rec_labels <- paste0(c("Non-Hom Alt", "Hom Alt"), "\n(N=", rec_counts, ")")
+        df$rec_f <- factor(df$rec_val, levels=0:1, labels=rec_labels)
+        
+        boxplot(expression ~ rec_f, data=df, col="lightpink", outline=F, 
+                ylab="Expression (Z-score)", xlab="Genotype",
+                main=paste0("Recessive Model\n(p = ", get_p(expression ~ rec_val, df), ")"))
+        points(jitter(as.numeric(df$rec_f), amount=0.15), df$expression, 
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
 
         mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.2, font=2, line=0.5)
     }
