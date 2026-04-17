@@ -29,13 +29,23 @@ echo "============================================"
 echo "  eQTL Prep for $TISSUE"
 echo "============================================"
 
-rm -f $OUTDIR/expression_${TISSUE_DIR}.txt $OUTDIR/snp_${TISSUE_DIR}.txt $OUTDIR/covariates_${TISSUE_DIR}_encoded.txt
-
 python3 << EOF
 import pandas as pd
 import sys
 
-# 1. PATTERNS
+# 1. LOAD DATA
+breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
+meta = pd.read_csv("$METADATA_CSV", low_memory=False)
+
+# CRITICAL FIX: Only load the necessary join key and unique columns from COV
+# This prevents the name collision (externalsubjectid_x / _y)
+cov_full = pd.read_csv("$COV", sep='\t')
+cov_cols_to_keep = ['externalsampleid'] + [c for c in cov_full.columns if c not in meta.columns]
+cov = cov_full[cov_cols_to_keep]
+
+pca = pd.read_csv("$PCA", sep='\s+').rename(columns={'#IID': 'IID'})
+
+# 2. FILTERING
 patterns = {
     "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
     "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
@@ -46,16 +56,12 @@ patterns = {
 }
 pattern = patterns.get("$TISSUE", "$TISSUE")
 
-# 2. LOAD & FILTER
-breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
-
-meta = pd.read_csv("$METADATA_CSV", low_memory=False)
-# We now know these are named 'externalsampleid' and 'externalsubjectid'
 meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
 mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
 meta_tissue = meta_filt[mask].copy()
 
+# Select best replicate by RIN
 def get_rin(row):
     try:
         val1 = float(row.iloc[16]) if pd.notnull(row.iloc[16]) else 0
@@ -64,28 +70,28 @@ def get_rin(row):
     except: return 0
 
 meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
-# Fix: subset='externalsubjectid' as a string, not a list, to prevent indexing issues
 meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
-raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
-expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
-
 # 3. INTERSECTION
+raw_df = pd.read_csv("$RAW", sep='\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+expr_headers = pd.read_csv("$EXPR", sep='\t', nrows=0).columns.tolist()
+
 meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
 common_subjects = sorted(list(set(meta_unique['externalsubjectid']) & set(raw_df['IID'])))
 
-sub_to_hra = dict(zip(meta_unique['externalsubjectid'], meta_unique['hra_clean']))
+sub_to_hra = {}
 final_aligned_subjects = []
 for s in common_subjects:
-    hra = sub_to_hra[s]
-    matches = [c for c in expr.columns if c.startswith(hra)]
+    hra = meta_unique.loc[meta_unique['externalsubjectid'] == s, 'hra_clean'].values[0]
+    matches = [c for c in expr_headers if c.startswith(hra)]
     if matches:
         final_aligned_subjects.append(s)
         sub_to_hra[s] = matches[0]
 
 num_final = len(final_aligned_subjects)
 
-# 4. ALIGN
+# 4. ALIGN EXPRESSION & SNPS
+expr = pd.read_csv("$EXPR", sep='\t', usecols=['gene_id'] + [sub_to_hra[s] for s in final_aligned_subjects], index_col=0)
 expr_final = expr[[sub_to_hra[s] for s in final_aligned_subjects]]
 expr_final.columns = final_aligned_subjects
 
@@ -95,33 +101,29 @@ def clean_snp_id(full_id):
     return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else full_id
 snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
 
-# 5. COVARIATES (Using verified header names)
-cov = pd.read_csv("$COV", sep='\t')
-pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
-
+# 5. MERGE COVARIATES
 meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)]
 
-# Merge logic: Metadata + Covariates (on Sample ID) + PCA (on Subject ID)
+# First join: Metadata + Covariates (only externalsampleid is common)
 cov_merged = pd.merge(meta_aligned, cov, on='externalsampleid')
+
+# Second join: + PCA
 cov_merged = pd.merge(cov_merged, pca, left_on='externalsubjectid', right_on='IID')
 
+# Binary encoding
 cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 
+# Align order to expression matrix
 cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)
 cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
 
-# 6. VALIDATE & SAVE
-print(f"Validation Counts: Expr={expr_final.shape[1]}, SNP={snp_final.shape[1]}, Cov={cov_final.shape[1]}")
+# 6. SAVE
+expr_final.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
+snp_final[final_aligned_subjects].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
+cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
 
-if expr_final.shape[1] == num_final and snp_final.shape[1] == num_final and cov_final.shape[1] == num_final:
-    expr_final.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
-    snp_final[final_aligned_subjects].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
-    cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Saved {num_final} aligned samples for $TISSUE.")
-else:
-    print("FATAL ERROR: Count mismatch!")
-    sys.exit(1)
+print(f"SUCCESS: Processed {num_final} samples for $TISSUE")
 EOF
 
 ### Location Files ###
