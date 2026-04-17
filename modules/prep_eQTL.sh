@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-TISSUE="$1" # e.g., Motor_Cortex
+TISSUE="$1" 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL
 mkdir -p $OUTDIR
@@ -29,15 +29,13 @@ echo "============================================"
 echo "  eQTL Prep for $TISSUE"
 echo "============================================"
 
-# Pre-clean stale files
 rm -f $OUTDIR/expression_${TISSUE_DIR}.txt $OUTDIR/snp_${TISSUE_DIR}.txt $OUTDIR/covariates_${TISSUE_DIR}_encoded.txt
 
 python3 << EOF
 import pandas as pd
 import sys
-import re
 
-# 1. DEFINE PRECISION PATTERNS
+# 1. PATTERNS
 patterns = {
     "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
     "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
@@ -48,20 +46,16 @@ patterns = {
 }
 pattern = patterns.get("$TISSUE", "$TISSUE")
 
-# 2. LOAD DATA
+# 2. LOAD & FILTER
 breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
 
 meta = pd.read_csv("$METADATA_CSV", low_memory=False)
-meta_hra_col = meta.columns[0]
-meta_sub_col = meta.columns[1]
-
-# Identify rows matching approved subjects and tissue pattern (case-insensitive)
-meta_filt = meta[meta[meta_sub_col].isin(approved_subjects)].copy()
+# We now know these are named 'externalsampleid' and 'externalsubjectid'
+meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
 mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
 meta_tissue = meta_filt[mask].copy()
 
-# RIN extraction and best replicate selection
 def get_rin(row):
     try:
         val1 = float(row.iloc[16]) if pd.notnull(row.iloc[16]) else 0
@@ -70,17 +64,17 @@ def get_rin(row):
     except: return 0
 
 meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
-meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset=[meta_sub_col])
+# Fix: subset='externalsubjectid' as a string, not a list, to prevent indexing issues
+meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
-# Load Genotypes and Expression
 raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
 expr = pd.read_csv("$EXPR", sep='\t', index_col=0)
 
-# 3. IDENTIFY TRIPLE INTERSECTION
-meta_unique['hra_clean'] = meta_unique[meta_hra_col].str.replace('-', '_')
-common_subjects = sorted(list(set(meta_unique[meta_sub_col]) & set(raw_df['IID'])))
+# 3. INTERSECTION
+meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
+common_subjects = sorted(list(set(meta_unique['externalsubjectid']) & set(raw_df['IID'])))
 
-sub_to_hra = dict(zip(meta_unique[meta_sub_col], meta_unique['hra_clean']))
+sub_to_hra = dict(zip(meta_unique['externalsubjectid'], meta_unique['hra_clean']))
 final_aligned_subjects = []
 for s in common_subjects:
     hra = sub_to_hra[s]
@@ -91,7 +85,7 @@ for s in common_subjects:
 
 num_final = len(final_aligned_subjects)
 
-# 4. ALIGN FILES
+# 4. ALIGN
 expr_final = expr[[sub_to_hra[s] for s in final_aligned_subjects]]
 expr_final.columns = final_aligned_subjects
 
@@ -101,41 +95,23 @@ def clean_snp_id(full_id):
     return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else full_id
 snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
 
-# 5. ALIGN COVARIATES
+# 5. COVARIATES (Using verified header names)
 cov = pd.read_csv("$COV", sep='\t')
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
-# Use the specific HRA and Subject column names identified in Step 2
-meta_hra_col = meta.columns[0] # Usually 'Sample_ID' or similar
-meta_sub_col = meta.columns[1] # Usually 'Subject_ID' or similar
+meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)]
 
-# Filter meta_unique to only include the 321 aligned subjects
-meta_aligned = meta_unique[meta_unique[meta_sub_col].isin(final_aligned_subjects)]
+# Merge logic: Metadata + Covariates (on Sample ID) + PCA (on Subject ID)
+cov_merged = pd.merge(meta_aligned, cov, on='externalsampleid')
+cov_merged = pd.merge(cov_merged, pca, left_on='externalsubjectid', right_on='IID')
 
-# JOIN LOGIC:
-# 1. Join Metadata to Covariates on HRA ID (externalsampleid in cov)
-# 2. Join that result to PCA on Subject ID (IID in pca)
-cov_merged = meta_aligned.merge(
-    cov, 
-    left_on=meta_hra_col, 
-    right_on='externalsampleid'
-).merge(
-    pca, 
-    left_on=meta_sub_col, 
-    right_on='IID'
-)
-
-# Process biological covariates
 cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 
-# Ensure rows are in the exact same order as expression matrix columns
-cov_final = cov_merged.set_index(meta_sub_col).reindex(final_aligned_subjects)
-
-# Select and Transpose for Matrix eQTL
+cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)
 cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
 
-# 6. SAVE
+# 6. VALIDATE & SAVE
 print(f"Validation Counts: Expr={expr_final.shape[1]}, SNP={snp_final.shape[1]}, Cov={cov_final.shape[1]}")
 
 if expr_final.shape[1] == num_final and snp_final.shape[1] == num_final and cov_final.shape[1] == num_final:
@@ -144,7 +120,7 @@ if expr_final.shape[1] == num_final and snp_final.shape[1] == num_final and cov_
     cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
     print(f"SUCCESS: Saved {num_final} aligned samples for $TISSUE.")
 else:
-    print("FATAL ERROR: Mismatch detected in final reconstruction!")
+    print("FATAL ERROR: Count mismatch!")
     sys.exit(1)
 EOF
 
@@ -155,7 +131,3 @@ awk 'BEGIN{OFS="\t"} {print "chr"$1":"$4, "chr"$1, $4}' $BIM >> $OUTDIR/snp_loca
 
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
-
-echo "============================================"
-echo "  Prep Complete for $TISSUE at $(date)"
-echo "============================================"
