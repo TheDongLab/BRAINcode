@@ -91,7 +91,7 @@ Rscript $PIPELINE/_eQTL_manhattan.R \
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for top $TOP_N pairs..."
 Rscript $PIPELINE/_eQTL_boxplot.R \
-    "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$BIM" "$SNP_LOC" "$OUTDIR"
+    "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "TISSUE_DIR"
 
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
 # If a folder was created with the prefix name, move contents up and delete it
