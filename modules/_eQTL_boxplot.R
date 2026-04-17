@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
 # _eQTL_boxplot.R
-# FIXED: Added ALS vs Control coloring and tissue-specific naming
+# FIXED: Robust float-handling for ALS status coloring
 ###########################################
 
 suppressPackageStartupMessages({
@@ -12,12 +12,11 @@ args <- commandArgs(TRUE)
 GSfile    <- args[1]  # $TOP_PAIRS
 snp_file  <- args[2]  # $SNP_FILE
 expr_file <- args[3]  # $EXPR_FILE
-cov_file  <- args[4]  # We'll pass $COV_FILE here now
+cov_file  <- args[4]  # $COV_FILE
 # args[5] is $SNP_LOC
 out_dir   <- args[6]  # $OUTDIR
-tissue    <- args[7]  # We'll pass $TISSUE_DIR as a new arg
+tissue    <- args[7]  # $TISSUE_DIR
 
-# Define output file paths
 out_file_std <- file.path(out_dir, paste0(tissue, "_top_eQTL_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_top_eQTL_boxplots_colored.pdf"))
 
@@ -27,12 +26,20 @@ snp_mat <- fread(snp_file, header=TRUE); setkey(snp_mat, snpid)
 expr_mat <- fread(expr_file, header=TRUE); setkey(expr_mat, geneid)
 cov_mat <- fread(cov_file, header=TRUE); setkey(cov_mat, id)
 
-# Identify ALS status for coloring (is_als row)
-als_status <- as.numeric(cov_mat[id == "is_als", -1, with=FALSE])
-# Map 1 -> Red (ALS), 0 -> Violet (Control)
-dot_colors <- ifelse(als_status == 1, "red", "darkorchid")
+# --- ROBUST ALS STATUS EXTRACTION ---
+# We force the row to numeric to handle '1.0' vs '1'. The '-1' drops the 'id' column so we only have the sample values
+als_vals <- as.numeric(unlist(cov_mat[id == "is_als", -1, with=FALSE]))
 
-# Function to run the plotting loop
+# Check if we actually found the row
+if(length(als_vals) == 0) {
+    stop("ERROR: 'is_als' row not found in covariate file. Check your header labels.")
+}
+
+# Threshold check (handles floats perfectly)
+# Red = ALS (> 0.5), DarkOrchid = Control (< 0.5)
+dot_colors <- ifelse(als_vals > 0.5, "red", "darkorchid")
+# ------------------------------------
+
 run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     pdf(pdf_path, width=12, height=5)
     
@@ -46,7 +53,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         df <- data.frame(
             expression = as.numeric(unlist(expr_row[, -1, with = FALSE])),
             SNP = as.numeric(unlist(snp_row[, -1, with = FALSE])),
-            col = if(use_status_colors) dot_colors else rep("darkred", length(als_status))
+            p_col = if(use_status_colors) dot_colors else rep("darkred", length(als_vals))
         )
         df <- df[!is.na(df$SNP), ]
         
@@ -54,54 +61,62 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
             tryCatch({
                 fit <- lm(model_formula, data=data)
                 s <- summary(fit)$coefficients
-                list(p=signif(s[2,4], 3), beta=signif(s[2,1], 2))
-            }, error = function(e) list(p="Err", beta=0))
+                # Handle cases where a model might not be rank-sufficient
+                if(nrow(s) < 2) return(list(p="NA"))
+                list(p=signif(s[2,4], 3))
+            }, error = function(e) list(p="Err"))
         }
 
         par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
         
-        get_n_labels <- function(vec, base_labels) {
-            counts <- table(factor(vec, levels = 0:(length(base_labels)-1)))
-            paste0(base_labels, "\n(N=", counts, ")")
-        }
-
-        # Sub-function for consistent panels
-        plot_panel <- function(formula, data, labels, title_prefix, color) {
-            boxplot(formula, data=data, col=color, outline=F, 
+        plot_panel <- function(formula, data, title_prefix, box_color) {
+            # Draw the boxplot
+            boxplot(formula, data=data, col=box_color, outline=F, 
                     ylab="Expression (Z-score)", xlab="Genotype",
                     main=paste0(title_prefix, "\n(p = ", get_stats(formula, data)$p, ")"))
+            
+            # Overlay the individual points with our defined color vector
             stripchart(formula, data=data, vertical=T, method="jitter", add=T, 
-                       pch=16, col=data$col, cex=0.7)
+                       pch=16, col=data$p_col, cex=0.7)
+            
+            # Add a legend only to the first panel if coloring is active
+            if(use_status_colors && title_prefix == "Additive Model") {
+                legend("topleft", legend=c("ALS", "Control"), 
+                       col=c("red", "darkorchid"), pch=16, cex=0.8, bty="n")
+            }
         }
 
-        # Additive
-        add_labels <- get_n_labels(df$SNP, c("Ref/Ref", "Het", "Hom Alt"))
+        # Panel 1: Additive (0, 1, 2)
+        add_counts <- table(factor(df$SNP, levels=0:2))
+        add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", add_counts, ")")
         df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
-        plot_panel(expression ~ SNP_f, df, add_labels, "Additive Model", "lightgreen")
+        plot_panel(expression ~ SNP_f, df, "Additive Model", "lightgreen")
 
-        # Dominant
+        # Panel 2: Dominant (0 vs 1+2)
         df$dom_val <- ifelse(df$SNP > 0, 1, 0)
-        dom_labels <- get_n_labels(df$dom_val, c("Ref/Ref", "Any Alt"))
+        dom_counts <- table(factor(df$dom_val, levels=0:1))
+        dom_labels <- paste0(c("Ref/Ref", "Any Alt"), "\n(N=", dom_counts, ")")
         df$dom <- factor(df$dom_val, levels=0:1, labels=dom_labels)
-        plot_panel(expression ~ dom, df, dom_labels, "Dominant Model", "lightblue")
+        plot_panel(expression ~ dom, df, "Dominant Model", "lightblue")
 
-        # Recessive
+        # Panel 3: Recessive (0+1 vs 2)
         df$rec_val <- ifelse(df$SNP == 2, 1, 0)
-        rec_labels <- get_n_labels(df$rec_val, c("Non-Hom Alt", "Hom Alt"))
+        rec_counts <- table(factor(df$rec_val, levels=0:1))
+        rec_labels <- paste0(c("Non-Hom Alt", "Hom Alt"), "\n(N=", rec_counts, ")")
         df$rec <- factor(df$rec_val, levels=0:1, labels=rec_labels)
-        plot_panel(expression ~ rec, df, rec_labels, "Recessive Model", "lightpink")
+        plot_panel(expression ~ rec, df, "Recessive Model", "lightpink")
 
-        header_text <- paste("Gene:", G, "| SNP:", S)
-        if(use_status_colors) header_text <- paste(header_text, "\n(Red = ALS, Violet = Control)")
-        mtext(header_text, outer=TRUE, cex=1, font=2, line=0.5)
+        # Header for the whole page
+        header_line <- paste("Gene:", G, "| SNP:", S)
+        mtext(header_line, outer=TRUE, cex=1.2, font=2, line=0.5)
     }
     dev.off()
 }
 
-message("# Generating standard boxplots...")
-run_plotting(out_file_std, use_status_colors = FALSE)
+message("# Generating Standard Boxplots...")
+run_plotting(out_file_std, FALSE)
 
-message("# Generating ALS-status colored boxplots...")
-run_plotting(out_file_col, use_status_colors = TRUE)
+message("# Generating Colored Boxplots (Red=ALS, Violet=Control)...")
+run_plotting(out_file_col, TRUE)
 
-message("Done. Files saved to results directory.")
+message("DONE: Boxplots saved to results.")
