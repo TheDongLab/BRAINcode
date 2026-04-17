@@ -101,13 +101,20 @@ def clean_snp_id(full_id):
     return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else full_id
 snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
 
-# 5. ALIGN COVARIATES (Fixed KeyError Logic)
+# 5. ALIGN COVARIATES
 cov = pd.read_csv("$COV", sep='\t')
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
+# Use the specific HRA and Subject column names identified in Step 2
+meta_hra_col = meta.columns[0] # Usually 'Sample_ID' or similar
+meta_sub_col = meta.columns[1] # Usually 'Subject_ID' or similar
+
+# Filter meta_unique to only include the 321 aligned subjects
 meta_aligned = meta_unique[meta_unique[meta_sub_col].isin(final_aligned_subjects)]
 
-# Using positionally defined HRA/Subject cols for Metadata side of merge
+# JOIN LOGIC:
+# 1. Join Metadata to Covariates on HRA ID (externalsampleid in cov)
+# 2. Join that result to PCA on Subject ID (IID in pca)
 cov_merged = meta_aligned.merge(
     cov, 
     left_on=meta_hra_col, 
@@ -118,11 +125,14 @@ cov_merged = meta_aligned.merge(
     right_on='IID'
 )
 
+# Process biological covariates
 cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 
-# Align to expression columns order
+# Ensure rows are in the exact same order as expression matrix columns
 cov_final = cov_merged.set_index(meta_sub_col).reindex(final_aligned_subjects)
+
+# Select and Transpose for Matrix eQTL
 cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
 
 # 6. SAVE
