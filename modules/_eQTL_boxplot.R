@@ -65,17 +65,25 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
         
         plot_panel <- function(formula, data, title_prefix, box_color) {
+            # 1. Create the base boxplot (no dots yet)
             boxplot(formula, data=data, col=box_color, outline=F, 
                     ylab="Expression (Z-score)", xlab="Genotype",
                     main=paste0(title_prefix, "\n(p = ", get_stats(formula, data)$p, ")"))
             
-            # Using point-specific vectors for col, pch, and cex
-            stripchart(formula, data=data, vertical=T, method="jitter", add=T, 
-                       pch=data$p_pch, col=data$p_col, cex=data$p_cex)
+            # 2. Manually overlay points for total control
+            # We determine the x-position based on the factor level
+            x_coords <- jitter(as.numeric(formula[[3]]), amount=0.15) 
+            y_coords <- data$expression
+            
+            # Draw every point individually
+            points(x_coords, y_coords, 
+                   pch = data$p_pch, 
+                   col = data$p_col, 
+                   cex = data$p_cex)
             
             if(use_status_colors && title_prefix == "Additive Model") {
-                legend("topleft", legend=c("ALS (Circle)", "Control (Diamond)"), 
-                       col=c("red", "darkorchid"), pch=c(16, 18), 
+                legend("topleft", legend=c("ALS", "Control"), 
+                       col=c("red", "#9932CC"), pch=c(16, 18), 
                        pt.cex=c(1, 1.2), cex=0.8, bty="n")
             }
         }
