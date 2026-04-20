@@ -17,6 +17,7 @@ OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
 VCF_FILTERED=${OUTDIR}/joint_GQ0_temp.vcf.gz
+VCF_BIALLELIC=${OUTDIR}/joint_biallelic_temp.vcf.gz
 RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
 FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
@@ -24,9 +25,9 @@ BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
 MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 
 #----------------------------------------
-# STEP 0: THE GQ FILTER (GQ=0)
+# STEP 0a: THE GQ FILTER (GQ=0)
 #----------------------------------------
-echo "Running Step 1 (GQ Filter 0)..."
+echo "Running Step 0 (GQ Filter)..."
 module --force purge
 module load StdEnv
 module load GCC/13.3.0
@@ -37,6 +38,17 @@ bcftools filter -e 'FORMAT/GQ < 0' -S . ${VCF_IN} -O z -o ${VCF_FILTERED}
 tabix -f -p vcf ${VCF_FILTERED}
 
 #----------------------------------------
+# STEP 0b: CONVERT MULTIALLELIC TO BIALLELIC
+#----------------------------------------
+echo "Converting multiallelic variants to biallelic..."
+# Split multiallelic sites and keep only biallelic (2 alleles max)
+bcftools norm -m -any ${VCF_FILTERED} -O z -o ${VCF_BIALLELIC}
+tabix -f -p vcf ${VCF_BIALLELIC}
+
+# Clean up intermediate file
+rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
+
+#----------------------------------------
 # STEP 1: VCF → PLINK2 IMPORT
 #----------------------------------------
 echo "Importing VCF to PLINK2..."
@@ -44,7 +56,7 @@ module --force purge
 module load StdEnv
 module load PLINK2/avx2_20250707
 
-plink2 --vcf ${VCF_FILTERED} \
+plink2 --vcf ${VCF_BIALLELIC} \
        --chr chr1-22, chrX, chrY, chrM \
        --split-par hg38 \
        --set-all-var-ids @:#:\$r:\$a \
@@ -55,7 +67,7 @@ plink2 --vcf ${VCF_FILTERED} \
        --out ${RAW_PREFIX} \
        --threads ${SLURM_CPUS_PER_TASK}
 
-rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
+rm ${VCF_BIALLELIC} ${VCF_BIALLELIC}.tbi
 
 #----------------------------------------
 # STEP 2: SAMPLE-LEVEL QC
