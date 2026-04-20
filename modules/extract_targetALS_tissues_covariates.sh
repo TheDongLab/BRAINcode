@@ -9,6 +9,8 @@
 
 set -euo pipefail
 module load SAMtools
+# Ensure python environment has pandas, matplotlib, and seaborn
+# module load miniconda or your specific python env if needed
 
 # ── PATHS ─────────────────────────────────────────────────────────────────────
 DATA_DIR="/home/zw529/donglab/data/target_ALS"
@@ -98,11 +100,15 @@ EOF
 fi
 
 # ── STEP 2: METADATA CONSOLIDATION AND AUDIT ──────────────────────────────────
-echo "Consolidating metadata and generating complete audit..."
+echo "Consolidating metadata, generating FTD/FTLD status, and plotting distributions..."
 
 python3 - <<EOF
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # 1. LOAD DATA
 df = pd.read_csv("$METADATA")
@@ -136,6 +142,21 @@ SUBJECT_GROUP_REMAP = {
     'Non Neurological Control': 'Non-Neurological Control'
 }
 
+FTD_REMAP = {
+    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
+    'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
+    'FTLD-TDP, Cerebrovascular disease': 'Yes',
+    'FTD, TDP43 subtype': 'Yes',
+    'FTLD': 'Yes',
+    'FTLD with tau positive inclusions': 'Yes',
+    'ALS Spectrum MND, Other Neurological Disorders': 'Yes',
+    'Amyotrophic Lateral Sclerosis': 'No',
+    'Non-Neurological Control': 'No',
+    'Non Neurological Control': 'No',
+    'Other Neurological Disorders': 'No',
+    'Other MND': 'No'
+}
+
 ONSET_REMAP = {
     'limb': 'Limb', 'Lower Limb': 'Limb', 'Upper Limb': 'Limb', 
     'Lower Extremity': 'Limb', 'Upper Extremity': 'Limb',
@@ -150,8 +171,13 @@ C9_REMAP = {
     'nan': 'Not Applicable/NaN', 'Unknown': 'Not Applicable/NaN'
 }
 
-# 3. GLOBAL CLEANING (Preserving logic exactly as requested)
+# 3. GLOBAL CLEANING
 df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+
+# FTD Status
+df['ftd_ftld_status'] = df['subject_group'].map(lambda x: FTD_REMAP.get(str(x), 'No'))
+df.loc[df['subject_group'].isna(), 'ftd_ftld_status'] = 'Not Applicable/NaN'
+
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
 df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
@@ -162,35 +188,62 @@ df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].fillna('Not Appl
 anc_binary_cols = []
 for col in anc_cols:
     if col in df.columns:
-        # Re-establishing numeric type specifically for these columns
         df[col] = pd.to_numeric(df[col], errors='coerce')
         df.loc[df[col] < 0, col] = np.nan
         bin_name = "is_" + col.replace("pct_", "")
         df[bin_name] = (df[col] >= 0.50).astype(int)
         anc_binary_cols.append(bin_name)
 
-# Split Cohorts
+# Shared WGS Cohort
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 shared_df = df[df['externalsubjectid'].isin(wgs_subs)].copy()
-# FORCE tissue column normalization AGAIN
-shared_df['tissue'] = shared_df['tissue'].astype(str)
 
-# 4. EXPORT MAIN TABLE
+# 4. PLOTTING (Collinearity Check)
+num_plot_cols = ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours', 'rna_skew'] + anc_cols
+plot_df = df[num_plot_cols].apply(pd.to_numeric, errors='coerce')
+
+# --- Histograms with Rotated Labels ---
+plt.figure(figsize=(20, 15))
+sns.set_style("whitegrid")
+for i, col in enumerate(plot_df.columns):
+    plt.subplot(4, 3, i + 1)
+    # Using histplot to show distributions
+    sns.histplot(plot_df[col].dropna(), kde=True, color='teal')
+    plt.title(f'Distribution: {col}')
+    # Rotate the x-axis labels for readability
+    plt.xticks(rotation=45) 
+
+plt.tight_layout()
+plt.savefig("$OUTDIR/covariate_distributions.png")
+
+# --- Correlation Heatmap with White Anchor ---
+plt.figure(figsize=(12, 10))
+# The 'seismic' colormap anchors the center (0.0) to white.
+sns.heatmap(plot_df.corr(), annot=True, cmap='seismic', center=0, fmt=".2f")
+plt.title("Covariate Correlation Matrix (Checking for Collinearity)")
+
+# Specifically rotate the heatmap x-axis labels
+plt.xticks(rotation=45, ha='right') # 'ha' ensures labels align correctly
+
+plt.tight_layout()
+plt.savefig("$OUTDIR/covariate_correlation_heatmap.png")
+
+# 5. EXPORT
 df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 5. COVARIATE SUMMARY (Audit)
+# 6. COVARIATE SUMMARY AUDIT
 with open("$COVARIATE_SUMMARY", "w") as f:
-
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Frequency Audit\n")
     f.write(f" GLOBAL (All RNA):             {len(df):<5} samples | {df['externalsubjectid'].nunique():<5} subjects\n")
     f.write(f" SHARED (also has WGS data):   {len(shared_df):<5} samples | {shared_df['externalsubjectid'].nunique():<5} subjects\n")
     f.write("============================================================\n\n")
 
-    cat_cols = ['sex', 'subject_group', 'site_of_motor_onset', 'c9orf72_repeat_expansion'] + anc_binary_cols
+    # Categorical Stats
+    cat_cols = ['sex', 'subject_group', 'site_of_motor_onset', 'c9orf72_repeat_expansion', 'ftd_ftld_status'] + anc_binary_cols
     for col in cat_cols:
         if col not in df.columns: continue
-        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED (also has WGS data)':<15}\n")
+        f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED':<15}\n")
         g_counts = df[col].value_counts(dropna=False)
         s_counts = shared_df[col].value_counts(dropna=False)
         all_labels = sorted(set(g_counts.index.astype(str)) | set(s_counts.index.astype(str)))
@@ -199,7 +252,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             g_c, s_c = g_counts.get(orig_val, 0), s_counts.get(orig_val, 0)
             f.write(f"    {val:<31} {g_c:>5} ({ (g_c/len(df))*100:>4.1f}%)    {s_c:>5} ({ (s_c/len(shared_df))*100 if len(shared_df)>0 else 0:>4.1f}%)\n")
         f.write("\n")
-
+        
     f.write("── ANCESTRY PERCENTAGE BINS ───────────────────────────\n\n")
     bins = [0, 0.01, 0.05, 0.25, 0.50, 0.75, 1.01]
     labels = ["<1%", "1–5%", "5–25%", "25–50%", "50–75%", "75–100%"]
@@ -213,51 +266,30 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"    {b:<31} {gc:>5} ({ (gc/len(g_data))*100 if len(g_data)>0 else 0:>4.1f}%)    {sc:>5} ({ (sc/len(s_data))*100 if len(s_data)>0 else 0:>4.1f}%)\n")
         f.write("\n")
 
+    # Numerical Stats
     f.write("── NUMERICAL COVARIATES ────────────────────────────────────\n\n")
-    num_cols = {
+    num_metrics = {
         'age_at_death': 'age_at_death', 
         'rin': 'rin', 
         'disease_duration_in_months': 'disease_duration_in_months', 
         'post_mortem_interval_in_hours': 'post_mortem_interval_in_hours'
     }
-    for label, col in num_cols.items():
+    for label, col in num_metrics.items():
         if col in df.columns:
             vals = pd.to_numeric(df[col], errors='coerce').dropna()
             missing = len(df) - len(vals)
             f.write(f"{label} (n={len(vals)}, {missing} missing)\n")
             f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
-    # -------------------------------------
 
-# 6. TISSUE SUMMARY
-# enforce remap BEFORE any counting
-shared_df['tissue'] = shared_df['tissue'].map(
-    lambda x: TISSUE_REMAP.get(x, x)
-)
-
+# 7. TISSUE SUMMARY
+shared_df['tissue'] = shared_df['tissue'].str.strip()
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 sample_counts = shared_df['tissue'].value_counts()
 
 with open("$TISSUE_SUMMARY", "w") as f:
-    f.write(f"============================================================\n")
-    f.write(f" target_ALS Tissue Summary (Shared Patients Only)\n")
-    f.write(f" Shared Patients: {len(wgs_subs & set(df['externalsubjectid']))}\n")
-    f.write(f"============================================================\n\n")
-    f.write(f"{'TISSUE':<35} {'SUBJECTS':<15} {'SAMPLES':<15}\n")
-    f.write(f"{'-'*34:<35} {'-'*12:<15} {'-'*11:<15}\n")
+    f.write(f"TISSUE SUMMARY (Shared Only)\n")
     for t in sorted(subject_counts.index, key=lambda x: -subject_counts[x]):
-        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}" + "\n")
-
-
-# OPTIONAL SAFETY (prevents silent mismatches like trailing spaces)
-shared_df['tissue'] = shared_df['tissue'].str.strip()
-
-# 7. PATIENT TISSUE BREAKDOWN
-pt_tissues = shared_df.groupby('externalsubjectid')['tissue'].apply(lambda x: sorted(set(x))).to_dict()
-with open("$PATIENT_TISSUES", "w") as f:
-    f.write("subject_id\tn_tissues\ttissues\n")
-    for sub in sorted(pt_tissues.keys()):
-        ts = pt_tissues[sub]
-        f.write(f"{sub}\t{len(ts)}\t{'; '.join(ts)}\n")
+        f.write(f"{str(t):<35} {subject_counts[t]:<15} {sample_counts[t]:<15}\n")
 EOF
 
-echo "Done. Complete audit outputs in $OUTDIR"
+echo "Done. Plots and audit outputs in $OUTDIR"
