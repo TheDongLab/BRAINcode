@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - FINAL STABLE VERSION
+# _eQTL_boxplot.R
 ###########################################
 
 suppressPackageStartupMessages({
@@ -15,8 +15,8 @@ cov_file  <- args[4]
 out_dir   <- args[6]
 tissue    <- args[7]
 
-out_file_std <- file.path(out_dir, paste0(tissue, "_top_eQTL_boxplots.pdf"))
-out_file_col <- file.path(out_dir, paste0(tissue, "_top_eQTL_boxplots_colored.pdf"))
+out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots.pdf"))
+out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots_colored.pdf"))
 
 message("# Loading genomic matrices...")
 pairs <- fread(GSfile, header=FALSE, col.names=c("geneid","snpid"))
@@ -34,15 +34,20 @@ p_shapes <- ifelse(als_vals > 0.5, 16, 18)
 p_sizes  <- ifelse(als_vals > 0.5, 0.7, 1.1) 
 
 run_plotting <- function(pdf_path, use_status_colors = FALSE) {
+    # Open PDF
     pdf(pdf_path, width=12, height=5)
     
+    # Process EVERY pair in the GSfile
     for (i in seq_len(nrow(pairs))) {
         G <- pairs$geneid[i]; S <- pairs$snpid[i]
         
         expr_row <- expr_mat[geneid == G]
         snp_row <- snp_mat[snpid == S]
         
-        if (nrow(expr_row) == 0 || nrow(snp_row) == 0) next
+        if (nrow(expr_row) == 0 || nrow(snp_row) == 0) {
+            message(paste("Skipping missing pair:", G, S))
+            next
+        }
         
         df <- data.frame(
             expression = as.numeric(unlist(expr_row[, -1, with = FALSE])),
@@ -60,6 +65,15 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
             }, error = function(e) "NA")
         }
 
+        # Helper to draw the legend on any plot
+        draw_legend <- function() {
+            if(use_status_colors) {
+                legend("topleft", legend=c("ALS", "Control"), 
+                       col=c("red", "#9932CC"), pch=c(16, 18), 
+                       pt.cex=c(1, 1.1), cex=0.8, bty="n")
+            }
+        }
+
         par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
         
         # 1. ADDITIVE
@@ -71,14 +85,9 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 ylab="Expression (Z-score)", xlab="Genotype",
                 main=paste0("Additive Model\n(p = ", get_p(expression ~ SNP, df), ")"))
         points(jitter(as.numeric(df$SNP_f), amount=0.15), df$expression, 
-               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+                pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        draw_legend()
         
-        if(use_status_colors) {
-            legend("topleft", legend=c("ALS", "Control"), 
-                   col=c("red", "#9932CC"), pch=c(16, 18), 
-                   pt.cex=c(1, 1.1), cex=0.8, bty="n")
-        }
-
         # 2. DOMINANT
         df$dom_val <- ifelse(df$SNP > 0, 1, 0)
         dom_counts <- table(factor(df$dom_val, levels=0:1))
@@ -89,7 +98,8 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 ylab="Expression (Z-score)", xlab="Genotype",
                 main=paste0("Dominant Model\n(p = ", get_p(expression ~ dom_val, df), ")"))
         points(jitter(as.numeric(df$dom_f), amount=0.15), df$expression, 
-               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+                pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        draw_legend()
 
         # 3. RECESSIVE
         df$rec_val <- ifelse(df$SNP == 2, 1, 0)
@@ -101,13 +111,15 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 ylab="Expression (Z-score)", xlab="Genotype",
                 main=paste0("Recessive Model\n(p = ", get_p(expression ~ rec_val, df), ")"))
         points(jitter(as.numeric(df$rec_f), amount=0.15), df$expression, 
-               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+                pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        draw_legend()
 
         mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.2, font=2, line=0.5)
     }
     dev.off()
 }
 
+message(paste("# Processing all", nrow(pairs), "SNP-Gene pairs..."))
 run_plotting(out_file_std, FALSE)
 run_plotting(out_file_col, TRUE)
 message("Done.")
