@@ -46,7 +46,7 @@ BIM=$PLINK/joint_autosomes_filtered_bed.bim
 OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
-TOP_N=100
+TOP_N=1000000
 
 # ── Step 0: Pre-flight ────────────────────────────────────────────────
 echo "[0] Verifying file existence and alignment..."
