@@ -15,19 +15,27 @@ mkdir -p $OUTDIR
 
 ### Paths ###
 QTL_DIR=/home/zw529/donglab/data/target_ALS/QTL
-PLINK=$QTL_DIR/plink
+PLINK_PREFIX=$QTL_DIR/plink/joint_autosomes_filtered_bed
 EXPR=$QTL_DIR/expression_matrix.txt
 METADATA_CSV=/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv
 BREAKDOWN_TSV=$QTL_DIR/patient_tissue_breakdown.tsv
 COV_FILE=/home/zw529/donglab/data/target_ALS/QTL/covariates.tsv
-RAW=$PLINK/joint_autosomes_matrixEQTL.raw
-BIM=$PLINK/joint_autosomes_filtered_bed.bim
-PCA=$PLINK/joint_pca.eigenvec
+BIM=${PLINK_PREFIX}.bim
+PCA=$QTL_DIR/plink/joint_pca.eigenvec
 GTF_BED6=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6
+
+# Define intermediate raw file for this run
+RAW_GENOTYPES=$OUTDIR/genotypes_additive.raw
 
 echo "============================================"
 echo "  eQTL Prep for $TISSUE"
 echo "============================================"
+
+# STEP 0: Generate fresh Additive Genotypes to ensure 0, 1, 2 encoding
+echo "Exporting additive genotypes from PLINK..."
+plink2 --bfile $PLINK_PREFIX \
+       --recode A \
+       --out ${RAW_GENOTYPES%.raw}
 
 python3 << EOF
 import pandas as pd
@@ -53,11 +61,9 @@ pattern = patterns.get("$TISSUE", "$TISSUE")
 approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
 meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
 
-# Regex match for tissue
 mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
 meta_tissue = meta_filt[mask].copy()
 
-# Calculate best RIN score (Columns 16 & 17 are usually the RIN columns in this dataset)
 def get_rin(row):
     try:
         val1 = float(row.iloc[16]) if pd.notnull(row.iloc[16]) else 0
@@ -66,12 +72,11 @@ def get_rin(row):
     except: return 0
 
 meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
-
-# Sort by RIN descending and drop duplicate Subjects - ENSURING 1 SAMPLE PER SUBJECT
 meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
-# 4. TRIPLE INTERSECTION (Genotype, Expression, Metadata)
-raw_df = pd.read_csv("$RAW", sep='\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+# 4. TRIPLE INTERSECTION
+# Load the fresh RAW file. PLINK's --recode A creates columns like 'SNP_A'
+raw_df = pd.read_csv("$RAW_GENOTYPES", sep='\s+')
 expr_headers = pd.read_csv("$EXPR", sep='\t', nrows=0).columns.tolist()
 
 meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
@@ -93,33 +98,32 @@ expr = pd.read_csv("$EXPR", sep='\t', usecols=['gene_id'] + [sub_to_hra[s] for s
 expr_final = expr[[sub_to_hra[s] for s in final_aligned_subjects]]
 expr_final.columns = final_aligned_subjects
 
-snp_final = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).T
+# Genotype processing: Drop metadata columns and transpose
+snp_final = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID', 'PAT', 'MAT', 'SEX', 'PHENOTYPE']).T
+
+# Clean SNP IDs (Removing the _A suffix added by PLINK --recode A)
 def clean_snp_id(full_id):
-    parts = str(full_id).split(':')
-    return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else full_id
+    # Remove allele suffix (e.g., rs123_A -> rs123)
+    clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
+    parts = str(clean_id).split(':')
+    return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else clean_id
+
 snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
 
-# 6. COVARIATE MERGE & DUPLICATE PROTECTION
+# 6. COVARIATE MERGE
 cov_full = pd.read_csv("$COV_FILE", sep='\t')
-# Keep only necessary columns from COV to avoid 36-column overlap KeyError
 cov_cols_to_keep = ['externalsampleid'] + [c for c in cov_full.columns if c not in meta.columns]
 cov = cov_full[cov_cols_to_keep].drop_duplicates(subset='externalsampleid')
 
 meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)].copy()
-
-# Join Metadata to Covariates
 cov_merged = pd.merge(meta_aligned, cov, on='externalsampleid', how='inner')
-
-# Join to PCA
 cov_merged = pd.merge(cov_merged, pca, left_on='externalsubjectid', right_on='IID', how='inner')
-
-# SAFETY CHECK: If any duplicate subjects emerged from the join, take the top RIN one again
 cov_merged = cov_merged.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
-# Encode and Reindex (Guaranteeing uniqueness for the reindex call)
 cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
 
+# Reinstate all numerical covariates as requested in previous sessions
 cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)
 cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
 
