@@ -110,6 +110,11 @@ plink2 --pfile ${FILTERED_PREFIX} --pca 10 --out ${OUTDIR}/joint_pca
 
 # Legacy BED and MatrixEQTL .raw
 plink2 --pfile ${FILTERED_PREFIX} --make-bed --out ${BED_PREFIX}
-plink2 --pfile ${FILTERED_PREFIX} --recode A --nonfounders --out ${MATRIX_PREFIX}   # ensures we get hard-call counts (0, 1, 2) and NOT probabilities (0.0 - 1.0)
+# Force hard-call counts (0, 1, 2) by setting a threshold
+plink2 --pfile ${FILTERED_PREFIX} \
+       --recode A \
+       --hard-call-threshold 0.49 \
+       --nonfounders \
+       --out ${MATRIX_PREFIX}
 
 echo "Pipeline Finished."
