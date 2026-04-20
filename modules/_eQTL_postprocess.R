@@ -11,7 +11,8 @@ snp_loc_file  <- args[2]
 gene_loc_file <- args[3]
 out_prefix    <- args[4]
 fdr_thresh    <- ifelse(is.na(args[5]), 0.05, as.numeric(args[5]))
-top_n_total   <- ifelse(is.na(args[6]), 1000, as.integer(args[6]))
+# top_n_total is kept for compatibility but ignored in favor of "all significant"
+top_n_total   <- ifelse(is.na(args[6]), 1000000, as.integer(args[6]))
 
 TELOMERE_DIST <- 500000 
 
@@ -25,114 +26,77 @@ geneloc <- fread(gene_loc_file, sep="\t", header=TRUE)
 setnames(geneloc, c("geneid","gene_chr","gene_start","gene_end"))
 
 message("## Joining Coordinates...")
-# Ensure column names match for merging
 if("SNP" %in% names(eqtl)) setnames(eqtl, "SNP", "snpid")
 if("gene" %in% names(eqtl)) setnames(eqtl, "gene", "geneid")
 
 eqtl <- merge(eqtl, snploc, by="snpid", all.x=TRUE)
 eqtl <- merge(eqtl, geneloc, by="geneid", all.x=TRUE)
 
-# Flag SNPs near telomeres
+# Flag SNPs near telomeres (useful for filtering later if needed)
 eqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
+
+# Filter for significant hits only
 eqtl_fdr <- eqtl[FDR < fdr_thresh]
 
-# Lead SNP selection (per gene)
-# Uses backticks for p-value because Matrix eQTL outputs it with a hyphen
+# Lead SNP selection (per gene) for plotting/summary
 eqtl_lead <- eqtl_fdr[order(geneid, `p-value`, pos)]
 eqtl_lead <- eqtl_lead[!duplicated(geneid)]
 
 ########################################################################
-# DUAL-DIRECTION TOP N SELECTION
+# Select ALL SNPs
 ########################################################################
-message("## Selecting Top Pairs (Target: ", top_n_total, ")...")
+message(sprintf("## Selecting ALL significant pairs for boxplots (FDR < %s)...", fdr_thresh))
 
-# Logic to find the SNP matrix for diversity checking
-path_parts <- strsplit(out_prefix, "/")[[1]]
-tissue_dir_name <- path_parts[length(path_parts) - 4] 
-snp_matrix_file <- file.path(dirname(dirname(out_prefix)), paste0("snp_", tissue_dir_name, ".txt"))
+eqtl_top <- eqtl_fdr[order(`p-value`), .(geneid, snpid)]
 
-if(!file.exists(snp_matrix_file)) {
-    parent_dir <- dirname(dirname(out_prefix))
-    possible_files <- list.files(parent_dir, pattern = "^snp_.*\\.txt$", full.names = TRUE)
-    if(length(possible_files) > 0) {
-        snp_matrix_file <- possible_files[1] 
-    } else {
-        message("Warning: SNP matrix not found at ", snp_matrix_file, ". Skipping diversity check.")
-    }
-}
+message(sprintf("## Total pairs identified: %d", nrow(eqtl_top)))
 
-# 1. Extremes (Strongest Signal)
-# Take up to 500 of the most significant hits regardless of diversity
-eqtl_extremes <- eqtl_fdr[order(`p-value`)][1:min(500, .N), .(geneid, snpid)]
-
-# 2: The Diversity Hits (Target: 500 with visible effect)
-# Filter for non-telomeric and non-extreme hits to find high-quality secondary candidates
-eqtl_diversity <- data.table()
-
-if(file.exists(snp_matrix_file)) {
-    snp_mat <- fread(snp_matrix_file, header=TRUE)
-    candidates <- eqtl_fdr[!(snpid %in% eqtl_extremes$snpid)][telomeric_flag == FALSE][order(`p-value`)]
-    
-    message("## Filtering candidates for Beta > 0.2 and Genotype Diversity...")
-
-    for (i in seq_len(nrow(candidates))) {
-        if (nrow(eqtl_diversity) >= 500) break
-        if (abs(candidates$beta[i]) < 0.2) next 
-        
-        sid <- candidates$snpid[i]
-        
-        # FIX: Added as.numeric(unlist(...)) to handle data.table row extraction
-        geno_vec <- as.numeric(unlist(snp_mat[snpid == sid, -1, with=FALSE]))
-        
-        if(length(geno_vec) > 0) {
-            counts <- table(factor(geno_vec, levels=0:2))
-            # Diversity check: At least 2 genotype groups with at least 2 samples each
-            if (sum(counts >= 2) >= 2) {
-                eqtl_diversity <- rbind(eqtl_diversity, candidates[i, .(geneid, snpid)])
-            }
-        }
-    }
-}
-
-message(sprintf("## Selected %d high-diversity, high-effect pairs.", nrow(eqtl_diversity)))
-
-# Combine results
-eqtl_top <- unique(rbind(eqtl_extremes, eqtl_diversity))
-
-# Save output files
+# Save standard output files
 fwrite(eqtl, file=paste0(out_prefix, ".full_annotated.txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_fdr, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
+
+# This file is used by the boxplot script
 fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
 
 ########################################################################
 # Meta-Analysis Logic
 ########################################################################
+# Detect if we are in a Sex-stratified folder
 current_sex <- ifelse(grepl("Male", out_prefix), "Male", "Female")
 other_sex   <- ifelse(current_sex == "Male", "Female", "Male")
 other_sex_file <- gsub(paste0("/", current_sex, "/"), paste0("/", other_sex, "/"), paste0(out_prefix, ".full_annotated.txt"))
 
 if (file.exists(other_sex_file)) {
     message("## Found opposite sex results. Running Meta-analysis...")
+    
+    # Path logic to find the 'Combined' output directory
     combined_dir <- gsub(paste0("/", current_sex, "/results.*"), "/Combined/results", out_prefix)
-    dir.create(combined_dir, showWarnings=FALSE, recursive=TRUE)
+    if(!dir.exists(combined_dir)) dir.create(combined_dir, showWarnings=FALSE, recursive=TRUE)
     
     eqtl_other <- fread(other_sex_file, sep="\t")
     
+    # Merge current and other sex results on Gene and SNP
     meta <- merge(eqtl[, .(geneid, snpid, chr, pos, beta_curr = beta, tstat_curr = `t-stat`, pval_curr = `p-value`)],
                   eqtl_other[, .(geneid, snpid, beta_other = beta, tstat_other = `t-stat`, pval_other = `p-value`)],
                   by=c("geneid", "snpid"))
     
-    # Stouffer's Z-score Method
+    message(sprintf("## Performing Stouffer's Z-score meta-analysis on %d shared pairs...", nrow(meta)))
+    
+    # Stouffer's Z-score Method (assuming equal weights/sample sizes for simplicity)
     meta[, z_curr  := qnorm(pval_curr / 2, lower.tail=FALSE) * sign(tstat_curr)]
     meta[, z_other := qnorm(pval_other / 2, lower.tail=FALSE) * sign(tstat_other)]
     meta[, z_meta  := (z_curr + z_other) / sqrt(2)]
     meta[, p_meta  := 2 * pnorm(abs(z_meta), lower.tail=FALSE)]
     meta[, FDR_meta := p.adjust(p_meta, method="BH")]
     
-    # Tissue name extraction for final filename
+    # Tissue name extraction based on your folder structure
+    # Extracts the tissue name (e.g., Cerebellum) from the path
     tissue_name <- basename(dirname(dirname(dirname(dirname(out_prefix)))))
-    fwrite(meta[order(p_meta)], file=file.path(combined_dir, paste0(tissue_name, "_Combined_Meta_eQTL.txt")), sep="\t", quote=FALSE)
+    
+    meta_out <- file.path(combined_dir, paste0(tissue_name, "_Combined_Meta_eQTL.txt"))
+    fwrite(meta[order(p_meta)], file=meta_out, sep="\t", quote=FALSE)
+    message(sprintf("## Meta-analysis saved to: %s", meta_out))
 }
 
-message("## Done.")
+message("## Post-processing complete. Ready for boxplots.")
