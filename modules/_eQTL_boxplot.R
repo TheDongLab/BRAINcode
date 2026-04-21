@@ -58,7 +58,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         G <- pairs$geneid[i]
         S <- pairs$snpid[i]
         
-        # Exact column matching for current Gene and SNP
+        # Pull values explicitly by column name to ensure order matches
         expr_vals <- as.numeric(unlist(expr_mat[geneid == G, ..common_samples]))
         snp_vals  <- as.numeric(unlist(snp_mat[snpid == S, ..common_samples]))
         
@@ -79,6 +79,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         get_p <- function(formula, data) {
             tryCatch({
                 fit <- lm(formula, data=data)
+                # Use formatC to ensure scientific notation matches your result files
                 formatC(summary(fit)$coefficients[2,4], format="e", digits=3)
             }, error = function(e) "NA")
         }
@@ -87,7 +88,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         
         # Model 1: Additive
         add_counts <- table(factor(df$SNP, levels=0:2))
-        add_labels <- paste0(c("0/0", "0/1", "1/1"), "\n(N=", add_counts, ")")
+        add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", add_counts, ")")
         df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
         
         boxplot(expression ~ SNP_f, data=df, col="lightgreen", outline=FALSE, 
