@@ -90,13 +90,8 @@ Rscript $PIPELINE/_eQTL_manhattan.R \
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
-
-# Create a slim version with only the first two columns (geneid and snpid)
-# This prevents the "2 names to 12-column" error in the R script
-cut -f1,2 "$TOP_PAIRS" > "${TOP_PAIRS}.slim"
-
 Rscript $PIPELINE/_eQTL_boxplot.R \
-    "$TOP_PAIRS.slim" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+    "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
 # If a folder was created with the prefix name, move contents up and delete it
