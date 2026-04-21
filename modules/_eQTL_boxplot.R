@@ -59,8 +59,8 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         S <- pairs$snpid[i]
         
         # Exact column matching for current Gene and SNP
-        expr_vals <- as.numeric(expr_mat[geneid == G, ..common_samples])
-        snp_vals  <- as.numeric(snp_mat[snpid == S, ..common_samples])
+        expr_vals <- as.numeric(unlist(expr_mat[geneid == G, ..common_samples]))
+        snp_vals  <- as.numeric(unlist(snp_mat[snpid == S, ..common_samples]))
         
         if (length(expr_vals) == 0 || length(snp_vals) == 0) next
         
