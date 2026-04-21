@@ -129,8 +129,14 @@ print(f"SUCCESS: Processed {num_final} unique samples for $TISSUE")
 EOF
 
 ### Location Files ###
-echo "Generating location files..."
+echo "Generating deduplicated location files for $TISSUE..."
+
+# 1. SNP Location: Extract from BIM, then force unique IDs based on column 1
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
-awk 'BEGIN{OFS="\t"} {print "chr"$1":"$4, "chr"$1, $4}' $BIM >> $OUTDIR/snp_location.txt
+awk 'BEGIN{OFS="\t"} {print "chr"$1":"$4, "chr"$1, $4}' $BIM | sort -u -k1,1 >> $OUTDIR/snp_location.txt
+
+# 2. Gene Location: Extract from GTF, then force unique IDs based on column 1
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
-awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
+awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 | sort -u -k1,1 >> $OUTDIR/gene_location.txt
+
+echo "Location files complete for $TISSUE."
