@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - Fixed Duplication
+# _eQTL_boxplot.R - FIXED (No Duplication)
+# Plots ALL significant pairs with correct p-values
 ###########################################
 
 suppressPackageStartupMessages({
@@ -43,8 +44,8 @@ if (nrow(als_row) == 0) {
   message("# WARNING: 'is_als' row not found. Using all purple points.")
   als_vals <- rep(0, ncol(cov_mat) - 1)
 } else {
-  # Extract ALS status - use as.vector() to avoid duplication
-  als_vals <- as.vector(as.numeric(als_row[, -1, with=FALSE]))
+  # Extract ALS status - unlist with use.names=FALSE to avoid duplication
+  als_vals <- as.numeric(unlist(als_row[, -1, with=FALSE], use.names=FALSE))
 }
 
 p_colors <- ifelse(als_vals > 0.5, "red", "#9932CC")
@@ -70,10 +71,10 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
             next
         }
         
-        # CRITICAL FIX: Use as.vector() to extract without duplication
-        # This converts the data.table row to a vector correctly
-        expr_vals <- as.vector(as.numeric(expr_row[, -1, with=FALSE]))
-        snp_vals  <- as.vector(as.numeric(snp_row[, -1, with=FALSE]))
+        # CRITICAL FIX: unlist first (converts list to vector), then as.numeric()
+        # This extracts correctly without duplication
+        expr_vals <- as.numeric(unlist(expr_row[, -1, with=FALSE], use.names=FALSE))
+        snp_vals  <- as.numeric(unlist(snp_row[, -1, with=FALSE], use.names=FALSE))
         
         # Safety check
         if (length(expr_vals) == 0 || length(snp_vals) == 0) {
