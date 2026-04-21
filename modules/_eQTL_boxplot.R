@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - FIXED (No Duplication)
-# Plots ALL significant pairs with correct p-values
+# _eQTL_boxplot.R - CLEAN VERSION
+# Now that prep script is fixed, no dedup needed
 ###########################################
 
 suppressPackageStartupMessages({
@@ -44,7 +44,7 @@ if (nrow(als_row) == 0) {
   message("# WARNING: 'is_als' row not found. Using all purple points.")
   als_vals <- rep(0, ncol(cov_mat) - 1)
 } else {
-  # Extract ALS status - unlist with use.names=FALSE to avoid duplication
+  # Extract ALS status - unlist with use.names=FALSE
   als_vals <- as.numeric(unlist(als_row[, -1, with=FALSE], use.names=FALSE))
 }
 
@@ -71,8 +71,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
             next
         }
         
-        # CRITICAL FIX: unlist first (converts list to vector), then as.numeric()
-        # This extracts correctly without duplication
+        # Extract values: unlist with use.names=FALSE
         expr_vals <- as.numeric(unlist(expr_row[, -1, with=FALSE], use.names=FALSE))
         snp_vals  <- as.numeric(unlist(snp_row[, -1, with=FALSE], use.names=FALSE))
         
@@ -84,8 +83,6 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         
         # Verify lengths match
         if (length(expr_vals) != length(snp_vals)) {
-            message(sprintf("# WARNING: Length mismatch for %s x %s: expr=%d, snp=%d", 
-                          G, S, length(expr_vals), length(snp_vals)))
             pairs_skipped <- pairs_skipped + 1
             next
         }
