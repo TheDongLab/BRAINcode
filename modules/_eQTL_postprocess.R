@@ -57,7 +57,7 @@ fwrite(eqtl_fdr, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", 
 fwrite(eqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
 
 # This file is used by the boxplot script
-fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
+fwrite(eqtl_fdr, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
 
 ########################################################################
 # Meta-Analysis Logic
@@ -99,4 +99,4 @@ if (file.exists(other_sex_file)) {
     message(sprintf("## Meta-analysis saved to: %s", meta_out))
 }
 
-message("## Post-processing complete. Ready for boxplots.")
+message("## Post-processing complete. Ready for plots.")
