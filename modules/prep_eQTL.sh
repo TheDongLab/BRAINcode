@@ -93,6 +93,8 @@ expr_final.columns = final_aligned_subjects
 
 # Correct handling of SNP indices to preserve additive encoding (0,1,2)
 snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID'])
+# CRITICAL FIX: Reorder to match final_aligned_subjects order BEFORE transposing
+snp_matrix = snp_matrix.loc[final_aligned_subjects]
 snp_final = snp_matrix.T
 
 def clean_snp_id(full_id):
@@ -102,6 +104,13 @@ def clean_snp_id(full_id):
     return f"chr{parts[0]}:{parts[1]}" if len(parts) >= 2 else clean_id
 
 snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
+
+# CRITICAL FIX: Remove duplicate SNP IDs (keep first occurrence only)
+# This handles cases where PLINK --recode A creates duplicates (e.g., chr17:46150927 appears 3 times)
+snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
+
+print(f"DEBUG: SNP matrix shape after dedup: {snp_final.shape}")
+print(f"DEBUG: Sample order check - first 3 samples: {list(snp_final.columns[:3])}")
 
 # 6. COVARIATE MERGE
 cov_full = pd.read_csv("$COV_FILE", sep='\t')
@@ -122,7 +131,7 @@ cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3',
 
 # 7. SAVE
 expr_final.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
-snp_final[final_aligned_subjects].to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
+snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
 cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
 
 print(f"SUCCESS: Processed {num_final} unique samples for $TISSUE")
