@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_postprocess.R - FIXED
+# _eQTL_postprocess.R - ALL SIGNIFICANT PAIRS
 ###########################################
 
 library(data.table)
@@ -31,39 +31,39 @@ if("gene" %in% names(eqtl)) setnames(eqtl, "gene", "geneid")
 eqtl <- merge(eqtl, snploc, by="snpid", all.x=TRUE)
 eqtl <- merge(eqtl, geneloc, by="geneid", all.x=TRUE)
 
-# Flag SNPs near telomeres
+# Flag SNPs near telomeres (useful for filtering later if needed)
 eqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
 
-# CRITICAL FIX: Filter EARLY and strictly for significant hits only
-message(sprintf("## Filtering for significant hits (FDR < %s)...", fdr_thresh))
+# Filter for significant hits only
 eqtl_fdr <- eqtl[FDR < fdr_thresh]
-message(sprintf("## Total significant pairs: %d", nrow(eqtl_fdr)))
 
 # Lead SNP selection (per gene) for summary/reporting
 eqtl_lead <- eqtl_fdr[order(geneid, `p-value`, pos)]
 eqtl_lead <- eqtl_lead[!duplicated(geneid)]
-message(sprintf("## Total lead SNPs: %d", nrow(eqtl_lead)))
 
 ########################################################################
-# Select ALL significant SNPs for boxplots (ONLY FDR-significant)
+# SELECT ALL SIGNIFICANT PAIRS, ORDERED BY P-VALUE
 ########################################################################
+message(sprintf("## Filtering for significant hits (FDR < %s)...", fdr_thresh))
+message(sprintf("## Total significant pairs: %d", nrow(eqtl_fdr)))
+
 message(sprintf("## Selecting ALL significant pairs for boxplots (FDR < %s)...", fdr_thresh))
 
-# Keep only geneid and snpid for the boxplot script
-eqtl_for_plot <- eqtl_fdr[, .(geneid, snpid)]
+# Take all significant pairs, ordered by p-value (most to least significant)
+eqtl_top <- eqtl_fdr[order(`p-value`), .(geneid, snpid)]
 
-message(sprintf("## Total pairs to plot: %d", nrow(eqtl_for_plot)))
+message(sprintf("## Total pairs to plot: %d", nrow(eqtl_top)))
 
 # Save standard output files
 fwrite(eqtl, file=paste0(out_prefix, ".full_annotated.txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_fdr, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
 
-# This file ONLY contains FDR-significant pairs, no header
-fwrite(eqtl_for_plot, file=paste0(out_prefix, ".top_for_boxplot.txt"), 
+# This file contains all significant pairs ordered by p-value, no header
+fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), 
        sep="\t", quote=FALSE, col.names=FALSE)
 
-message(sprintf("## Boxplot input file written with %d significant pairs", nrow(eqtl_for_plot)))
+message(sprintf("## Boxplot input file written with %d pairs (ordered by p-value)", nrow(eqtl_top)))
 
 ########################################################################
 # Meta-Analysis Logic
@@ -89,14 +89,15 @@ if (file.exists(other_sex_file)) {
     
     message(sprintf("## Performing Stouffer's Z-score meta-analysis on %d shared pairs...", nrow(meta)))
     
-    # Stouffer's Z-score Method
+    # Stouffer's Z-score Method (assuming equal weights/sample sizes for simplicity)
     meta[, z_curr  := qnorm(pval_curr / 2, lower.tail=FALSE) * sign(tstat_curr)]
     meta[, z_other := qnorm(pval_other / 2, lower.tail=FALSE) * sign(tstat_other)]
     meta[, z_meta  := (z_curr + z_other) / sqrt(2)]
     meta[, p_meta  := 2 * pnorm(abs(z_meta), lower.tail=FALSE)]
     meta[, FDR_meta := p.adjust(p_meta, method="BH")]
     
-    # Tissue name extraction
+    # Tissue name extraction based on your folder structure
+    # Extracts the tissue name (e.g., Cerebellum) from the path
     tissue_name <- basename(dirname(dirname(dirname(dirname(out_prefix)))))
     
     meta_out <- file.path(combined_dir, paste0(tissue_name, "_Combined_Meta_eQTL.txt"))
