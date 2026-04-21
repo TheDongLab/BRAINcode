@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - Fixed for Alignment
+# _eQTL_boxplot.R - FIXED for Alignment & Tissue Filtering
 ###########################################
 
 suppressPackageStartupMessages({
@@ -16,6 +16,7 @@ GSfile    <- args[1]
 snp_file  <- args[2]
 expr_file <- args[3]
 cov_file  <- args[4]
+snp_loc   <- args[5]
 out_dir   <- args[6]
 tissue    <- args[7]
 
@@ -28,24 +29,38 @@ snp_mat  <- fread(snp_file, header=TRUE)
 expr_mat <- fread(expr_file, header=TRUE)
 cov_mat  <- fread(cov_file, header=TRUE)
 
-# --- CRITICAL ALIGNMENT LOGIC ---
-# Identify IDs from columns (skipping the first column which is the row ID)
+# --- SAMPLE ALIGNMENT ---
+# Extract sample IDs from matrix column names (skip first column = row ID)
 snp_samples  <- names(snp_mat)[-1]
 expr_samples <- names(expr_mat)[-1]
+cov_samples  <- names(cov_mat)[-1]
 
-# Find common samples to ensure we aren't plotting subjects missing from one matrix
-common_samples <- intersect(snp_samples, expr_samples)
-message(sprintf("# Aligning on %d common samples for %s", length(common_samples), tissue))
+message(sprintf("# SNP matrix has %d samples", length(snp_samples)))
+message(sprintf("# Expression matrix has %d samples", length(expr_samples)))
+message(sprintf("# Covariate matrix has %d samples", length(cov_samples)))
 
-# Re-order both matrices to match the 'common_samples' list EXACTLY
+# Find samples present in ALL three matrices (tissue-specific filtering)
+common_samples <- Reduce(intersect, list(snp_samples, expr_samples, cov_samples))
+message(sprintf("# Found %d samples common to all matrices (tissue-specific)", length(common_samples)))
+
+if (length(common_samples) < 5) {
+  stop("ERROR: Fewer than 5 common samples. Check data alignment.")
+}
+
+# Set keys for fast lookups
 setkey(snp_mat, snpid)
 setkey(expr_mat, geneid)
+setkey(cov_mat, V1)  # Assuming first column is the row identifier
 
 # --- COVARIATE / STATUS EXTRACTION ---
-# Ensure covariates match the common_samples order
+# Match covariate columns to common_samples order
 als_row <- cov_mat[cov_mat[[1]] == "is_als", ]
-# Match covariate columns to common_samples
-als_vals <- as.numeric(als_row[, match(common_samples, names(cov_mat)), with=FALSE])
+if (nrow(als_row) == 0) {
+  message("# WARNING: 'is_als' row not found in covariates. Using all purple points.")
+  als_vals <- rep(0, length(common_samples))
+} else {
+  als_vals <- as.numeric(als_row[, ..common_samples, with=FALSE])
+}
 
 p_colors <- ifelse(als_vals > 0.5, "red", "#9932CC")
 p_shapes <- ifelse(als_vals > 0.5, 16, 18)
@@ -54,32 +69,51 @@ p_sizes  <- ifelse(als_vals > 0.5, 0.7, 1.1)
 run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     pdf(pdf_path, width=12, height=5)
     
+    plots_made <- 0
+    pairs_skipped <- 0
+    
     for (i in seq_len(nrow(pairs))) {
         G <- pairs$geneid[i]
         S <- pairs$snpid[i]
         
-        # Pull values explicitly by column name to ensure order matches
-        expr_vals <- as.numeric(unlist(expr_mat[geneid == G, ..common_samples]))
-        snp_vals  <- as.numeric(unlist(snp_mat[snpid == S, ..common_samples]))
+        # Retrieve values by column name, ensuring order matches common_samples EXACTLY
+        snp_row <- snp_mat[snpid == S]
+        expr_row <- expr_mat[geneid == G]
         
-        if (length(expr_vals) == 0 || length(snp_vals) == 0) next
+        if (nrow(snp_row) == 0 || nrow(expr_row) == 0) {
+            pairs_skipped <- pairs_skipped + 1
+            next
+        }
+        
+        # Extract values in the SAME order as common_samples
+        snp_vals  <- as.numeric(snp_row[, ..common_samples, with=FALSE])
+        expr_vals <- as.numeric(expr_row[, ..common_samples, with=FALSE])
+        
+        # Sanity check: all values should be numbers
+        if (all(is.na(snp_vals)) || all(is.na(expr_vals))) {
+            pairs_skipped <- pairs_skipped + 1
+            next
+        }
         
         df <- data.frame(
             expression = expr_vals,
             SNP = snp_vals,
             p_col = if(use_status_colors) p_colors else rep("darkred", length(common_samples)),
             p_pch = if(use_status_colors) p_shapes else rep(16, length(common_samples)),
-            p_cex = if(use_status_colors) p_sizes else rep(0.7, length(common_samples))
+            p_cex = if(use_status_colors) p_sizes else rep(0.7, length(common_samples)),
+            stringsAsFactors = FALSE
         )
         
-        # Drop NAs
+        # Remove rows with missing data
         df <- df[!is.na(df$SNP) & !is.na(df$expression), ]
-        if (nrow(df) < 5) next
+        if (nrow(df) < 5) {
+            pairs_skipped <- pairs_skipped + 1
+            next
+        }
 
         get_p <- function(formula, data) {
             tryCatch({
                 fit <- lm(formula, data=data)
-                # Use formatC to ensure scientific notation matches your result files
                 formatC(summary(fit)$coefficients[2,4], format="e", digits=3)
             }, error = function(e) "NA")
         }
@@ -122,11 +156,14 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 pch=df$p_pch, col=df$p_col, cex=df$p_cex)
 
         mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.1, font=2, line=0.5)
+        plots_made <- plots_made + 1
     }
+    
     dev.off()
+    message(sprintf("# Plots made: %d, pairs skipped: %d", plots_made, pairs_skipped))
 }
 
-message(paste("# Processing pairs..."))
+message(paste("# Processing", nrow(pairs), "gene-SNP pairs..."))
 run_plotting(out_file_std, FALSE)
 run_plotting(out_file_col, TRUE)
 message("Done.")
