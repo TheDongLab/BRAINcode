@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - FIXED v2 (Robust Covariate Handling)
+# _eQTL_boxplot.R - Fixed Duplication
 ###########################################
 
 suppressPackageStartupMessages({
@@ -29,73 +29,22 @@ snp_mat  <- fread(snp_file, header=TRUE)
 expr_mat <- fread(expr_file, header=TRUE)
 cov_mat  <- fread(cov_file, header=TRUE)
 
-message(sprintf("# Covariate matrix: %d rows x %d columns", nrow(cov_mat), ncol(cov_mat)))
-message(sprintf("# Covariate first column name: '%s'", names(cov_mat)[1]))
+message(sprintf("# Pairs to plot: %d", nrow(pairs)))
+message(sprintf("# SNP matrix: %d SNPs x %d samples", nrow(snp_mat), ncol(snp_mat)-1))
+message(sprintf("# Expression matrix: %d genes x %d samples", nrow(expr_mat), ncol(expr_mat)-1))
 
-# --- SAMPLE ALIGNMENT ---
-# Extract sample IDs from matrix column names (skip first column = row ID)
-snp_samples  <- names(snp_mat)[-1]
-expr_samples <- names(expr_mat)[-1]
-cov_samples  <- names(cov_mat)[-1]
-
-message(sprintf("# SNP matrix has %d samples", length(snp_samples)))
-message(sprintf("# Expression matrix has %d samples", length(expr_samples)))
-message(sprintf("# Covariate matrix has %d samples", length(cov_samples)))
-
-# Find samples present in ALL three matrices (tissue-specific filtering)
-common_samples <- Reduce(intersect, list(snp_samples, expr_samples, cov_samples))
-message(sprintf("# Found %d samples common to all matrices (tissue-specific)", length(common_samples)))
-
-if (length(common_samples) < 5) {
-  stop("ERROR: Fewer than 5 common samples. Check data alignment.")
-}
-
-# Set keys for fast lookups
-setkey(snp_mat, snpid)
-setkey(expr_mat, geneid)
-
-# --- COVARIATE / STATUS EXTRACTION ---
 # Get the first column name (the row identifier)
 cov_first_col <- names(cov_mat)[1]
-message(sprintf("# Looking for 'is_als' row in column '%s'...", cov_first_col))
 
-# Try to find the 'is_als' row using get() function
-als_row <- NULL
-tryCatch({
-  als_row <- cov_mat[get(cov_first_col) == "is_als", ]
-  if (nrow(als_row) > 0) {
-    message(sprintf("# Found 'is_als' row"))
-  }
-}, error = function(e) {
-  message(sprintf("# Error searching for 'is_als': %s", e$message))
-})
+# Find the 'is_als' row
+als_row <- cov_mat[get(cov_first_col) == "is_als", ]
 
-# Fallback: try direct indexing if get() didn't work
-if (is.null(als_row) || nrow(als_row) == 0) {
-  message("# Attempting fallback method to find 'is_als'...")
-  # Try accessing first column directly
-  first_col_data <- cov_mat[[cov_first_col]]
-  als_idx <- which(first_col_data == "is_als")
-  
-  if (length(als_idx) > 0) {
-    als_row <- cov_mat[als_idx[1], ]
-    message(sprintf("# Found 'is_als' at row %d using fallback method", als_idx[1]))
-  }
-}
-
-# Final fallback: use all purple if not found
-if (is.null(als_row) || nrow(als_row) == 0) {
-  message("# WARNING: 'is_als' row not found in covariates. Using all purple points.")
-  als_vals <- rep(0, length(common_samples))
+if (nrow(als_row) == 0) {
+  message("# WARNING: 'is_als' row not found. Using all purple points.")
+  als_vals <- rep(0, ncol(cov_mat) - 1)
 } else {
-  # Extract values in the order of common_samples
-  tryCatch({
-    als_vals <- as.numeric(unlist(als_row[, ..common_samples, with=FALSE]))
-    message(sprintf("# Successfully extracted ALS status for %d samples", length(als_vals)))
-  }, error = function(e) {
-    message(sprintf("# Error extracting ALS values: %s. Using all purple.", e$message))
-    als_vals <<- rep(0, length(common_samples))
-  })
+  # Extract ALS status - use as.vector() to avoid duplication
+  als_vals <- as.vector(as.numeric(als_row[, -1, with=FALSE]))
 }
 
 p_colors <- ifelse(als_vals > 0.5, "red", "#9932CC")
@@ -112,22 +61,30 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         G <- pairs$geneid[i]
         S <- pairs$snpid[i]
         
-        # Retrieve values by column name, ensuring order matches common_samples EXACTLY
-        snp_row <- snp_mat[snpid == S]
+        # Get rows for this gene and SNP
         expr_row <- expr_mat[geneid == G]
+        snp_row  <- snp_mat[snpid == S]
         
-        if (nrow(snp_row) == 0 || nrow(expr_row) == 0) {
+        if (nrow(expr_row) == 0 || nrow(snp_row) == 0) {
             pairs_skipped <- pairs_skipped + 1
             next
         }
         
-        # Extract values in the SAME order as common_samples
-        # Use unlist() to convert list to vector before as.numeric()
-        snp_vals  <- as.numeric(unlist(snp_row[, ..common_samples, with=FALSE]))
-        expr_vals <- as.numeric(unlist(expr_row[, ..common_samples, with=FALSE]))
+        # CRITICAL FIX: Use as.vector() to extract without duplication
+        # This converts the data.table row to a vector correctly
+        expr_vals <- as.vector(as.numeric(expr_row[, -1, with=FALSE]))
+        snp_vals  <- as.vector(as.numeric(snp_row[, -1, with=FALSE]))
         
-        # Sanity check: all values should be numbers
-        if (all(is.na(snp_vals)) || all(is.na(expr_vals))) {
+        # Safety check
+        if (length(expr_vals) == 0 || length(snp_vals) == 0) {
+            pairs_skipped <- pairs_skipped + 1
+            next
+        }
+        
+        # Verify lengths match
+        if (length(expr_vals) != length(snp_vals)) {
+            message(sprintf("# WARNING: Length mismatch for %s x %s: expr=%d, snp=%d", 
+                          G, S, length(expr_vals), length(snp_vals)))
             pairs_skipped <- pairs_skipped + 1
             next
         }
@@ -135,9 +92,9 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         df <- data.frame(
             expression = expr_vals,
             SNP = snp_vals,
-            p_col = if(use_status_colors) p_colors else rep("darkred", length(common_samples)),
-            p_pch = if(use_status_colors) p_shapes else rep(16, length(common_samples)),
-            p_cex = if(use_status_colors) p_sizes else rep(0.7, length(common_samples)),
+            p_col = if(use_status_colors) p_colors else rep("darkred", length(expr_vals)),
+            p_pch = if(use_status_colors) p_shapes else rep(16, length(expr_vals)),
+            p_cex = if(use_status_colors) p_sizes else rep(0.7, length(expr_vals)),
             stringsAsFactors = FALSE
         )
         
