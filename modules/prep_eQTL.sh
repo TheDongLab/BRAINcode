@@ -66,6 +66,12 @@ def get_rin(row):
     except: return 0
 
 meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
+
+# FILTER: PMI <= 40 hours & RIN >= 3
+print(f"DEBUG: Before filtering: {len(meta_tissue)} samples")
+meta_tissue = meta_tissue[(meta_tissue['post_mortem_interval_in_hours'] <= 40) & (meta_tissue['RIN_score'] >= 3)]
+print(f"DEBUG: After PMI/RIN filter: {len(meta_tissue)} samples")
+
 meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
 # 4. TRIPLE INTERSECTION
