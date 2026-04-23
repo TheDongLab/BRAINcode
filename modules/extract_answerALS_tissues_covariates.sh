@@ -10,12 +10,10 @@
 set -euo pipefail
 
 # ── PATHS ─────────────────────────────────────────────────────────────────────
-# Using absolute paths for reliability within SLURM
 DATA_DIR="/home/zw529/donglab/data/answer_ALS"
 OUTDIR="$DATA_DIR/QTL"
 CONSOLIDATED_META="$DATA_DIR/consolidated_metadata_full.tsv"
 
-# Ensure the output directory exists
 mkdir -p "$OUTDIR"
 
 # Output Files
@@ -25,7 +23,7 @@ DIST_PLOT="$OUTDIR/subject_level_distributions.png"
 CORR_PLOT="$OUTDIR/subject_level_collinearity_heatmap.png"
 
 # ── STEP 1: SUBJECT-LEVEL AGGREGATION & AUDIT ─────────────────────────────────
-echo "Collapsing metadata to Subject-level and generating multi-omic audit..."
+echo "Normalizing tissues and generating subject-level multi-omic audit..."
 
 python3 - <<EOF
 import pandas as pd
@@ -38,13 +36,27 @@ import seaborn as sns
 # 1. LOAD DATA
 df = pd.read_csv("$CONSOLIDATED_META", sep="\t", low_memory=False)
 
-# 2. STRING CLEANING (Crucial to merge duplicate categories like 'PBMC/T-Cell')
-for col in ['Primary_Tissue', 'omic', 'Participant_ID', 'SEX', 'SUBJECT_GROUP', 'Site_of_Onset']:
+# 2. TISSUE NORMALIZATION
+# Standardizing the strings to merge 'NT-cell', 'NT-Cell', 'NT', etc.
+def normalize_tissue(t):
+    t = str(t).strip()
+    if t == 'nan' or not t: return 'Unknown'
+    # Merge all variations of Non-T-Cell
+    if any(x in t.upper() for x in ['NT-CELL', 'NT_CELL', 'NTCELL', '/NT']):
+        return 'PBMC/Non-T-Cell'
+    # Merge T-Cell variations
+    if 'T-CELL' in t.upper() or 'T_CELL' in t.upper():
+        return 'PBMC/T-Cell'
+    return t
+
+df['Primary_Tissue'] = df['Primary_Tissue'].apply(normalize_tissue)
+
+# Standardize other key columns
+for col in ['omic', 'Participant_ID', 'SEX', 'SUBJECT_GROUP']:
     if col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].astype(str).str.strip().replace('nan', np.nan)
 
 # 3. DEFINE AGGREGATION LOGIC
-# Collapsing all rows per Participant_ID
 agg_dict = {
     'SEX': 'first',
     'SUBJECT_GROUP': 'first',
@@ -73,7 +85,6 @@ agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
 df_sub = df.groupby('Participant_ID').agg(agg_dict).reset_index()
 
 # 4. GENERATE FIGURES (Subject-Level)
-print(f"Generating figures for N={len(df_sub)} unique subjects...")
 age_cols = ['AGE_AT_SYMPTOM_ONSET', 'AGE_AT_DEATH', 'Age_Sample_Collection_Cedars', 'Age_at_First_PBMC_Collection']
 ipsc_qc = ['PCT_SMI32', 'PCT_ISL1', 'PCT_NKX61', 'PCT_TUJ1', 'PCT_S100b', 'PCT_Nestin']
 clinical_num = ['ALSFRS_R_Baseline_Value', 'ALSFRS_R_Latest_Value', 'ALSFRS_R_PROGRESSION_SLOPE']
@@ -96,23 +107,52 @@ for i, col in enumerate(all_num_cols):
 plt.tight_layout()
 plt.savefig("$DIST_PLOT")
 
-# Heatmap
+# Heatmap (Seismic)
 plt.figure(figsize=(16, 14))
 corr = df_sub[all_num_cols].corr()
 sns.heatmap(corr, annot=True, cmap='seismic', center=0, fmt=".2f", linewidths=0.5)
-plt.title(f"AnswerALS Subject-Level Correlation (N={len(df_sub)})", fontsize=16)
 plt.xticks(rotation=45, ha='right')
 plt.tight_layout()
 plt.savefig("$CORR_PLOT")
 
-# 5. SUBJECT-LEVEL COVARIATE AUDIT TEXT
+# 5. SUBJECT-LEVEL TISSUE/OMIC AUDIT WITH OVERLAP
+with open("$TISSUE_SUMMARY", "w") as f:
+    f.write("============================================================\n")
+    f.write(" AnswerALS SUBJECT-LEVEL Omic Availability\n")
+    f.write(" (Count of Unique Participants per Tissue)\n")
+    f.write("============================================================\n\n")
+    
+    # Get N per Tissue/Omic
+    audit = df.groupby(['Primary_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
+    
+    # Calculate G+T Overlap per Tissue
+    def get_overlap(group):
+        sub_binary = group.pivot_table(index='Participant_ID', columns='omic', values='omic', aggfunc='count').fillna(0) > 0
+        if 'genomics' in sub_binary.columns and 'transcriptomics' in sub_binary.columns:
+            return (sub_binary['genomics'] & sub_binary['transcriptomics']).sum()
+        return 0
+
+    overlap_counts = df.groupby('Primary_Tissue').apply(get_overlap, include_groups=False)
+    audit['G+T_Overlap'] = overlap_counts
+    
+    f.write(audit.to_string())
+    f.write("\n\n" + "─" * 70 + "\n\n")
+    
+    # Global Overlap
+    subject_binary = df.pivot_table(index='Participant_ID', columns='omic', values='omic', aggfunc='count').fillna(0) > 0
+    total_overlap = (subject_binary.get('genomics', False) & subject_binary.get('transcriptomics', False)).sum()
+    
+    f.write(f"Global Subjects with BOTH Genomics & Transcriptomics (Any Tissue): {total_overlap}\n")
+    f.write(f"Total Unique Participants in dataset: {len(df_sub)}\n")
+
+# 6. SUBJECT-LEVEL COVARIATE SUMMARY
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(" AnswerALS Subject-Level Covariate Audit\n")
     f.write(f" UNIQUE PARTICIPANTS (N):      {len(df_sub):<5}\n")
     f.write("============================================================\n\n")
-
-    cat_cols = ['SEX', 'SUBJECT_GROUP', 'SUBJECT_SUBGROUP', 'Site_of_Onset', 'EH_C9orf72', 'has_discordant_sample']
+    
+    cat_cols = ['SEX', 'SUBJECT_GROUP', 'SUBJECT_SUBGROUP', 'Site_of_Onset', 'EH_C9orf72']
     for col in cat_cols:
         if col not in df_sub.columns: continue
         f.write(f"── {col.upper():<35} {'COUNT':<15} {'PERCENT':<15}\n")
@@ -120,37 +160,6 @@ with open("$COVARIATE_SUMMARY", "w") as f:
         for val, count in counts.items():
             f.write(f"    {str(val):<31} {count:>5} ({ (count/len(df_sub))*100:>4.1f}%)\n")
         f.write("\n")
-
-    f.write("── NUMERICAL COVARIATE STATISTICS (SUBJECT-LEVEL) ──────────\n\n")
-    for col in all_num_cols:
-        if col in df_sub.columns:
-            vals = df_sub[col].dropna()
-            f.write(f"{col:<30} (n={len(vals)}, {len(df_sub)-len(vals)} missing)\n")
-            f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
-
-# 6. SUBJECT-LEVEL TISSUE/OMIC AUDIT
-with open("$TISSUE_SUMMARY", "w") as f:
-    f.write("============================================================\n")
-    f.write(" AnswerALS SUBJECT-LEVEL Omic Availability\n")
-    f.write(f" (Unique Participants per Tissue/Omic Pair)\n")
-    f.write("============================================================\n\n")
-    
-    # Pivot to count unique participants per tissue-omic combination
-    # Grouping by cleaned strings to avoid duplicates
-    subject_tissue_audit = df.groupby(['Primary_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
-    
-    f.write(subject_tissue_audit.to_string())
-    f.write("\n\n" + "─" * 60 + "\n\n")
-    
-    # Multi-Omic Overlap Calculation
-    f.write("--- MULTI-OMIC OVERLAP (SUBJECT LEVEL) ---\n")
-    subject_binary = df.pivot_table(index='Participant_ID', columns='omic', values='Primary_Tissue', aggfunc='count').fillna(0) > 0
-    
-    if 'genomics' in subject_binary.columns and 'transcriptomics' in subject_binary.columns:
-        both = (subject_binary['genomics'] & subject_binary['transcriptomics']).sum()
-        f.write(f"Subjects with BOTH Genomics & Transcriptomics: {both}\n")
-    
-    f.write(f"Total Unique Subjects in Dataset: {len(df_sub)}\n")
 EOF
 
-echo "Process complete. Output files located in $OUTDIR"
+echo "Process complete. Subject-level audit and figures saved to $OUTDIR"
