@@ -99,8 +99,8 @@ for i, col in enumerate(active_cols):
         ax_outlier = fig.add_subplot(sub_gs[1], sharey=ax_main)
         
         data = df_sub[col].dropna()
-        sns.histplot(data, bins=25, binrange=(0, 50), ax=ax_main, color='teal', kde=False)
-        sns.histplot(data, bins=20, binrange=(400, 1250), ax=ax_outlier, color='red', alpha=0.6)
+        sns.histplot(data, bins=20, binrange=(0, 40), ax=ax_main, color='teal', kde=False)
+        sns.histplot(data, bins=20, binrange=(250, 1250), ax=ax_outlier, color='red', alpha=0.6)
         
         ax_main.set_xlim(0, 50)
         ax_outlier.set_xlim(400, 1250)
