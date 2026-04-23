@@ -125,22 +125,25 @@ with open("$TISSUE_SUMMARY", "w") as f:
     # Get N per Tissue/Omic
     audit = df.groupby(['Primary_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
     
-    # Calculate G+T Overlap per Tissue
+    # Calculate G+T Overlap per Tissue using a more robust method
     def get_overlap(group):
-        sub_binary = group.pivot_table(index='Participant_ID', columns='omic', values='omic', aggfunc='count').fillna(0) > 0
-        if 'genomics' in sub_binary.columns and 'transcriptomics' in sub_binary.columns:
-            return (sub_binary['genomics'] & sub_binary['transcriptomics']).sum()
-        return 0
+        # Find set of unique participants for each omic type in this tissue group
+        genomics_subs = set(group[group['omic'] == 'genomics']['Participant_ID'])
+        transcriptomics_subs = set(group[group['omic'] == 'transcriptomics']['Participant_ID'])
+        # Return the size of the intersection
+        return len(genomics_subs.intersection(transcriptomics_subs))
 
+    # Apply the overlap logic across tissues
     overlap_counts = df.groupby('Primary_Tissue').apply(get_overlap, include_groups=False)
     audit['G+T_Overlap'] = overlap_counts
     
     f.write(audit.to_string())
     f.write("\n\n" + "─" * 70 + "\n\n")
     
-    # Global Overlap
-    subject_binary = df.pivot_table(index='Participant_ID', columns='omic', values='omic', aggfunc='count').fillna(0) > 0
-    total_overlap = (subject_binary.get('genomics', False) & subject_binary.get('transcriptomics', False)).sum()
+    # Global Overlap (Subjects with Genomics and Transcriptomics regardless of tissue)
+    global_genomics = set(df[df['omic'] == 'genomics']['Participant_ID'])
+    global_transcriptomics = set(df[df['omic'] == 'transcriptomics']['Participant_ID'])
+    total_overlap = len(global_genomics.intersection(global_transcriptomics))
     
     f.write(f"Global Subjects with BOTH Genomics & Transcriptomics (Any Tissue): {total_overlap}\n")
     f.write(f"Total Unique Participants in dataset: {len(df_sub)}\n")
