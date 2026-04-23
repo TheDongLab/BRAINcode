@@ -102,10 +102,10 @@ for i, col in enumerate(active_cols):
         sns.histplot(data, bins=20, binrange=(0, 40), ax=ax_main, color='teal', kde=False)
         sns.histplot(data, bins=20, binrange=(250, 1250), ax=ax_outlier, color='red', alpha=0.6)
         
-        ax_main.set_xlim(0, 50)
-        ax_outlier.set_xlim(400, 1250)
-        ax_main.set_title("C9 Zoom (0-50)")
-        ax_outlier.set_title("Outliers")
+        ax_main.set_xlim(0, 40)
+        ax_outlier.set_xlim(250, 1250)
+        ax_main.set_title("C9 Zoom (0-40)")
+        ax_outlier.set_title("Outliers (250+)")
         
         ax_main.spines['right'].set_visible(False)
         ax_outlier.spines['left'].set_visible(False)
