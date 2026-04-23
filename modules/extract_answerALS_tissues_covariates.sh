@@ -74,17 +74,50 @@ num_vars = [
     'C9orf72_repeat_length', 'ATXN2_repeat_length',
     'PCT_SMI32', 'PCT_ISL1', 'PCT_NKX61', 'PCT_TUJ1', 'PCT_S100b', 'PCT_Nestin'
 ]
-active_cols = [c for c in num_vars if c in df_sub.columns]
+active_cols = [c for c in all_num_vars if c in df_sub.columns]
 for col in active_cols:
     df_sub[col] = pd.to_numeric(df_sub[col], errors='coerce')
 
-# Distribution Plots
-plt.figure(figsize=(26, 22))
+# Distribution Plot
+plt.figure(figsize=(26, 26))
 sns.set_style("whitegrid")
+
 for i, col in enumerate(active_cols):
-    plt.subplot(6, 3, i + 1)
-    sns.histplot(df_sub[col].dropna(), kde=True, color='teal', bins=30)
-    plt.title(f'Subject-Level: {col}', fontsize=12)
+    # SPECIAL CASE: Broken Axis for C9 repeats
+    if col == 'C9orf72_repeat_length':
+        # Create a nested gridspec for this specific subplot slot
+        from matplotlib.gridspec import GridSpec
+        gs = GridSpec(6, 3)
+        row, loc = divmod(i, 3)
+        
+        # Sub-divide this slot into two (left for normal, right for outliers)
+        sub_gs = gs[row, loc].subgridspec(1, 2, width_ratios=[3, 1], wspace=0.1)
+        ax_main = plt.subplot(sub_gs[0])
+        ax_outlier = plt.subplot(sub_gs[1], sharey=ax_main)
+
+        data = df_sub[col].dropna()
+        
+        # Main range (0-50)
+        sns.histplot(data, bins=25, binrange=(0, 50), ax=ax_main, color='teal', kde=False)
+        ax_main.set_xlim(0, 50)
+        ax_main.set_title(f"C9 Repeats (Zoom: 0-50)")
+
+        # Outlier range (400-1250)
+        sns.histplot(data, bins=20, binrange=(400, 1250), ax=ax_outlier, color='red', alpha=0.6)
+        ax_outlier.set_xlim(400, 1250)
+        ax_outlier.set_title("Outliers")
+        
+        # Hide the spine between the two
+        ax_main.spines['right'].set_visible(False)
+        ax_outlier.spines['left'].set_visible(False)
+        ax_outlier.yaxis.set_visible(False)
+
+    else:
+        # Standard Plot for everything else
+        plt.subplot(6, 3, i + 1)
+        sns.histplot(df_sub[col].dropna(), kde=True, color='teal', bins=30)
+        plt.title(f'Subject-Level: {col}', fontsize=12)
+
 plt.tight_layout()
 plt.savefig("$DIST_PLOT")
 
