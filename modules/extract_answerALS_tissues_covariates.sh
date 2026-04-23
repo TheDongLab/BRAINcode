@@ -17,13 +17,13 @@ CONSOLIDATED_META="$DATA_DIR/consolidated_metadata_full.tsv"
 mkdir -p "$OUTDIR"
 
 # Output Files
-COVARIATE_SUMMARY="$OUTDIR/subject_level_covariate_summary.txt"
-TISSUE_SUMMARY="$OUTDIR/subject_level_tissue_summary.txt"
-DIST_PLOT="$OUTDIR/subject_level_distributions.png"
-CORR_PLOT="$OUTDIR/subject_level_collinearity_heatmap.png"
+COVARIATE_SUMMARY="$OUTDIR/covariate_summary.txt"
+TISSUE_SUMMARY="$OUTDIR/tissue_summary.txt"
+DIST_PLOT="$OUTDIR/answerALS_distributions.png"
+CORR_PLOT="$OUTDIR/collinearity_heatmap.png"
 
 # ── STEP 1: SUBJECT-LEVEL AGGREGATION & AUDIT ─────────────────────────────────
-echo "Normalizing tissues and generating subject-level multi-omic audit..."
+echo "Normalizing DNA Source and calculating Disease Duration..."
 
 python3 - <<EOF
 import pandas as pd
@@ -36,133 +36,117 @@ import seaborn as sns
 # 1. LOAD DATA
 df = pd.read_csv("$CONSOLIDATED_META", sep="\t", low_memory=False)
 
-# 2. TISSUE NORMALIZATION
-# Standardizing the strings to merge 'NT-cell', 'NT-Cell', 'NT', etc.
-def normalize_tissue(t):
-    t = str(t).strip()
-    if t == 'nan' or not t: return 'Unknown'
-    # Merge all variations of Non-T-Cell
-    if any(x in t.upper() for x in ['NT-CELL', 'NT_CELL', 'NTCELL', '/NT']):
+# 2. FEATURE ENGINEERING: DISEASE DURATION
+# Calculate (Death - Onset) * 12 to get duration in months
+for col in ['AGE_AT_DEATH', 'AGE_AT_SYMPTOM_ONSET']:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+df['DISEASE_DURATION_IN_MONTHS'] = (df['AGE_AT_DEATH'] - df['AGE_AT_SYMPTOM_ONSET']) * 12
+
+# 3. TISSUE NORMALIZATION (DNA Source)
+def normalize_dna_source(s):
+    s = str(s).strip()
+    if s.lower() in ['nan', 'none', '']: return 'Unknown'
+    if any(x in s.upper() for x in ['NT-CELL', 'NT_CELL', 'NTCELL', '/NT']):
         return 'PBMC/Non-T-Cell'
-    # Merge T-Cell variations
-    if 'T-CELL' in t.upper() or 'T_CELL' in t.upper():
+    if 'T-CELL' in s.upper() or 'T_CELL' in s.upper():
         return 'PBMC/T-Cell'
-    return t
+    return s
 
-df['Primary_Tissue'] = df['Primary_Tissue'].apply(normalize_tissue)
+SOURCE_COL = 'Transcriptomic_Sequencing_DNA_Source'
+df['Analyzed_Tissue'] = df[SOURCE_COL].apply(normalize_dna_source) if SOURCE_COL in df.columns else df['Primary_Tissue'].apply(normalize_dna_source)
 
-# Standardize other key columns
-for col in ['omic', 'Participant_ID', 'SEX', 'SUBJECT_GROUP']:
-    if col in df.columns:
-        df[col] = df[col].astype(str).str.strip().replace('nan', np.nan)
-
-# 3. DEFINE AGGREGATION LOGIC
+# 4. DEFINE AGGREGATION LOGIC
+# Adding the new line IDs and full repeat lengths
 agg_dict = {
     'SEX': 'first',
+    'RACE': 'first',
     'SUBJECT_GROUP': 'first',
     'SUBJECT_SUBGROUP': 'first',
     'Site_of_Onset': 'first',
+    'iPSCLine': 'first',
+    'diMNs_line': 'first',
     'EH_C9orf72': 'max',
     'has_discordant_sample': 'max',
     'AGE_AT_SYMPTOM_ONSET': 'max',
     'AGE_AT_DEATH': 'max',
-    'Age_Sample_Collection_Cedars': 'max',
-    'Age_at_First_PBMC_Collection': 'max',
-    'ALSFRS_R_Baseline_Value': 'max',
-    'ALSFRS_R_Latest_Value': 'min',
-    'ALSFRS_R_PROGRESSION_SLOPE': 'mean',
+    'DISEASE_DURATION_IN_MONTHS': 'max',
     'C9orf72_repeat_length': 'max',
     'ATXN2_repeat_length': 'max',
-    'PCT_SMI32': 'mean',
-    'PCT_ISL1': 'mean',
-    'PCT_NKX61': 'mean',
+    'C9orf72_repeat_length_full': 'first',
+    'ATXN2_repeat_length_full': 'first',
+    'ALSFRS_R_PROGRESSION_SLOPE': 'mean',
     'PCT_TUJ1': 'mean',
-    'PCT_S100b': 'mean',
-    'PCT_Nestin': 'mean'
+    'PCT_SMI32': 'mean'
 }
 
 agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
 df_sub = df.groupby('Participant_ID').agg(agg_dict).reset_index()
 
-# 4. GENERATE FIGURES (Subject-Level)
-age_cols = ['AGE_AT_SYMPTOM_ONSET', 'AGE_AT_DEATH', 'Age_Sample_Collection_Cedars', 'Age_at_First_PBMC_Collection']
-ipsc_qc = ['PCT_SMI32', 'PCT_ISL1', 'PCT_NKX61', 'PCT_TUJ1', 'PCT_S100b', 'PCT_Nestin']
-clinical_num = ['ALSFRS_R_Baseline_Value', 'ALSFRS_R_Latest_Value', 'ALSFRS_R_PROGRESSION_SLOPE']
-genetic_num = ['C9orf72_repeat_length', 'ATXN2_repeat_length']
-all_num_cols = age_cols + ipsc_qc + clinical_num + genetic_num
+# 5. GENERATE FIGURES (Subject-Level)
+# Include the new duration in plots
+num_cols_to_plot = ['AGE_AT_SYMPTOM_ONSET', 'AGE_AT_DEATH', 'DISEASE_DURATION_IN_MONTHS', 
+                    'C9orf72_repeat_length', 'ATXN2_repeat_length', 'PCT_TUJ1', 'PCT_SMI32']
+num_cols_to_plot = [c for c in num_cols_to_plot if c in df_sub.columns]
 
-for col in all_num_cols:
-    if col in df_sub.columns:
-        df_sub[col] = pd.to_numeric(df_sub[col], errors='coerce')
+for col in num_cols_to_plot:
+    df_sub[col] = pd.to_numeric(df_sub[col], errors='coerce')
 
-# Distribution Plot
-plt.figure(figsize=(22, 18))
+# Dist Plots
+plt.figure(figsize=(20, 15))
 sns.set_style("whitegrid")
-for i, col in enumerate(all_num_cols):
-    if col not in df_sub.columns: continue
-    plt.subplot(4, 4, i + 1)
+for i, col in enumerate(num_cols_to_plot):
+    plt.subplot(3, 3, i + 1)
     sns.histplot(df_sub[col].dropna(), kde=True, color='teal', bins=30)
     plt.title(f'Subject-Level: {col}', fontsize=12)
-    plt.xticks(rotation=45)
 plt.tight_layout()
 plt.savefig("$DIST_PLOT")
 
-# Heatmap (Seismic)
-plt.figure(figsize=(16, 14))
-corr = df_sub[all_num_cols].corr()
-sns.heatmap(corr, annot=True, cmap='seismic', center=0, fmt=".2f", linewidths=0.5)
-plt.xticks(rotation=45, ha='right')
+# Heatmap
+plt.figure(figsize=(14, 12))
+corr = df_sub[num_cols_to_plot].corr()
+sns.heatmap(corr, annot=True, cmap='seismic', center=0, fmt=".2f")
+plt.title("Subject-Level Clinical/Genetic Correlation")
 plt.tight_layout()
 plt.savefig("$CORR_PLOT")
 
-# 5. SUBJECT-LEVEL TISSUE/OMIC AUDIT WITH OVERLAP
+# 6. TISSUE SUMMARY (DNA Source with G+T Overlap)
 with open("$TISSUE_SUMMARY", "w") as f:
     f.write("============================================================\n")
-    f.write(" AnswerALS SUBJECT-LEVEL Omic Availability\n")
-    f.write(" (Count of Unique Participants per Tissue)\n")
+    f.write(" AnswerALS SUBJECT-LEVEL Omic Availability (By DNA Source)\n")
     f.write("============================================================\n\n")
     
-    # Get N per Tissue/Omic
-    audit = df.groupby(['Primary_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
+    audit = df.groupby(['Analyzed_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
     
-    # Calculate G+T Overlap per Tissue using a more robust method
     def get_overlap(group):
-        # Find set of unique participants for each omic type in this tissue group
-        genomics_subs = set(group[group['omic'] == 'genomics']['Participant_ID'])
-        transcriptomics_subs = set(group[group['omic'] == 'transcriptomics']['Participant_ID'])
-        # Return the size of the intersection
-        return len(genomics_subs.intersection(transcriptomics_subs))
+        gen_subs = set(group[group['omic'] == 'genomics']['Participant_ID'])
+        tra_subs = set(group[group['omic'] == 'transcriptomics']['Participant_ID'])
+        return len(gen_subs.intersection(tra_subs))
 
-    # Apply the overlap logic across tissues
-    overlap_counts = df.groupby('Primary_Tissue').apply(get_overlap, include_groups=False)
-    audit['G+T_Overlap'] = overlap_counts
-    
+    audit['G+T_Overlap'] = df.groupby('Analyzed_Tissue').apply(get_overlap, include_groups=False)
     f.write(audit.to_string())
-    f.write("\n\n" + "─" * 70 + "\n\n")
-    
-    # Global Overlap (Subjects with Genomics and Transcriptomics regardless of tissue)
-    global_genomics = set(df[df['omic'] == 'genomics']['Participant_ID'])
-    global_transcriptomics = set(df[df['omic'] == 'transcriptomics']['Participant_ID'])
-    total_overlap = len(global_genomics.intersection(global_transcriptomics))
-    
-    f.write(f"Global Subjects with BOTH Genomics & Transcriptomics (Any Tissue): {total_overlap}\n")
-    f.write(f"Total Unique Participants in dataset: {len(df_sub)}\n")
 
-# 6. SUBJECT-LEVEL COVARIATE SUMMARY
+# 7. COVARIATE SUMMARY (With New Variables)
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(" AnswerALS Subject-Level Covariate Audit\n")
     f.write(f" UNIQUE PARTICIPANTS (N):      {len(df_sub):<5}\n")
     f.write("============================================================\n\n")
     
-    cat_cols = ['SEX', 'SUBJECT_GROUP', 'SUBJECT_SUBGROUP', 'Site_of_Onset', 'EH_C9orf72']
+    cat_cols = ['SEX', 'RACE', 'SUBJECT_GROUP', 'Site_of_Onset', 'iPSCLine', 'diMNs_line']
     for col in cat_cols:
-        if col not in df_sub.columns: continue
-        f.write(f"── {col.upper():<35} {'COUNT':<15} {'PERCENT':<15}\n")
-        counts = df_sub[col].value_counts(dropna=False)
-        for val, count in counts.items():
-            f.write(f"    {str(val):<31} {count:>5} ({ (count/len(df_sub))*100:>4.1f}%)\n")
-        f.write("\n")
+        if col in df_sub.columns:
+            f.write(f"── {col.upper():<35}\n")
+            counts = df_sub[col].value_counts(dropna=False).head(20) # Head 20 for lines
+            for val, count in counts.items():
+                f.write(f"    {str(val):<31} {count:>5} ({ (count/len(df_sub))*100:>4.1f}%)\n")
+            f.write("\n")
+
+    f.write("── NUMERICAL COVARIATE STATISTICS (SUBJECT-LEVEL) ──────────\n\n")
+    for col in num_cols_to_plot:
+        vals = df_sub[col].dropna()
+        f.write(f"{col:<30} (n={len(vals)}, {len(df_sub)-len(vals)} missing)\n")
+        f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f}\n\n")
 EOF
 
-echo "Process complete. Subject-level audit and figures saved to $OUTDIR"
+echo "Done. Audit and plots generated in $OUTDIR"
