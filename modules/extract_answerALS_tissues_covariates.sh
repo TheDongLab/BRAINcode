@@ -4,13 +4,13 @@
 #SBATCH --mem=120G
 #SBATCH --time=12:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/extract_answerALS_audit.out
-#SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/extract_answerALS_audit.err
+#SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/extract_answerALS_covariates.out
+#SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/extract_answerALS_covariates.err
 
 set -euo pipefail
 
 # ── PATHS ─────────────────────────────────────────────────────────────────────
-# Executing from /home/zw529/donglab/data/answer_ALS/QTL
+# Using absolute paths for reliability within SLURM
 DATA_DIR="/home/zw529/donglab/data/answer_ALS"
 OUTDIR="$DATA_DIR/QTL"
 CONSOLIDATED_META="$DATA_DIR/consolidated_metadata_full.tsv"
@@ -19,13 +19,13 @@ CONSOLIDATED_META="$DATA_DIR/consolidated_metadata_full.tsv"
 mkdir -p "$OUTDIR"
 
 # Output Files
-COVARIATE_SUMMARY="$OUTDIR/covariate_summary.txt"
-TISSUE_SUMMARY="$OUTDIR/tissue_summary.txt"
-DIST_PLOT="$OUTDIR/answerALS_distributions.png"
-CORR_PLOT="$OUTDIR/answerALS_collinearity_heatmap.png"
+COVARIATE_SUMMARY="$OUTDIR/subject_level_covariate_summary.txt"
+TISSUE_SUMMARY="$OUTDIR/subject_level_tissue_summary.txt"
+DIST_PLOT="$OUTDIR/subject_level_distributions.png"
+CORR_PLOT="$OUTDIR/subject_level_collinearity_heatmap.png"
 
 # ── STEP 1: SUBJECT-LEVEL AGGREGATION & AUDIT ─────────────────────────────────
-echo "Collapsing metadata to Subject-level and generating audit..."
+echo "Collapsing metadata to Subject-level and generating multi-omic audit..."
 
 python3 - <<EOF
 import pandas as pd
@@ -38,9 +38,13 @@ import seaborn as sns
 # 1. LOAD DATA
 df = pd.read_csv("$CONSOLIDATED_META", sep="\t", low_memory=False)
 
-# 2. DEFINE AGGREGATION LOGIC
-# For clinical/categorical info, we take the 'first' or 'max'
-# For biological measurements (staining), we take the 'mean' per subject
+# 2. STRING CLEANING (Crucial to merge duplicate categories like 'PBMC/T-Cell')
+for col in ['Primary_Tissue', 'omic', 'Participant_ID', 'SEX', 'SUBJECT_GROUP', 'Site_of_Onset']:
+    if col in df.columns:
+        df[col] = df[col].astype(str).str.strip()
+
+# 3. DEFINE AGGREGATION LOGIC
+# Collapsing all rows per Participant_ID
 agg_dict = {
     'SEX': 'first',
     'SUBJECT_GROUP': 'first',
@@ -53,7 +57,7 @@ agg_dict = {
     'Age_Sample_Collection_Cedars': 'max',
     'Age_at_First_PBMC_Collection': 'max',
     'ALSFRS_R_Baseline_Value': 'max',
-    'ALSFRS_R_Latest_Value': 'min', # Getting the most recent/lowest score
+    'ALSFRS_R_Latest_Value': 'min',
     'ALSFRS_R_PROGRESSION_SLOPE': 'mean',
     'C9orf72_repeat_length': 'max',
     'ATXN2_repeat_length': 'max',
@@ -65,21 +69,17 @@ agg_dict = {
     'PCT_Nestin': 'mean'
 }
 
-# Only aggregate columns that actually exist in the dataframe
 agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-
-# Perform the collapse
 df_sub = df.groupby('Participant_ID').agg(agg_dict).reset_index()
 
-# 3. GENERATE FIGURES (Subject-Level)
-print(f"Generating figures for N={len(df_sub)} subjects...")
+# 4. GENERATE FIGURES (Subject-Level)
+print(f"Generating figures for N={len(df_sub)} unique subjects...")
 age_cols = ['AGE_AT_SYMPTOM_ONSET', 'AGE_AT_DEATH', 'Age_Sample_Collection_Cedars', 'Age_at_First_PBMC_Collection']
 ipsc_qc = ['PCT_SMI32', 'PCT_ISL1', 'PCT_NKX61', 'PCT_TUJ1', 'PCT_S100b', 'PCT_Nestin']
 clinical_num = ['ALSFRS_R_Baseline_Value', 'ALSFRS_R_Latest_Value', 'ALSFRS_R_PROGRESSION_SLOPE']
 genetic_num = ['C9orf72_repeat_length', 'ATXN2_repeat_length']
 all_num_cols = age_cols + ipsc_qc + clinical_num + genetic_num
 
-# Ensure numeric
 for col in all_num_cols:
     if col in df_sub.columns:
         df_sub[col] = pd.to_numeric(df_sub[col], errors='coerce')
@@ -105,7 +105,7 @@ plt.xticks(rotation=45, ha='right')
 plt.tight_layout()
 plt.savefig("$CORR_PLOT")
 
-# 4. SUBJECT-LEVEL AUDIT TEXT
+# 5. SUBJECT-LEVEL COVARIATE AUDIT TEXT
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(" AnswerALS Subject-Level Covariate Audit\n")
@@ -128,12 +128,29 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"{col:<30} (n={len(vals)}, {len(df_sub)-len(vals)} missing)\n")
             f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
 
-# 5. TISSUE/OMIC SUMMARY (Still row-level to see total sample availability)
+# 6. SUBJECT-LEVEL TISSUE/OMIC AUDIT
 with open("$TISSUE_SUMMARY", "w") as f:
-    f.write("AnswerALS Sample Availability (Row-Level Audit)\n\n")
-    ct = pd.crosstab(df['Primary_Tissue'].fillna('Unknown'), df['omic'].fillna('None'))
-    f.write("TISSUE vs OMIC CROSS-TABULATION:\n")
-    f.write(ct.to_string())
+    f.write("============================================================\n")
+    f.write(" AnswerALS SUBJECT-LEVEL Omic Availability\n")
+    f.write(f" (Unique Participants per Tissue/Omic Pair)\n")
+    f.write("============================================================\n\n")
+    
+    # Pivot to count unique participants per tissue-omic combination
+    # Grouping by cleaned strings to avoid duplicates
+    subject_tissue_audit = df.groupby(['Primary_Tissue', 'omic'])['Participant_ID'].nunique().unstack(fill_value=0)
+    
+    f.write(subject_tissue_audit.to_string())
+    f.write("\n\n" + "─" * 60 + "\n\n")
+    
+    # Multi-Omic Overlap Calculation
+    f.write("--- MULTI-OMIC OVERLAP (SUBJECT LEVEL) ---\n")
+    subject_binary = df.pivot_table(index='Participant_ID', columns='omic', values='Primary_Tissue', aggfunc='count').fillna(0) > 0
+    
+    if 'genomics' in subject_binary.columns and 'transcriptomics' in subject_binary.columns:
+        both = (subject_binary['genomics'] & subject_binary['transcriptomics']).sum()
+        f.write(f"Subjects with BOTH Genomics & Transcriptomics: {both}\n")
+    
+    f.write(f"Total Unique Subjects in Dataset: {len(df_sub)}\n")
 EOF
 
-echo "Subject-level summaries and plots generated."
+echo "Process complete. Output files located in $OUTDIR"
