@@ -1,7 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - CLEAN VERSION
-# Now that prep script is fixed, no dedup needed
+# _eQTL_boxplot.R
 ###########################################
 
 suppressPackageStartupMessages({
@@ -122,6 +121,17 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 main=paste0("Additive Model\n(p = ", get_p(expression ~ SNP, df), ")"))
         points(jitter(as.numeric(df$SNP_f), amount=0.15), df$expression, 
                 pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+                
+        if (use_status_colors) {
+          # Use par(xpd=TRUE) to allow drawing the legend outside the plot area if needed, or simply place it in the top-left of the current plot.
+          legend("topleft", 
+                 legend = c("ALS", "Control"), 
+                 col = c("red", "#9932CC"), 
+                 pch = c(16, 18), 
+                 pt.cex = c(0.7, 1.1),
+                 bg = "white",
+                 cex = 0.8)
+        }
         
         # Model 2: Dominant
         df$dom_val <- ifelse(df$SNP > 0, 1, 0)
@@ -134,6 +144,17 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 main=paste0("Dominant Model\n(p = ", get_p(expression ~ dom_val, df), ")"))
         points(jitter(as.numeric(df$dom_f), amount=0.15), df$expression, 
                 pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+                
+        if (use_status_colors) {
+          # Use par(xpd=TRUE) to allow drawing the legend outside the plot area if needed, or simply place it in the top-left of the current plot.
+          legend("topleft", 
+                 legend = c("ALS", "Control"), 
+                 col = c("red", "#9932CC"), 
+                 pch = c(16, 18), 
+                 pt.cex = c(0.7, 1.1),
+                 bg = "white",
+                 cex = 0.8)
+        }
 
         # Model 3: Recessive
         df$rec_val <- ifelse(df$SNP == 2, 1, 0)
@@ -146,8 +167,20 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                 main=paste0("Recessive Model\n(p = ", get_p(expression ~ rec_val, df), ")"))
         points(jitter(as.numeric(df$rec_f), amount=0.15), df$expression, 
                 pch=df$p_pch, col=df$p_col, cex=df$p_cex)
-
+        
+        if (use_status_colors) {
+          # Use par(xpd=TRUE) to allow drawing the legend outside the plot area if needed, or simply place it in the top-left of the current plot.
+          legend("topleft", 
+                 legend = c("ALS", "Control"), 
+                 col = c("red", "#9932CC"), 
+                 pch = c(16, 18), 
+                 pt.cex = c(0.7, 1.1),
+                 bg = "white",
+                 cex = 0.8)
+        }
+        
         mtext(paste("Gene:", G, "| SNP:", S), outer=TRUE, cex=1.1, font=2, line=0.5)
+        
         plots_made <- plots_made + 1
     }
     
