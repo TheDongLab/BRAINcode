@@ -106,7 +106,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     # Lead SNP labels
     geom_text_repel(data=extreme_hits, 
                     aes(x=cum_pos, y=log10p, label=geneid), 
-                    size=2.5, colour="black", fontface="italic", 
+                    size=2.5, colour="darkgreen", fontface="italic", 
                     box.padding = 0.5, max.overlaps = Inf) +
     
     # Color scheme
@@ -126,7 +126,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle=paste("Reds/Blues: FDR <", sig_thresh_fdr, "| Greys: Background Zebra Pattern"),
+         subtitle=paste("Reds: Increased expression & FDR <", sig_thresh_fdr, "Blues: Decreased expression & FDR <", sig_thresh_fdr,  "| Greys: Background Zebra Pattern | Oranges: Telomeric SNPs"),
          x="Chromosome", y=expression(-log[10](p))) +
     
     theme_bw() + 
