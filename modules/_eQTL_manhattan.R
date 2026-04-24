@@ -126,7 +126,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle=paste("Reds: Increased expression & FDR <", sig_thresh_fdr, "Blues: Decreased expression & FDR <", sig_thresh_fdr,  "| Greys: Background Zebra Pattern | Oranges: Telomeric SNPs"),
+         subtitle=paste("Reds: Increased expression & FDR <", sig_thresh_fdr, "| Blues: Decreased expression & FDR <", sig_thresh_fdr,  "| Greys: Non-significant SNPs | Oranges: Telomeric SNPs"),
          x="Chromosome", y=expression(-log[10](p))) +
     
     theme_bw() + 
