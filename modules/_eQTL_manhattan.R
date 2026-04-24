@@ -39,19 +39,20 @@ snp_plot[, cum_pos := pos + tot]
 lead_plot <- chr_info[lead_plot]
 lead_plot[, cum_pos := pos + tot]
 
-# --- THE FIX: STRICT LOGIC ORDER ---
+# --- THE AGGRESSIVE FIX ---
 
-# 1. Initialize EVERYTHING as Zebra (0 or 1) based on Chromosome
+# 1. Start EVERYONE as Zebra (Grey/Black)
 snp_plot[, color_cat := as.character(chr_num %% 2)]
 
-# 2. ONLY overwrite the category IF significant AND non-telomeric
-snp_plot[log10p >= sig_thresh & telomeric_flag == FALSE & beta > 0, color_cat := "increase"]
-snp_plot[log10p >= sig_thresh & telomeric_flag == FALSE & beta < 0, color_cat := "decrease"]
+# 2. Only SNPs that EXPLICITLY pass the threshold get Red/Blue
+# If it's below sig_thresh, it stays as "0" or "1" regardless of beta
+snp_plot[log10p >= sig_thresh & beta > 0, color_cat := "increase"]
+snp_plot[log10p >= sig_thresh & beta < 0, color_cat := "decrease"]
 
-# 3. Always apply telomere color last (overriding both zebra and significance)
+# 3. Telomeres get priority
 snp_plot[telomeric_flag == TRUE, color_cat := "telomere"]
 
-# 4. Lead SNPs (Diamonds) logic - strictly significant
+# 4. Lead SNPs (Diamonds) - same logic
 lead_plot[, color_cat := "none"]
 lead_plot[log10p >= sig_thresh & beta > 0, color_cat := "inc_lead"]
 lead_plot[log10p >= sig_thresh & beta < 0, color_cat := "dec_lead"]
@@ -62,39 +63,38 @@ extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 message("## Creating Plot...")
 
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
-    # Background + Significant points
-    geom_point(aes(colour=color_cat), size=0.7, alpha=0.6) +
+    # Background + Significant points (Single layer)
+    geom_point(aes(colour=color_cat), size=0.6, alpha=0.5) +
     
-    # Significant Lead SNPs (Diamonds)
+    # Significant Lead SNPs (Diamonds) - Plotted on TOP
     geom_point(data=lead_plot[color_cat != "none"], 
                aes(x=cum_pos, y=log10p, colour=color_cat), 
-               shape=18, size=2.2) +
+               shape=18, size=2.0) +
     
-    geom_hline(yintercept=sig_thresh, linetype="dashed", colour="grey40", linewidth=0.5) +
+    # Threshold Line
+    geom_hline(yintercept=sig_thresh, linetype="dashed", colour="grey30", linewidth=0.5) +
     
     geom_text_repel(data=extreme_hits, 
                     aes(x=cum_pos, y=log10p, label=geneid), 
                     size=2.5, colour="black", fontface="italic", 
                     box.padding = 0.5, max.overlaps = Inf) +
 
-    # Map the colors
     scale_colour_manual(values=c(
-        "0"        = "#444444",   # Non-sig / Even Chr (Dark Grey)
-        "1"        = "#999999",   # Non-sig / Odd Chr (Light Grey)
-        "increase" = "red",       # Sig + Positive Beta
-        "decrease" = "blue",      # Sig + Negative Beta
-        "telomere" = "#E69F00",   # Orange
-        "inc_lead" = "red",       # Lead Red Diamond
-        "dec_lead" = "blue"       # Lead Blue Diamond
+        "0"        = "#444444",   # Even Chr Background (Dark)
+        "1"        = "#999999",   # Odd Chr Background (Light)
+        "increase" = "red",       # Sig ONLY
+        "decrease" = "blue",      # Sig ONLY
+        "telomere" = "#E69F00",   # Telomere Orange
+        "inc_lead" = "red",       # Lead Diamond
+        "dec_lead" = "blue"       # Lead Diamond
     )) +
     
     scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), 
-                       breaks=snp_axis$centre, 
-                       expand=c(0.01, 0.01)) +
+                       breaks=snp_axis$centre, expand=c(0.01, 0.01)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle="Reds: Significant Increase | Blues: Significant Decrease | Greys: Non-significant",
+         subtitle="Reds/Blues: Significant Only | Greys: Background Zebra Pattern",
          x="Chromosome", y=expression(-log[10](p))) +
     
     theme_bw() + 
