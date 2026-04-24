@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
 # _eQTL_manhattan.R
-# FIXED: Sig-only red diamonds and chr labels
+# UPDATED: Directional coloring based on 'beta'
 ###########################################
 
 suppressPackageStartupMessages({
@@ -44,49 +44,59 @@ snp_plot[, cum_pos := pos + tot]
 lead_plot <- chr_info[lead_plot]
 lead_plot[, cum_pos := pos + tot]
 
+# Define direction only for Significant, Non-Telomeric SNPs
+snp_plot[, color_cat := as.character(chr_num %% 2)] # Default to Zebra
+snp_plot[log10p >= sig_thresh & beta > 0, color_cat := "increase"]
+snp_plot[log10p >= sig_thresh & beta < 0, color_cat := "decrease"]
+snp_plot[telomeric_flag == TRUE, color_cat := "telomere"]
+
+# Apply same logic to Lead SNPs
+lead_plot[, color_cat := "increase"]
+lead_plot[beta < 0, color_cat := "decrease"]
+
 snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
 extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 
 message("## Creating Plot...")
 
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
-    # 1. Non-significant background SNPs (Zebra)
-    geom_point(data=snp_plot[log10p < sig_thresh & telomeric_flag == FALSE], 
-               aes(colour=as.character(chr_num %% 2)), 
-               size=0.6, alpha=0.3) +
+    # 1. Plot all points using the combined color_cat
+    # We use a single geom_point for the background/sig hits to keep it clean
+    geom_point(aes(colour=color_cat), size=0.7, alpha=0.6) +
     
-    # 2. Significant background SNPs (Still Zebra but brighter)
-    geom_point(data=snp_plot[log10p >= sig_thresh & telomeric_flag == FALSE], 
-               aes(colour=as.character(chr_num %% 2)), 
-               size=0.7, alpha=0.6) +
-    
-    # 3. Telomeric SNPs
-    geom_point(data=snp_plot[telomeric_flag == TRUE], 
-               colour="#E69F00", size=0.6, alpha=0.8) +
-    
-    # 4. ONLY Significant Lead SNPs get the Red Diamond
+    # 2. Significant Lead SNPs get the Diamond shape
     geom_point(data=lead_plot[log10p >= sig_thresh], 
-               aes(x=cum_pos, y=log10p), 
-               shape=18, size=1.8, colour="red") +
+               aes(x=cum_pos, y=log10p, colour=color_cat), 
+               shape=18, size=2.2) +
     
-    geom_hline(yintercept=sig_thresh, linetype="dashed", colour="darkred", linewidth=0.5) +
+    geom_hline(yintercept=sig_thresh, linetype="dashed", colour="grey40", linewidth=0.5) +
     
     geom_text_repel(data=extreme_hits, 
                     aes(x=cum_pos, y=log10p, label=geneid), 
-                    size=2.5, colour="darkgreen", fontface="italic", 
+                    size=2.5, colour="black", fontface="italic", 
                     box.padding = 0.5, max.overlaps = Inf) +
 
-    scale_colour_manual(values=c("0"="#444444", "1"="#999999")) +
+    # 3. Scale Definition
+    scale_colour_manual(values=c(
+        "0" = "#444444",        # Even Chr Background
+        "1" = "#999999",        # Odd Chr Background
+        "telomere" = "#E69F00", # Orange
+        "increase" = "#E41A1C", # Red
+        "decrease" = "#377EB8"  # Blue
+    )) +
+    
     scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), 
                        breaks=snp_axis$centre, 
                        expand=c(0.01, 0.01)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle="Red: Sig. Lead SNPs | Orange: Telomeric SNPs",
+         subtitle="Red: Increase Expr | Blue: Decrease Expr | Orange: Telomeric",
          x="Chromosome", y=expression(-log[10](p))) +
     
-    theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank())
+    theme_bw() + theme(legend.position="none", 
+                       panel.grid.major.x = element_blank(),
+                       panel.grid.minor = element_blank())
 
 out_file_png <- paste0(out_prefix, ".manhattan_by_SNP.png")
 png(out_file_png, width=18, height=6, units="in", res=300)
