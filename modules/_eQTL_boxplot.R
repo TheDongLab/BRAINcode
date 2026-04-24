@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R
+# _eQTL_boxplot.R - CLEAN VERSION
+# Now that prep script is fixed, no dedup needed
 ###########################################
 
 suppressPackageStartupMessages({
@@ -129,7 +130,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                  col = c("red", "#9932CC"), 
                  pch = c(16, 18), 
                  pt.cex = c(0.7, 1.1),
-                 bg = "white",
+                 bty = "n",
                  cex = 0.8)
         }
         
@@ -152,7 +153,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                  col = c("red", "#9932CC"), 
                  pch = c(16, 18), 
                  pt.cex = c(0.7, 1.1),
-                 bg = "white",
+                 bty = "n",
                  cex = 0.8)
         }
 
@@ -175,7 +176,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
                  col = c("red", "#9932CC"), 
                  pch = c(16, 18), 
                  pt.cex = c(0.7, 1.1),
-                 bg = "white",
+                 bty = "n",
                  cex = 0.8)
         }
         
