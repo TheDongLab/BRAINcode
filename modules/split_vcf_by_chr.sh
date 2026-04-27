@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=split_vcf
-#SBATCH --output=split_vcf.log
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
 #SBATCH --mem=80G
 #SBATCH --cpus-per-task=1
 #SBATCH --time=12:00:00
@@ -12,7 +12,7 @@
 module load BCFtools
 
 # Define paths
-INPUT_VCF="/home/zw529/donglab/data/target_ALS/Cerebellum/eQTL/joint_genotyped_GQ.vcf.gz"
+INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
 
 # Create output directory if it doesn't exist
