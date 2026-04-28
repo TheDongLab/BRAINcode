@@ -1,9 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=split_vcf_TargetALS
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
-#SBATCH --mem=80G
+#SBATCH --mem=60G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=12:00:00
+#SBATCH --time=3:00:00
+
+#####################
+# Run this script AFTER genotyping QC (i.e, after convert_vcf_to_plink.sh)
+#####################
 
 module load BCFtools
 
