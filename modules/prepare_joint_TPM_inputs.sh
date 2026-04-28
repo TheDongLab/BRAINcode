@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prep_joint_TPM
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.err
 #SBATCH --time=06:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -67,14 +67,9 @@ for fpath in files:
     if sample_id in valid_ids:
         try:
             df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
-            
-            # --- THE FIX: STRIP VERSION NUMBERS ---
-            # Splits 'ENSG000.1' at '.' and takes the first part
-            df['gene_id'] = df['gene_id'].str.split('.').str[0]
-            
-            # Remove duplicates just in case stripping creates them
+            # Strip version and whitespace
+            df['gene_id'] = df['gene_id'].astype(str).str.strip().str.split('.').str[0]
             df = df.drop_duplicates(subset=['gene_id'])
-            
             df = df.set_index('gene_id').rename(columns={'TPM': sample_id})
             all_dfs.append(df)
         except Exception as e:
@@ -82,10 +77,17 @@ for fpath in files:
 
 if all_dfs:
     print(f"Merging {len(all_dfs)} dataframes...")
-    # join='inner' is now safe because IDs are standardized
-    joint_df = pd.concat(all_dfs, axis=1, join='inner')
+    # Outer join to ensure we capture all data
+    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0)
     
+    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples
+    threshold = len(all_dfs) * 0.2
+    mask = (joint_df > 0.1).sum(axis=1) >= threshold
+    joint_df = joint_df[mask]
+    
+    # Header cleanup for R compatibility
     joint_df.columns = [c.replace('_', '-') for c in joint_df.columns]
+    
     joint_df.to_csv(output_file, sep='\t')
     print(f"Successfully merged {len(all_dfs)} samples.")
     print(f"Final Matrix dimensions: {joint_df.shape}")
