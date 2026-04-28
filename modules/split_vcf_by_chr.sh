@@ -23,62 +23,54 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: EXTRACT SAMPLES ---
-PASS_SAMPLES="${OUTPUT_DIR}/samples_pass_QC.txt"
+# --- STEP 1: GENERATE SAMPLE LISTS ---
+echo "Generating sample lists..."
+PASS_SAMPLES="${OUTPUT_DIR}/pass_samples.txt"
+# Extract the 413 samples from your filtered PLINK results
 awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
 
-# --- STEP 2: GENERATE MALE LIST ---
-MALE_LIST="${OUTPUT_DIR}/males_pass_qc.txt"
-# Remove all whitespace/carriage returns to ensure ID matching works
-tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" && (tolower($5) == "male") {gsub(/[[:space:]]/, "", $2); print $2}' | \
-grep -Fwf $PASS_SAMPLES | sort | uniq > $MALE_LIST
+# Define Females and Males specifically from the PASS list
+FEMALE_LIST="${OUTPUT_DIR}/females.txt"
+MALE_LIST="${OUTPUT_DIR}/males.txt"
 
-# --- STEP 3: LOOP THROUGH CHROMOSOMES ---
-for chr in {1..22} X Y; do
-    echo "Processing chromosome: chr${chr}..."
-    OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
-    
-    if [ "$chr" == "X" ]; then
-        echo "Applying sex-specific haploid fix to chrX..."
-        # Extract header and data for X specifically
-        bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -h > ${OUTPUT_DIR}/temp_header.txt
-        
-        bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -H | \
-        awk -v males="$(cat $MALE_LIST | tr '\n' ',')" -v head="$(grep "^#CHROM" ${OUTPUT_DIR}/temp_header.txt)" '
-        BEGIN {
-            # 1. Clean and store male IDs in a lookup table
-            n = split(males, m_arr, ",");
-            for (i=1; i<=n; i++) {
-                m_id = m_arr[i]; gsub(/[[:space:]]/, "", m_id);
-                if (m_id != "") is_male[m_id] = 1;
-            }
-            # 2. Map VCF columns to those male IDs
-            split(head, h_cols, "\t");
-            for (i=10; i<=length(h_cols); i++) {
-                v_id = h_cols[i]; gsub(/[[:space:]]/, "", v_id);
-                if (v_id in is_male) male_col[i] = 1;
-            }
-            FS=OFS="\t";
-        }
-        {
-            # 3. Process the genotypes
-            for (i=10; i<=NF; i++) {
-                if (male_col[i]) {
-                    # Only take the first allele for males (haploidize)
-                    $i = substr($i, 1, 1);
-                }
-                # Else: do nothing, leave female genotypes as diploid
-            }
-            print $0;
-        }' | cat ${OUTPUT_DIR}/temp_header.txt - | bcftools view -Oz -o $OUT_VCF
-        
-        rm ${OUTPUT_DIR}/temp_header.txt
-    else
-        # Standard extraction for autosomes and Y
-        bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o $OUT_VCF
-    fi
-    
-    bcftools index -f -t $OUT_VCF
+tr -d '\r' < $METADATA | awk -F',' 'NR>1 && (tolower($5) == "female") {print $2}' | grep -Fwf $PASS_SAMPLES > $FEMALE_LIST
+tr -d '\r' < $METADATA | awk -F',' 'NR>1 && (tolower($5) == "male") {print $2}' | grep -Fwf $PASS_SAMPLES > $MALE_LIST
+
+echo "Stats: Total Passing: $(wc -l < $PASS_SAMPLES) | Males: $(wc -l < $MALE_LIST) | Females: $(wc -l < $FEMALE_LIST)"
+
+# --- STEP 2: PROCESS CHROMOSOME X (The Sex-Ploidy Fix) ---
+echo "Processing chrX: Splitting by sex for ploidy fix..."
+
+# 2a. Extract Females (Leave as diploid)
+bcftools view -r chrX -S $FEMALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+bcftools index -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+
+# 2b. Extract Males and Force Haploid
+# +setGT -n h (sets genotypes to haploid)
+bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Ou | \
+bcftools +setGT -- -t q -n h | \
+bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+bcftools index -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+
+# 2c. Merge them back together
+echo "Merging chrX back into a single file..."
+bcftools merge --force-samples \
+    ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
+    ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
+    -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+
+bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+
+# --- STEP 3: PROCESS ALL OTHER CHROMOSOMES ---
+for chr in {1..22} Y; do
+    echo "Processing chr${chr}..."
+    bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
 done
 
-echo "Process complete. Files are in: $OUTPUT_DIR"
+# --- STEP 4: CLEANUP ---
+echo "Cleaning up temporary files..."
+rm ${OUTPUT_DIR}/tmp_X_females.vcf.gz* ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz*
+
+echo "PIPELINE COMPLETE."
+echo "Final files are in: $OUTPUT_DIR"
