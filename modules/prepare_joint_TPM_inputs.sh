@@ -3,7 +3,7 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.err
 #SBATCH --time=06:00:00
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 
 set -euo pipefail
@@ -22,19 +22,22 @@ FINAL_TPM="$OUT_DIR/joint_TPM_matrix.tsv"
 
 mkdir -p "$OUT_DIR"
 
+# --- Environment Setup ---
+module load R/4.4.2-gfbf-2024a
 module load Python/3.12.3-GCCcore-13.3.0
-module load R
 
 echo "Processing Tissue: $TISSUE"
 
+# Find files
 find "$TISSUE_DIR" -name "normalization.tab" ! -path "*/eQTL/*" > "$OUT_DIR/tpm_file_list.txt"
 
+# --- STEP 2: PYTHON MERGE & FILTER ---
 python3 - <<EOF
 import pandas as pd
 from pathlib import Path
 import sys
 
-# Silence the downcasting warning
+# Silence the downcasting warning (Supported in Python 3.12.3 / Pandas 2.2+)
 pd.set_option('future.no_silent_downcasting', True)
 
 list_file = "$OUT_DIR/tpm_file_list.txt"
@@ -56,8 +59,12 @@ TISSUE_REMAP = {
     'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
 
-with open(list_file, 'r') as f:
-    files = [line.strip() for line in f if line.strip()]
+try:
+    with open(list_file, 'r') as f:
+        files = [line.strip() for line in f if line.strip()]
+except FileNotFoundError:
+    print(f"Error: {list_file} not found.")
+    sys.exit(1)
 
 meta = pd.read_csv(covariate_path, sep='\t')
 meta['mapped_tissue'] = meta['tissue'].map(TISSUE_REMAP).fillna(meta['tissue'])
@@ -79,25 +86,4 @@ for fpath in files:
             print(f"Error reading {sample_id}: {e}")
 
 if all_dfs:
-    print(f"Merging {len(all_dfs)} dataframes...")
-    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
-    
-    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples
-    threshold = len(all_dfs) * 0.2
-    mask = (joint_df > 0.1).sum(axis=1) >= threshold
-    joint_df = joint_df[mask]
-    
-    joint_df.columns = [c.replace('_', '-') for c in joint_df.columns]
-    joint_df.to_csv(output_file, sep='\t')
-    print(f"Successfully merged {len(all_dfs)} samples.")
-    print(f"Final Matrix dimensions: {joint_df.shape}")
-else:
-    print("No samples matched.")
-    sys.exit(1)
-EOF
-
-# --- STEP 3: AUTOMATED QC PLOTTING ---
-echo "Merge complete. Launching R QC script for $TISSUE..."
-Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
-
-echo "Full QC pipeline complete for $TISSUE."
+    print(f"Merging {len(all_dfs)} data
