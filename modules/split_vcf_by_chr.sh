@@ -6,7 +6,7 @@
 #SBATCH --time=3:00:00
 
 #####################
-# Run this script AFTER genotyping QC (i.e, after convert_vcf_to_plink.sh)
+# Run this script AFTER genotyping QC
 #####################
 
 module load BCFtools
@@ -18,20 +18,11 @@ METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: GENERATE SEX MAPPING ---
-# tr -d '\r' removes hidden Windows characters
-# awk maps Column 2 (ID) and Column 5 (Sex)
-echo "Generating sex mapping..."
-tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | \
-sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort | uniq | while read id sex; do
-    if [[ "$sex" == "male" ]]; then echo "$id 1"; elif [[ "$sex" == "female" ]]; then echo "$id 2"; fi
-done > ${OUTPUT_DIR}/sex_map.txt
-
-# Create the ploidy definition file for hg38
-cat <<EOF > ${OUTPUT_DIR}/ploidy_definition.txt
-X 1 155701382 M 1
-X 1 155701382 F 2
-EOF
+# --- STEP 1: GENERATE CLEAN MALE LIST ---
+# We only care about males because they are the ones causing "ambiguous" errors on ChrX
+echo "Generating male sample list..."
+tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" && (tolower($5) == "male") {print $2}' | \
+sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort | uniq > ${OUTPUT_DIR}/males.txt
 
 # --- STEP 2: LOOP THROUGH CHROMOSOMES ---
 for chr in {1..22} X Y; do
@@ -39,17 +30,36 @@ for chr in {1..22} X Y; do
     OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
     
     if [ "$chr" == "X" ]; then
-        echo "Applying ploidy fix to chrX..."
-        # Extract and fix ploidy in one pipe to save disk space/I/O
-        bcftools view -r chrX $INPUT_VCF -Ou | \
-        bcftools +fixploidy -- -p ${OUTPUT_DIR}/ploidy_definition.txt -s ${OUTPUT_DIR}/sex_map.txt | \
-        bcftools view -Oz -o $OUT_VCF
+        echo "Applying definitive haploid fix to chrX..."
+        
+        # 1. Get header
+        bcftools view -r chrX $INPUT_VCF -h > ${OUTPUT_DIR}/header.txt
+        
+        # 2. Re-code male genotypes to be haploid (strip / and |)
+        # This awk script finds which columns are male and removes the slashes from their genotypes
+        bcftools view -r chrX $INPUT_VCF -H | \
+        awk -v males="$(cat ${OUTPUT_DIR}/males.txt | tr '\n' ',')" -v head="$(grep "^#CHROM" ${OUTPUT_DIR}/header.txt)" '
+        BEGIN {
+            split(males, m_arr, ",");
+            for (i in m_arr) is_male[m_arr[i]] = 1;
+            split(head, h_cols, "\t");
+            for (i=10; i<=length(h_cols); i++) if (h_cols[i] in is_male) male_col[i] = 1;
+            FS=OFS="\t";
+        }
+        {
+            for (i=10; i<=NF; i++) {
+                if (male_col[i]) gsub(/[\/|]/, "", $i);
+            }
+            print $0;
+        }' | cat ${OUTPUT_DIR}/header.txt - | bcftools view -Oz -o $OUT_VCF
+        
+        rm ${OUTPUT_DIR}/header.txt
     else
         # Standard extraction for autosomes and Y
         bcftools view -r chr${chr} $INPUT_VCF -Oz -o $OUT_VCF
     fi
     
-    # -f forces index overwrite to avoid the existing index error
+    # -f forces index overwrite
     bcftools index -f -t $OUT_VCF
 done
 
