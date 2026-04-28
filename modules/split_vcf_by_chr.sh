@@ -14,10 +14,9 @@ METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: GENERATE SEX MAPPING ---
-# Column 1: ID, Column 5: Sex. Using 'tr' to handle inconsistent casing.
+# --- STEP 1: GENERATE SEX MAPPING (with Dash -> Underscore fix) ---
 echo "Generating sex mapping from TargetALS metadata..."
-awk -F',' 'NR>1 {print $1, tolower($5)}' $METADATA | while read id sex; do
+awk -F',' 'NR>1 {print $1, tolower($5)}' $METADATA | sed 's/-/_/g' | while read id sex; do
     if [[ "$sex" == "male" ]]; then
         echo "$id M"
     elif [[ "$sex" == "female" ]]; then
