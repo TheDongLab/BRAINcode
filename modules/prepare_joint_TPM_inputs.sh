@@ -80,7 +80,7 @@ if all_dfs:
     # Outer join to ensure we capture all data
     joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0)
     
-    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples
+    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples   ### change as desired
     threshold = len(all_dfs) * 0.2
     mask = (joint_df > 0.1).sum(axis=1) >= threshold
     joint_df = joint_df[mask]
