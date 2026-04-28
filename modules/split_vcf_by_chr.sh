@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=split_vcf_TargetALS
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
-#SBATCH --mem=80G
+#SBATCH --mem=60G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=12:00:00
+#SBATCH --time=2:00:00
 
 module load BCFtools
 
@@ -15,8 +15,8 @@ METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 mkdir -p $OUTPUT_DIR
 
 # --- STEP 1: GENERATE SEX MAPPING ---
-# Column 2: externalsubjectid (Matches VCF), Column 5: Sex.
 echo "Generating sex mapping from TargetALS metadata using Subject IDs..."
+# Column 2: externalsubjectid (Matches VCF), Column 5: Sex.
 awk -F',' 'NR>1 {print $2, tolower($5)}' $METADATA | sort | uniq | while read id sex; do
     if [[ "$sex" == "male" ]]; then
         echo "$id M"
@@ -25,11 +25,8 @@ awk -F',' 'NR>1 {print $2, tolower($5)}' $METADATA | sort | uniq | while read id
     fi
 done > ${OUTPUT_DIR}/sex_map.txt
 
-# Create the ploidy rules (hg38 coordinates for X)
-cat <<EOF > ${OUTPUT_DIR}/ploidy_rules.txt
-X 1 155701382 M 1
-X 1 155701382 F 2
-EOF
+# Create temporary list of male samples for setGT
+grep " M$" ${OUTPUT_DIR}/sex_map.txt | cut -d' ' -f1 > ${OUTPUT_DIR}/males.txt
 
 # --- STEP 2: LOOP THROUGH CHROMOSOMES ---
 for chr in {1..22} X Y; do
@@ -37,15 +34,21 @@ for chr in {1..22} X Y; do
     OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
     
     if [ "$chr" == "X" ]; then
-        echo "Applying ploidy fix to chrX..."
+        echo "Applying forced haploidization to chrX for male samples..."
+        # Extract chrX and immediately force male samples to haploid (strips the / or |)
         bcftools view -r chrX $INPUT_VCF -Ou | \
-        bcftools +fixploidy -- -p ${OUTPUT_DIR}/ploidy_rules.txt -s ${OUTPUT_DIR}/sex_map.txt | \
+        bcftools +setGT -- -t q -n h -s ${OUTPUT_DIR}/males.txt | \
         bcftools view -Oz -o $OUT_VCF
     else
+        # Standard extraction for autosomes and Y
         bcftools view -r chr${chr} $INPUT_VCF -Oz -o $OUT_VCF
     fi
     
     bcftools index -t $OUT_VCF
 done
 
-echo "Process complete. You only need to upload the NEW target_ALS_chrX.vcf.gz to the server."
+# Cleanup temporary file
+rm ${OUTPUT_DIR}/males.txt
+
+echo "Process complete. Files are in: $OUTPUT_DIR"
+echo "You only need to upload the NEW target_ALS_chrX.vcf.gz to the server."
