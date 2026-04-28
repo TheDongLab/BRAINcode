@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=split_vcf_fixX
+#SBATCH --job-name=split_vcf_TargetALS
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
 #SBATCH --mem=80G
 #SBATCH --cpus-per-task=1
@@ -10,17 +10,20 @@ module load BCFtools
 # Define paths
 INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
-# Path to your existing male-stratified expression or metadata for ID extraction
-MALE_METADATA="/home/zw529/donglab/data/answer_ALS/consolidated_metadata_full.tsv"
+METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: GENERATE PLOIDY FILES FOR CHRX ---
-# Create a sample-to-sex mapping from your metadata
-# Assuming Column 1 is SampleID and Column 12 is Sex (adjust 'cut' as needed)
-echo "Generating sex mapping from metadata..."
-grep -i "Male" $MALE_METADATA | cut -f1 | awk '{print $1" M"}' > ${OUTPUT_DIR}/sex_map.txt
-grep -i "Female" $MALE_METADATA | cut -f1 | awk '{print $1" F"}' >> ${OUTPUT_DIR}/sex_map.txt
+# --- STEP 1: GENERATE SEX MAPPING ---
+# Column 1: ID, Column 5: Sex. Using 'tr' to handle inconsistent casing.
+echo "Generating sex mapping from TargetALS metadata..."
+awk -F',' 'NR>1 {print $1, tolower($5)}' $METADATA | while read id sex; do
+    if [[ "$sex" == "male" ]]; then
+        echo "$id M"
+    elif [[ "$sex" == "female" ]]; then
+        echo "$id F"
+    fi
+done > ${OUTPUT_DIR}/sex_map.txt
 
 # Create the ploidy rules (hg38 coordinates for X)
 cat <<EOF > ${OUTPUT_DIR}/ploidy_rules.txt
@@ -34,8 +37,8 @@ for chr in {1..22} X Y; do
     OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
     
     if [ "$chr" == "X" ]; then
-        echo "Applying ploidy fix to chrX..."
-        # Extract, then pipe into fixploidy plugin to resolve 0/1 calls in males
+        echo "Applying ploidy fix to chrX using TargetALS sex mapping..."
+        # Pipe directly through fixploidy to resolve ambiguous 0/1 calls in males
         bcftools view -r chrX $INPUT_VCF -Ou | \
         bcftools +fixploidy -- -p ${OUTPUT_DIR}/ploidy_rules.txt -s ${OUTPUT_DIR}/sex_map.txt | \
         bcftools view -Oz -o $OUT_VCF
@@ -47,4 +50,4 @@ for chr in {1..22} X Y; do
     bcftools index -t $OUT_VCF
 done
 
-echo "Splitting and ChrX correction complete. Files in: $OUTPUT_DIR"
+echo "Splitting and ChrX correction complete. Check ${OUTPUT_DIR} for results."
