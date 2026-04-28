@@ -23,20 +23,14 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: DYNAMICALLY EXTRACT SAMPLES THAT PASSED QC ---
-echo "Extracting Pass-QC sample list from PLINK results..."
+# --- STEP 1: EXTRACT SAMPLES ---
 PASS_SAMPLES="${OUTPUT_DIR}/samples_pass_QC.txt"
 awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
 
-# --- STEP 2: GENERATE CLEAN MALE LIST FOR PASSING SAMPLES ---
-echo "Generating male sample list..."
+# --- STEP 2: GENERATE MALE LIST ---
 MALE_LIST="${OUTPUT_DIR}/males_pass_qc.txt"
-
-# Strip Windows characters, pull sex from metadata, and filter by the PASS_SAMPLES list
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" && (tolower($5) == "male") {print $2}' | \
 sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -Fwf $PASS_SAMPLES | sort | uniq > $MALE_LIST
-
-echo "Found $(wc -l < $PASS_SAMPLES) samples passing QC ($(wc -l < $MALE_LIST) are male)."
 
 # --- STEP 3: LOOP THROUGH CHROMOSOMES ---
 for chr in {1..22} X Y; do
@@ -44,9 +38,7 @@ for chr in {1..22} X Y; do
     OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
     
     if [ "$chr" == "X" ]; then
-        echo "Applying haploid fix + QC Sample filtering to chrX..."
-        
-        # We extract header and body separately to perform the manual AWK re-coding
+        echo "Applying first-allele haploid fix to chrX..."
         bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -h > ${OUTPUT_DIR}/temp_header.txt
         
         bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -H | \
@@ -61,8 +53,9 @@ for chr in {1..22} X Y; do
         {
             for (i=10; i<=NF; i++) {
                 if (male_col[i]) {
-                    if ($i ~ /\./) { $i = "." } # Correctly handle missing data
-                    else { gsub(/[\/|]/, "", $i) } # Strip slashes to force haploid
+                    # Take only the very first character (0, 1, or .)
+                    # This ensures 0/1 -> 0, 1/1 -> 1, and ./. -> .
+                    $i = substr($i, 1, 1);
                 }
             }
             print $0;
@@ -70,12 +63,8 @@ for chr in {1..22} X Y; do
         
         rm ${OUTPUT_DIR}/temp_header.txt
     else
-        # Standard extraction for autosomes and Y, restricted to passing samples
         bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o $OUT_VCF
     fi
     
-    # -f forces index overwrite
     bcftools index -f -t $OUT_VCF
 done
-
-echo "Process complete. Files filtered to QC-passed samples are in: $OUTPUT_DIR"
