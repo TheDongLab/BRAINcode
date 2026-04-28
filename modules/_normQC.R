@@ -99,8 +99,12 @@ abline(h=0, col="red", lty=2)
 # --- 2. Unrooted Clustering ---
 message("Generating clustering plot...")
 sampleDists <- 1 - cor(tpm, method='spearman')
+
+# Handle zero-variance/NA issues by setting NAs to the maximum distance (1)
+sampleDists[is.na(sampleDists)] <- 1 
+
 hc <- hclust(as.dist(sampleDists), method = "complete")
-hc$labels <- colnames(tpm) # Keeping sample IDs for easy outlier identification
+hc$labels <- colnames(tpm)
 tree <- as.phylo(hc)
 
 plot(tree, type = "unrooted", cex=.35, lab4ut='axial', 
