@@ -29,8 +29,9 @@ awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
 
 # --- STEP 2: GENERATE MALE LIST ---
 MALE_LIST="${OUTPUT_DIR}/males_pass_qc.txt"
-tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" && (tolower($5) == "male") {print $2}' | \
-sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -Fwf $PASS_SAMPLES | sort | uniq > $MALE_LIST
+# Remove all whitespace/carriage returns to ensure ID matching works
+tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" && (tolower($5) == "male") {gsub(/[[:space:]]/, "", $2); print $2}' | \
+grep -Fwf $PASS_SAMPLES | sort | uniq > $MALE_LIST
 
 # --- STEP 3: LOOP THROUGH CHROMOSOMES ---
 for chr in {1..22} X Y; do
@@ -38,33 +39,46 @@ for chr in {1..22} X Y; do
     OUT_VCF="${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz"
     
     if [ "$chr" == "X" ]; then
-        echo "Applying first-allele haploid fix to chrX..."
+        echo "Applying sex-specific haploid fix to chrX..."
+        # Extract header and data for X specifically
         bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -h > ${OUTPUT_DIR}/temp_header.txt
         
         bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -H | \
         awk -v males="$(cat $MALE_LIST | tr '\n' ',')" -v head="$(grep "^#CHROM" ${OUTPUT_DIR}/temp_header.txt)" '
         BEGIN {
-            split(males, m_arr, ",");
-            for (i in m_arr) is_male[m_arr[i]] = 1;
+            # 1. Clean and store male IDs in a lookup table
+            n = split(males, m_arr, ",");
+            for (i=1; i<=n; i++) {
+                m_id = m_arr[i]; gsub(/[[:space:]]/, "", m_id);
+                if (m_id != "") is_male[m_id] = 1;
+            }
+            # 2. Map VCF columns to those male IDs
             split(head, h_cols, "\t");
-            for (i=10; i<=length(h_cols); i++) if (h_cols[i] in is_male) male_col[i] = 1;
+            for (i=10; i<=length(h_cols); i++) {
+                v_id = h_cols[i]; gsub(/[[:space:]]/, "", v_id);
+                if (v_id in is_male) male_col[i] = 1;
+            }
             FS=OFS="\t";
         }
         {
+            # 3. Process the genotypes
             for (i=10; i<=NF; i++) {
                 if (male_col[i]) {
-                    # Take only the very first character (0, 1, or .)
-                    # This ensures 0/1 -> 0, 1/1 -> 1, and ./. -> .
+                    # Only take the first allele for males (haploidize)
                     $i = substr($i, 1, 1);
                 }
+                # Else: do nothing, leave female genotypes as diploid
             }
             print $0;
         }' | cat ${OUTPUT_DIR}/temp_header.txt - | bcftools view -Oz -o $OUT_VCF
         
         rm ${OUTPUT_DIR}/temp_header.txt
     else
+        # Standard extraction for autosomes and Y
         bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o $OUT_VCF
     fi
     
     bcftools index -f -t $OUT_VCF
 done
+
+echo "Process complete. Files are in: $OUTPUT_DIR"
