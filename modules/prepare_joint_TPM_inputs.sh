@@ -3,7 +3,7 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.err
 #SBATCH --time=06:00:00
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 
 set -euo pipefail
@@ -23,6 +23,7 @@ FINAL_TPM="$OUT_DIR/joint_TPM_matrix.tsv"
 mkdir -p "$OUT_DIR"
 
 # --- Environment Setup ---
+module purge
 module load R/4.4.2-gfbf-2024a
 module load Python/3.12.3-GCCcore-13.3.0
 
@@ -86,4 +87,25 @@ for fpath in files:
             print(f"Error reading {sample_id}: {e}")
 
 if all_dfs:
-    print(f"Merging {len(all_dfs)} data
+    print(f"Merging {len(all_dfs)} dataframes...")
+    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
+    
+    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples (GTEx Consortium, Nature, 2020)
+    threshold = len(all_dfs) * 0.2
+    mask = (joint_df > 0.1).sum(axis=1) >= threshold
+    joint_df = joint_df[mask]
+    
+    joint_df.columns = [c.replace('_', '-') for c in joint_df.columns]
+    joint_df.to_csv(output_file, sep='\t')
+    print(f"Successfully merged {len(all_dfs)} samples.")
+    print(f"Final Matrix dimensions: {joint_df.shape}")
+else:
+    print("No samples matched.")
+    sys.exit(1)
+EOF
+
+# --- STEP 3: AUTOMATED QC PLOTTING ---
+echo "Merge complete. Launching R QC script for $TISSUE..."
+Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
+
+echo "Full QC pipeline complete for $TISSUE."
