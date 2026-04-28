@@ -23,6 +23,7 @@ FINAL_TPM="$OUT_DIR/joint_TPM_matrix.tsv"
 mkdir -p "$OUT_DIR"
 
 module load Python/3.12.3-GCCcore-13.3.0
+module load R
 
 echo "Processing Tissue: $TISSUE"
 
@@ -32,6 +33,9 @@ python3 - <<EOF
 import pandas as pd
 from pathlib import Path
 import sys
+
+# Silence the downcasting warning
+pd.set_option('future.no_silent_downcasting', True)
 
 list_file = "$OUT_DIR/tpm_file_list.txt"
 output_file = "$FINAL_TPM"
@@ -67,7 +71,6 @@ for fpath in files:
     if sample_id in valid_ids:
         try:
             df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
-            # Strip version and whitespace
             df['gene_id'] = df['gene_id'].astype(str).str.strip().str.split('.').str[0]
             df = df.drop_duplicates(subset=['gene_id'])
             df = df.set_index('gene_id').rename(columns={'TPM': sample_id})
@@ -77,20 +80,24 @@ for fpath in files:
 
 if all_dfs:
     print(f"Merging {len(all_dfs)} dataframes...")
-    # Outer join to ensure we capture all data
-    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0)
+    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
     
-    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples   ### change as desired
+    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples
     threshold = len(all_dfs) * 0.2
     mask = (joint_df > 0.1).sum(axis=1) >= threshold
     joint_df = joint_df[mask]
     
-    # Header cleanup for R compatibility
     joint_df.columns = [c.replace('_', '-') for c in joint_df.columns]
-    
     joint_df.to_csv(output_file, sep='\t')
     print(f"Successfully merged {len(all_dfs)} samples.")
     print(f"Final Matrix dimensions: {joint_df.shape}")
 else:
     print("No samples matched.")
+    sys.exit(1)
 EOF
+
+# --- STEP 3: AUTOMATED QC PLOTTING ---
+echo "Merge complete. Launching R QC script for $TISSUE..."
+Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
+
+echo "Full QC pipeline complete for $TISSUE."
