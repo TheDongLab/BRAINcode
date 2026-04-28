@@ -38,8 +38,20 @@ message(paste("# Data dimensions:", nrow(tpm), "genes x", ncol(tpm), "samples"))
 
 # --- Metadata Alignment ---
 message("Loading and remapping metadata...")
-covariate <- read.table(file.path(BASE_DIR, "QTL/covariates.tsv"), 
-                        header=T, sep="\t", stringsAsFactors=F, check.names=F)
+
+# Using read.delim with quote="" handles stray quotes in comorbidities or other text fields
+covariate <- read.delim(file.path(BASE_DIR, "QTL/covariates.tsv"), 
+                        header = TRUE, 
+                        sep = "\t", 
+                        stringsAsFactors = FALSE, 
+                        check.names = FALSE, 
+                        quote = "", 
+                        fill = TRUE)
+
+# Verification check:
+if (nrow(covariate) < 1) {
+  stop("Metadata file is empty or could not be parsed correctly.")
+}
 
 TISSUE_REMAP <- list(
   'Motor Cortex Lateral' = 'Motor_Cortex', 'Motor Cortex Medial' = 'Motor_Cortex',
