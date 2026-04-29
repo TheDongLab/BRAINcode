@@ -1,17 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=split_vcf_by_chr
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
-#SBATCH --mem=60G
+#SBATCH --mem=80G
 #SBATCH --cpus-per-task=1
 #SBATCH --time=4:00:00
 
-#########################################################################
-# This script:
-# 1. Extracts the "Pass QC" samples from the PLINK2 filtered dataset.
-# 2. Creates a clean male list for those samples.
-# 3. Splits the joint VCF by chromosome (1-22, X, Y).
-# 4. Forces haploid genotypes for males on ChrX to satisfy TOPMed/eQTL requirements.
-#########################################################################
+# Exit if any command fails
+set -e
+
+# Prevent multibyte/locale errors by forcing raw byte handling
+export LC_ALL=C
 
 module load BCFtools/1.21
 
@@ -24,14 +22,15 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 mkdir -p $OUTPUT_DIR
 
 # 1. Prep Sex Lists
+echo "Generating sex-specific sample lists..."
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/full_meta.txt
 awk 'NR>1 {print $1}' $PSAM_FILE > ${OUTPUT_DIR}/pass_ids.txt
 
-# Create the female ID list for AWK
 FEMALES=$(grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="female" {print $1}' | xargs)
 
 # 2. Process ChrX
-echo "Applying absolute brute-force string replacement on chrX..."
+echo "Applying brute-force string replacement on chrX..."
+# Use -Ou for uncompressed output to speed up the pipe to awk
 bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Ou | \
 awk -v fem="$FEMALES" '
 BEGIN {
@@ -50,16 +49,15 @@ BEGIN {
         allele = substr($i, 1, 1);
         
         # Capture any format tags that follow (AD, DP, GQ, etc.)
-        rest = "";
         idx = index($i, ":");
-        if (idx > 0) rest = substr($i, idx);
+        rest = (idx > 0) ? substr($i, idx) : "";
 
         if (sample_map[i] in is_fem) {
-            # Force Diploid string
+            # Force Diploid string: ./. or 0/0 or 1/1
             new_gt = (allele == ".") ? "./." : allele "/" allele;
             $i = new_gt rest;
         } else {
-            # Force Haploid string
+            # Force Haploid string: . or 0 or 1
             $i = allele rest;
         }
     }
@@ -68,11 +66,12 @@ BEGIN {
 
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-# 3. Autosomes (Simple split)
+# 3. Autosomes & Y
+echo "Processing remaining chromosomes..."
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
     bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
     bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
 done
 
-echo "Done. All chromosomes processed and indexed."
+echo "SUCCESS. All files processed, fixed, and indexed."
