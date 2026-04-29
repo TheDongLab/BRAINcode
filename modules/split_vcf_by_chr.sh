@@ -63,11 +63,128 @@ bcftools query -f '[%GT\n]' ${OUTPUT_DIR}/tmp_X_females.vcf.gz | head -5
 echo "Male ploidy check (should be haploid like 0, 1):"
 bcftools query -f '[%GT\n]' ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz | head -5
 
-# 2d. Merge females and haploid males into single VCF
-bcftools merge --force-samples \
-    ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
-    ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
-    -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+# 2d. Merge females and haploid males using embedded Python script
+# This preserves per-sample ploidy (females diploid, males haploid)
+python3 << 'PYTHON_SCRIPT'
+import sys
+import gzip
+from collections import defaultdict
+
+def read_vcf_header(filename):
+    """Read VCF header and return metadata lines and sample list."""
+    header_lines = []
+    samples = []
+    
+    with gzip.open(filename, 'rt') if filename.endswith('.gz') else open(filename, 'r') as f:
+        for line in f:
+            if line.startswith('##'):
+                header_lines.append(line.rstrip())
+            elif line.startswith('#CHROM'):
+                fields = line.rstrip().split('\t')
+                samples = fields[9:]  # Sample names start at column 9
+                header_lines.append(line.rstrip())
+                break
+    
+    return header_lines, samples
+
+def read_vcf_variants(filename):
+    """Read VCF variants (non-header lines) and return list of tuples."""
+    variants = []
+    
+    with gzip.open(filename, 'rt') if filename.endswith('.gz') else open(filename, 'r') as f:
+        for line in f:
+            if not line.startswith('#'):
+                variants.append(line.rstrip().split('\t'))
+    
+    return variants
+
+def merge_vcfs(female_vcf, male_vcf, output_vcf):
+    """Merge female and male VCFs, preserving per-sample ploidy."""
+    
+    # Read female VCF
+    female_header, female_samples = read_vcf_header(female_vcf)
+    female_variants = read_vcf_variants(female_vcf)
+    
+    # Read male VCF
+    male_header, male_samples = read_vcf_header(male_vcf)
+    male_variants = read_vcf_variants(male_vcf)
+    
+    print(f"Female samples: {len(female_samples)}")
+    print(f"Male samples: {len(male_samples)}")
+    print(f"Female variants: {len(female_variants)}")
+    print(f"Male variants: {len(male_variants)}")
+    
+    # Create combined sample list (females first, then males)
+    combined_samples = female_samples + male_samples
+    
+    # Index variants by position for quick lookup
+    female_by_pos = {(v[0], v[1], v[3], v[4]): v for v in female_variants}
+    male_by_pos = {(v[0], v[1], v[3], v[4]): v for v in male_variants}
+    
+    # Get all unique positions
+    all_positions = set(female_by_pos.keys()) | set(male_by_pos.keys())
+    
+    # Sort by chromosome and position (assuming chrX)
+    all_positions = sorted(all_positions, key=lambda x: int(x[1]))
+    
+    print(f"Total unique positions: {len(all_positions)}")
+    
+    # Write output VCF
+    with gzip.open(output_vcf, 'wt') as out:
+        # Write header
+        for line in female_header[:-1]:  # Exclude old #CHROM line
+            out.write(line + '\n')
+        
+        # Write new #CHROM line with combined samples
+        chrom_line = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + '\t'.join(combined_samples)
+        out.write(chrom_line + '\n')
+        
+        # Write merged variants
+        for pos in all_positions:
+            female_var = female_by_pos.get(pos)
+            male_var = male_by_pos.get(pos)
+            
+            # Use female variant as template (they should be identical for shared positions)
+            if female_var:
+                template = female_var
+            else:
+                template = male_var
+            
+            # Build genotype columns
+            genotypes = []
+            
+            # Female genotypes
+            if female_var:
+                # Extract genotypes from columns 9 onward
+                for gt in female_var[9:]:
+                    genotypes.append(gt)
+            else:
+                # Missing for this variant
+                for _ in female_samples:
+                    genotypes.append('./.')
+            
+            # Male genotypes
+            if male_var:
+                # Extract genotypes from columns 9 onward
+                for gt in male_var[9:]:
+                    genotypes.append(gt)
+            else:
+                # Missing for this variant
+                for _ in male_samples:
+                    genotypes.append('.')
+            
+            # Build output line
+            out_line = '\t'.join(template[0:9]) + '\t' + '\t'.join(genotypes)
+            out.write(out_line + '\n')
+    
+    print(f"Merged VCF written to: {output_vcf}")
+
+female_vcf = "${OUTPUT_DIR}/tmp_X_females.vcf.gz"
+male_vcf = "${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz"
+output_vcf = "${OUTPUT_DIR}/target_ALS_chrX.vcf.gz"
+
+merge_vcfs(female_vcf, male_vcf, output_vcf)
+PYTHON_SCRIPT
 
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
