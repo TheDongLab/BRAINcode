@@ -23,46 +23,40 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: GENERATE SUBJECT LISTS ---
-echo "Generating clean subject lists..."
+# --- STEP 1: SUBJECT LISTS (414 SUBJECTS) ---
 PASS_SAMPLES="${OUTPUT_DIR}/pass_samples.txt"
 awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
 
 FEMALE_LIST="${OUTPUT_DIR}/females.txt"
 MALE_LIST="${OUTPUT_DIR}/males.txt"
 
-# Collapse tissue-level RNAseq metadata to unique WGS Subject IDs
+# Unique Subject IDs from Metadata
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/subject_sex_map.txt
-
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="female" {print $1}' > $FEMALE_LIST
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="male" {print $1}' > $MALE_LIST
 
-echo "Stats: Pass QC: $(wc -l < $PASS_SAMPLES) | Males: $(wc -l < $MALE_LIST) | Females: $(wc -l < $FEMALE_LIST)"
+# --- STEP 2: CHRX PROCESS (FORCE PLOIDY) ---
+echo "Processing chrX for BCFtools 1.21..."
 
-# --- STEP 2: PROCESS CHROMOSOME X ---
-echo "Processing chrX..."
-
-# 2a. Extract Females (Stay Diploid)
+# 2a. Females: Pure extract (Guaranteed diploid)
 bcftools view -r chrX -S $FEMALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
-bcftools index -f -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+bcftools index -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
 
-# 2b. Extract Males and Force Haploid
-# Added -e 'GT="."' to satisfy the query requirement while targeting everything
+# 2b. Males: Force Haploid using V1.21 setGT syntax
+# -n c:1  means 'convert to ploidy 1' (haploid)
 bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Ou | \
-bcftools +setGT -- -t q -i 'GT~"."' -n 0 | \
+bcftools +setGT -- -t q -n c:1 | \
 bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-bcftools index -f -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+bcftools index -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
 
-# 2c. Merge back together
-echo "Merging chrX..."
+# 2c. Final Merge
 bcftools merge --force-samples \
     ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
     ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
     -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
-
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-# --- STEP 3: ALL OTHER CHROMOSOMES ---
+# --- STEP 3: ALL OTHER CHRS ---
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
     bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
