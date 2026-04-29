@@ -15,6 +15,7 @@
 
 module load BCFtools/1.21
 
+# Define paths
 INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
 METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
@@ -22,36 +23,37 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: SAMPLE LISTS ---
+# --- STEP 1: SAMPLE LISTS & PLOIDY MAP ---
+echo "Generating sample lists and ploidy map..."
+
+# Extract IDs from PLINK pass list
+RAW_PASS="${OUTPUT_DIR}/raw_pass_ids.txt"
+awk 'NR>1 {print $1}' $PSAM_FILE > $RAW_PASS
+
+# Create BCFtools sex map: SampleID [TAB] Sex (1 for male, 2 for female)
+# We intersect the metadata with the PLINK pass list to ensure perfect sample consistency
+PLOIDY_MAP="${OUTPUT_DIR}/ploidy_map.txt"
+tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, (tolower($5)=="male" ? "1" : "2")}' | sort -u > ${OUTPUT_DIR}/full_sex_map.txt
+grep -Fwf $RAW_PASS ${OUTPUT_DIR}/full_sex_map.txt | sed 's/ /\t/' > $PLOIDY_MAP
+
+# Update PASS_SAMPLES to only include those in the ploidy map (fixes the 411/414 mismatch)
 PASS_SAMPLES="${OUTPUT_DIR}/pass_samples.txt"
-awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
+cut -f1 $PLOIDY_MAP > $PASS_SAMPLES
 
-# Get Unique Subjects
-tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/subject_sex_map.txt
-grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="female" {print $1}' > ${OUTPUT_DIR}/females.txt
-grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="male" {print $1}' > ${OUTPUT_DIR}/males.txt
+echo "Final Subject Count: $(wc -l < $PASS_SAMPLES)"
 
-# --- STEP 2: CHRX ---
-echo "Processing chrX..."
+# --- STEP 2: PROCESS CHRX (THE FIX) ---
+echo "Processing chrX with fixploidy..."
 
-# 2a. Females
-bcftools view -r chrX -S ${OUTPUT_DIR}/females.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
-bcftools index -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+# We subset to the 414/411 samples and immediately apply fixploidy
+# This forces Sex 1 (Male) to haploid and Sex 2 (Female) to diploid
+bcftools view -r chrX -S $PASS_SAMPLES --force-samples $INPUT_VCF -Ou | \
+bcftools +fixploidy -- -p $PLOIDY_MAP | \
+bcftools view -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-# 2b. Males (The logic that finally worked in your log!)
-bcftools view -r chrX -S ${OUTPUT_DIR}/males.txt --force-samples $INPUT_VCF -Ou | \
-bcftools +setGT -- -t q -i 'GT!="."' -n c:1 | \
-bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-bcftools index -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-
-# 2c. Native Merge
-bcftools merge --force-samples \
-    ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
-    ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
-    -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-# --- STEP 3: OTHERS ---
+# --- STEP 3: ALL OTHER CHROMOSOMES ---
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
     bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
@@ -59,5 +61,5 @@ for chr in {1..22} Y; do
 done
 
 # --- STEP 4: CLEANUP ---
-rm -f ${OUTPUT_DIR}/tmp_X* ${OUTPUT_DIR}/subject_sex_map.txt
+rm -f ${OUTPUT_DIR}/raw_pass_ids.txt ${OUTPUT_DIR}/full_sex_map.txt
 echo "Success."
