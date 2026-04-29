@@ -178,12 +178,12 @@ def merge_vcfs(female_vcf, male_vcf, output_vcf):
     
     print(f"Merged VCF written to: {output_vcf}")
 
-female_vcf = sys.argv[1]
-male_vcf = sys.argv[2]
-output_vcf = sys.argv[3]
+female_vcf = "${OUTPUT_DIR}/tmp_X_females.vcf.gz"
+male_vcf = "${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz"
+output_vcf = "${OUTPUT_DIR}/target_ALS_chrX.vcf.gz"
 
 merge_vcfs(female_vcf, male_vcf, output_vcf)
-PYTHON_SCRIPT "${OUTPUT_DIR}/tmp_X_females.vcf.gz" "${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz" "${OUTPUT_DIR}/target_ALS_chrX.vcf.gz"
+PYTHON_SCRIPT
 PYTHON_SCRIPT
 
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
