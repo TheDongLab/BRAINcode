@@ -40,21 +40,21 @@ grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="male" {pri
 echo "Stats: Pass QC: $(wc -l < $PASS_SAMPLES) | Males: $(wc -l < $MALE_LIST) | Females: $(wc -l < $FEMALE_LIST)"
 
 # --- STEP 2: PROCESS CHROMOSOME X ---
-echo "Processing chrX: Split-Fix-Merge..."
+echo "Processing chrX..."
 
 # 2a. Extract Females (Stay Diploid)
 bcftools view -r chrX -S $FEMALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
 bcftools index -f -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
 
 # 2b. Extract Males and Force Haploid
-# Using '0' as the parameter for --new-gt is the cross-version way to force haploidy
+# Added -e 'GT="."' to satisfy the query requirement while targeting everything
 bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Ou | \
-bcftools +setGT -- -t q -n 0 | \
+bcftools +setGT -- -t q -i 'GT~"."' -n 0 | \
 bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
 bcftools index -f -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
 
 # 2c. Merge back together
-echo "Merging chrX into final 414-sample file..."
+echo "Merging chrX..."
 bcftools merge --force-samples \
     ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
     ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
@@ -65,7 +65,6 @@ bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 # --- STEP 3: ALL OTHER CHROMOSOMES ---
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
-    # Standard subset to the 414 QC-pass samples
     bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
     bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
 done
