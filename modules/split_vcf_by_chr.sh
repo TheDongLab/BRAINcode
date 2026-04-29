@@ -23,41 +23,38 @@ PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtere
 
 mkdir -p $OUTPUT_DIR
 
-# --- STEP 1: GENERATE CLEAN SUBJECT LISTS ---
-# We extract the 414 subjects that passed PLINK QC
+# --- STEP 1: GENERATE SUBJECT LISTS ---
+echo "Generating clean subject lists..."
 PASS_SAMPLES="${OUTPUT_DIR}/pass_samples.txt"
 awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
 
-# Fix the metadata pull: 
-# 1. tr -d '\r' removes Windows line endings
-# 2. awk uses Column 2 (SubjectID) and Column 5 (Sex)
-# 3. sort -u collapses the thousands of tissue samples into unique subject entries
-echo "Collapsing metadata to subject-level..."
 FEMALE_LIST="${OUTPUT_DIR}/females.txt"
 MALE_LIST="${OUTPUT_DIR}/males.txt"
 
+# Collapse tissue-level RNAseq metadata to unique WGS Subject IDs
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/subject_sex_map.txt
 
-# Now intersect that unique map with your 414 QC-pass list
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="female" {print $1}' > $FEMALE_LIST
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="male" {print $1}' > $MALE_LIST
 
-echo "Stats: Pass QC: $(wc -l < $PASS_SAMPLES) | Unique Males: $(wc -l < $MALE_LIST) | Unique Females: $(wc -l < $FEMALE_LIST)"
+echo "Stats: Pass QC: $(wc -l < $PASS_SAMPLES) | Males: $(wc -l < $MALE_LIST) | Females: $(wc -l < $FEMALE_LIST)"
 
-# --- STEP 2: PROCESS CHROMOSOME X (The Sex-Ploidy Fix) ---
-echo "Processing chrX..."
+# --- STEP 2: PROCESS CHROMOSOME X ---
+echo "Processing chrX: Split-Fix-Merge..."
 
-# Extract Females
+# 2a. Extract Females (Stay Diploid)
 bcftools view -r chrX -S $FEMALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
-bcftools index -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+bcftools index -f -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
 
-# Extract Males and Haploidize
+# 2b. Extract Males and Force Haploid
+# Using '0' as the parameter for --new-gt is the cross-version way to force haploidy
 bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Ou | \
-bcftools +setGT -- -t q -n h | \
+bcftools +setGT -- -t q -n 0 | \
 bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-bcftools index -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+bcftools index -f -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
 
-# Merge
+# 2c. Merge back together
+echo "Merging chrX into final 414-sample file..."
 bcftools merge --force-samples \
     ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
     ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
@@ -65,12 +62,15 @@ bcftools merge --force-samples \
 
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-# --- STEP 3: OTHERS ---
+# --- STEP 3: ALL OTHER CHROMOSOMES ---
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
+    # Standard subset to the 414 QC-pass samples
     bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
     bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
 done
 
-# Cleanup
+# --- STEP 4: CLEANUP ---
 rm ${OUTPUT_DIR}/tmp_X_females.vcf.gz* ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz*
+
+echo "PIPELINE COMPLETE."
