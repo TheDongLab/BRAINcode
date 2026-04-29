@@ -64,8 +64,7 @@ echo "Male ploidy check (should be haploid like 0, 1):"
 bcftools query -f '[%GT\n]' ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz | head -5
 
 # 2d. Merge females and haploid males into single VCF
-# Use concat which allows different ploidies per sample (unlike merge)
-bcftools concat \
+bcftools merge --force-samples \
     ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
     ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
     -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
