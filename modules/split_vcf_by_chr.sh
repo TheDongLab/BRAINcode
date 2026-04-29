@@ -20,49 +20,74 @@ INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
 METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtered.psam"
-
+ 
 mkdir -p $OUTPUT_DIR
-
-# --- STEP 1: SUBJECT LISTS ---
+ 
+# --- STEP 1: CREATE SAMPLE LISTS ---
 PASS_SAMPLES="${OUTPUT_DIR}/pass_samples.txt"
 awk 'NR>1 {print $1}' $PSAM_FILE > $PASS_SAMPLES
-
+ 
 FEMALE_LIST="${OUTPUT_DIR}/females.txt"
 MALE_LIST="${OUTPUT_DIR}/males.txt"
-
-# Collapse metadata to unique Subject IDs
+ 
+# Clean metadata and create sex map
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/subject_sex_map.txt
+ 
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="female" {print $1}' > $FEMALE_LIST
 grep -Fwf $PASS_SAMPLES ${OUTPUT_DIR}/subject_sex_map.txt | awk '$2=="male" {print $1}' > $MALE_LIST
-
-# --- STEP 2: CHRX PROCESS ---
-echo "Processing chrX: Isolation Method..."
-
-# 2a. Females: Pure extract (Guaranteed diploid)
+ 
+echo "Females: $(wc -l < $FEMALE_LIST)"
+echo "Males: $(wc -l < $MALE_LIST)"
+ 
+# --- STEP 2: PROCESS CHRX ---
+echo "Processing chrX..."
+ 
+# 2a. Extract females (keep as-is, diploid)
 bcftools view -r chrX -S $FEMALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_females.vcf.gz
-bcftools index -f -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
-
-# 2b. Males: Force Haploid
-# Added the explicit -i filter to satisfy BCFtools 1.21 query requirements
-bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Ou | \
-bcftools +setGT -- -t q -i 'GT~"." || GT!~"."' -n c:1 | \
-bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-bcftools index -f -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
-
-# 2c. Final Merge
-bcftools merge --force-samples \
+bcftools index -t ${OUTPUT_DIR}/tmp_X_females.vcf.gz
+ 
+# 2b. Extract males and convert to haploid
+# Strategy: Convert diploid (0/0, 0/1, 1/1) → haploid (0, 1)
+# Using awk to reformat GT field for males only
+bcftools view -r chrX -S $MALE_LIST --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/tmp_X_males_diploid.vcf.gz
+bcftools index -t ${OUTPUT_DIR}/tmp_X_males_diploid.vcf.gz
+ 
+# Convert diploid to haploid using bcftools +setGT with explicit replacement
+# -t q: set GT for genotyped sites
+# -n c:1: convert to ploidy 1
+# The key is applying it ONLY to the male VCF, not mixing
+bcftools +setGT ${OUTPUT_DIR}/tmp_X_males_diploid.vcf.gz -- -t q -n c:1 2>&1 | \
+    bcftools view -Oz -o ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+ 
+bcftools index -t ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz
+ 
+# Verify the conversion worked
+echo "Female ploidy check:"
+bcftools query -f '[%GT\n]' ${OUTPUT_DIR}/tmp_X_females.vcf.gz | head -5
+ 
+echo "Male ploidy check (should be haploid):"
+bcftools query -f '[%GT\n]' ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz | head -5
+ 
+# 2c. Merge with proper handling of mixed ploidy
+# Use concat mode which allows different ploidies per sample
+bcftools concat \
     ${OUTPUT_DIR}/tmp_X_females.vcf.gz \
     ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz \
     -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+ 
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
-
-# --- STEP 3: ALL OTHER CHRS ---
+ 
+# --- STEP 3: ALL OTHER CHROMOSOMES ---
 for chr in {1..22} Y; do
     echo "Processing chr${chr}..."
     bcftools view -r chr${chr} -S $PASS_SAMPLES --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
     bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
 done
-
+ 
 # --- STEP 4: CLEANUP ---
-rm ${OUTPUT_DIR}/tmp_X_females.vcf.gz* ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz*
-echo "DONE."
+rm -f ${OUTPUT_DIR}/tmp_X_females.vcf.gz*
+rm -f ${OUTPUT_DIR}/tmp_X_males_diploid.vcf.gz*
+rm -f ${OUTPUT_DIR}/tmp_X_males_hap.vcf.gz*
+ 
+echo "Successfully created mixed-ploidy chrX VCF!"
+echo "chrX output: ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz"
