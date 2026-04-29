@@ -5,6 +5,14 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --time=4:00:00
 
+#########################################################################
+# This script:
+# 1. Extracts the "Pass QC" samples from the PLINK2 filtered dataset.
+# 2. Creates a clean male list for those samples.
+# 3. Splits the joint VCF by chromosome (1-22, X, Y).
+# 4. Forces haploid genotypes for males on ChrX to satisfy TOPMed/eQTL requirements.
+#########################################################################
+
 export LC_ALL=C
 module load BCFtools/1.21
 
@@ -22,11 +30,9 @@ tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | 
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="male" {print $1}' > ${OUTPUT_DIR}/males.txt
 
 # --- STEP 2: GENERATE FILES (STANDARD) ---
-# We generate chrX first so we can patch it immediately
 echo "Extracting chrX..."
 bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz || echo "Warning: chrX extraction encountered an error"
 
-# Generate autosomes and Y
 for chr in {1..22} Y; do
     echo "Extracting chr${chr}..."
     bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
@@ -58,7 +64,6 @@ try:
             cols = line.strip().split('\t')
             for i in range(9, len(cols)):
                 if samples[i-9] in males:
-                    # Strip the second allele and separator: e.g., '0/0:AD...' -> '0:AD...'
                     val = cols[i]
                     colon_idx = val.find(':')
                     if colon_idx != -1:
@@ -74,6 +79,12 @@ except Exception as e:
     if os.path.exists(temp_file):
         os.remove(temp_file)
 EOF
+
+# --- INDEX FIX ---
+echo "Re-compressing chrX to BGZF for indexing..."
+bcftools view ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz -Oz -o ${OUTPUT_DIR}/target_ALS_chrX_final.vcf.gz
+mv ${OUTPUT_DIR}/target_ALS_chrX_final.vcf.gz ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+# -------------------------------
 
 # Final index for chrX
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
