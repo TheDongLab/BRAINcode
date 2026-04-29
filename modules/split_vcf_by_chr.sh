@@ -1,11 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=TargetALS_Final_Split
+#SBATCH --job-name=split_vcf_QC_filtered
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/split_vcf.log
-#SBATCH --mem=64G
+#SBATCH --mem=60G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=04:00:00
+#SBATCH --time=4:00:00
 
-module load BCFtools/1.21
+#########################################################################
+# This script:
+# 1. Extracts the "Pass QC" samples from the PLINK2 filtered dataset.
+# 2. Creates a clean male list for those samples.
+# 3. Splits the joint VCF by chromosome (1-22, X, Y).
+# 4. Forces haploid genotypes for males on ChrX to satisfy TOPMed/eQTL requirements.
+#########################################################################
+
+module load BCFtools
 
 # Define paths
 INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
