@@ -22,25 +22,17 @@ OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
 METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtered.psam"
 
-mkdir -p $OUTPUT_DIR
-
-# --- STEP 1: PREP LISTS ---
+# 1. Prep lists
 awk 'NR>1 {print $1}' $PSAM_FILE > ${OUTPUT_DIR}/pass_ids.txt
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/full_meta.txt
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="male" {print $1}' > ${OUTPUT_DIR}/males.txt
 
-# --- STEP 2: GENERATE FILES (STANDARD) ---
+# 2. Extract ChrX
 echo "Extracting chrX..."
-bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz || echo "Warning: chrX extraction encountered an error"
+bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
 
-for chr in {1..22} Y; do
-    echo "Extracting chr${chr}..."
-    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
-    bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
-done
-
-# --- STEP 3: PATCH CHRX IN-PLACE ---
-echo "Applying Python ploidy patch to target_ALS_chrX.vcf.gz..."
+# 3. Apply PAR-aware Patch
+echo "Applying PAR-aware ploidy patch..."
 python3 << 'EOF'
 import gzip
 import os
@@ -49,44 +41,56 @@ vcf_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/target
 male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
 temp_file = vcf_file + ".tmp.gz"
 
+# GRCh38 PAR Coordinates (TOPMed / Michigan Server standards)
+PAR = [(10001, 2781479), (155701383, 156030895)]
+
 with open(male_file, 'r') as f:
     males = set(line.strip() for line in f)
 
-try:
-    with gzip.open(vcf_file, 'rt') as inf, gzip.open(temp_file, 'wt') as outf:
-        for line in inf:
-            if line.startswith('#'):
-                if line.startswith('#CHROM'):
-                    samples = line.strip().split('\t')[9:]
-                outf.write(line)
-                continue
-            
-            cols = line.strip().split('\t')
-            for i in range(9, len(cols)):
-                if samples[i-9] in males:
-                    val = cols[i]
-                    colon_idx = val.find(':')
-                    if colon_idx != -1:
-                        cols[i] = val[0] + val[colon_idx:]
-                    else:
-                        cols[i] = val[0]
-            outf.write('\t'.join(cols) + '\n')
-    
-    os.replace(temp_file, vcf_file)
-    print("Patch applied successfully.")
-except Exception as e:
-    print(f"Patch failed: {e}")
-    if os.path.exists(temp_file):
-        os.remove(temp_file)
+with gzip.open(vcf_file, 'rt') as inf, gzip.open(temp_file, 'wt') as outf:
+    for line in inf:
+        if line.startswith('#'):
+            if line.startswith('#CHROM'):
+                samples = line.strip().split('\t')[9:]
+            outf.write(line)
+            continue
+        
+        cols = line.strip().split('\t')
+        pos = int(cols[1])
+        # Check if position falls within PAR1 or PAR2
+        is_par = any(start <= pos <= end for start, end in PAR)
+        
+        for i in range(9, len(cols)):
+            if samples[i-9] in males:
+                val = cols[i]
+                allele = val[0]
+                # Preserve format tags (AD, DP, GQ, etc.)
+                sep_idx = val.find(":")
+                rest = val[sep_idx:] if sep_idx != -1 else ""
+                
+                if is_par:
+                    # PAR: Force Diploid (e.g., 0/0 or ./.)
+                    if "/" not in val[:3] and "|" not in val[:3]:
+                        cols[i] = f"{allele}/{allele}{rest}"
+                else:
+                    # Non-PAR: Force Haploid (e.g., 0 or .)
+                    cols[i] = f"{allele}{rest}"
+        outf.write('\t'.join(cols) + '\n')
+
+os.replace(temp_file, vcf_file)
 EOF
 
-# --- INDEX FIX ---
-echo "Re-compressing chrX to BGZF for indexing..."
+# 4. Re-compress to BGZF and Index (Required for server compatibility)
+echo "Fixing compression and indexing..."
 bcftools view ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz -Oz -o ${OUTPUT_DIR}/target_ALS_chrX_final.vcf.gz
 mv ${OUTPUT_DIR}/target_ALS_chrX_final.vcf.gz ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
-# -------------------------------
-
-# Final index for chrX
 bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chrX.vcf.gz
+
+# 5. Extract Autosomes
+for chr in {1..22} Y; do
+    echo "Processing chr${chr}..."
+    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools index -f -t ${OUTPUT_DIR}/target_ALS_chr${chr}.vcf.gz
+done
 
 echo "Done."
