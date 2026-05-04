@@ -48,7 +48,7 @@ ls filtered_tmp/filtered_*.dose.vcf.gz | sort -V > vcf_list.txt
 
 # --- STEP 4: CONCATENATE ---
 echo "Concatenating filtered VCFs into master file..."
-bcftools concat -f vcf_list.txt -na -Oz -o ${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz
+bcftools concat -f vcf_list.txt -Oz -o ${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz
 
 # --- STEP 5: INDEXING ---
 echo "Indexing final filtered master VCF..."
