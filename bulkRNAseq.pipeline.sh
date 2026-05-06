@@ -20,8 +20,8 @@
 # Lives in: $HOME/donglab/pipelines/scripts/rnaseq/
 #
 # Usage:
-#   bash RNAseq.pipeline.sh            # count samples and self-submit
-#   bash RNAseq.pipeline.sh --dry-run  # preview without submitting
+#   bash bulkRNAseq.pipeline.sh            # count samples and self-submit
+#   bash bulkRNAseq.pipeline.sh --dry-run  # preview without submitting
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
