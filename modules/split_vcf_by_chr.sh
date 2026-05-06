@@ -76,10 +76,12 @@ bcftools view -r chrX:155701383-156030895 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_V
 echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895" > ${APPROACH2_DIR}/par.bed
 bcftools view -T ^${APPROACH2_DIR}/par.bed -r chrX -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
 
+export MALE_FILE_APP2="${OUTPUT_DIR}/males.txt"
+export VCF_APP2="${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz"
 python3 << 'EOF'
 import gzip, os, subprocess
-vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrX_nonPAR.vcf.gz"
-male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
+vcf = os.environ['VCF_APP2']
+male_file = os.environ['MALE_FILE_APP2']
 with open(male_file, 'r') as f: males = set(line.strip() for line in f)
 with gzip.open(vcf, 'rt') as inf, open(vcf+".tmp", 'w') as outf:
     for line in inf:
@@ -112,10 +114,12 @@ for sex in males females; do
     for chr in {1..22} X Y; do
         bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
         if [ "$chr" == "X" ]; then
+            export CURRENT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
+            export CURRENT_SEX="$sex"
             python3 << 'EOF'
-import gzip, os, subprocess, sys
-vcf = sys.argv[1]
-sex = sys.argv[2]
+import gzip, os, subprocess
+vcf = os.environ['CURRENT_VCF']
+sex = os.environ['CURRENT_SEX']
 PAR = [(10001, 2781479), (155701383, 156030895)]
 with gzip.open(vcf, 'rt') as inf, open(vcf+".tmp", 'w') as outf:
     for line in inf:
@@ -128,17 +132,19 @@ with gzip.open(vcf, 'rt') as inf, open(vcf+".tmp", 'w') as outf:
             a = v[0]; r = v[v.find(":"):] if ":" in v else ""
             if sex == "males":
                 if not is_par: cols[i] = f"{a}{r}"
-                elif "/" not in v[:3] and "|" not in v[:3]: cols[i] = f"{a}/{a}{r}"
+                elif "/" not in v[:3] and "|" not in v[:3]: cols[i] = f"{a}/{a}{rest}"
             else: # Force Females to Diploid
                 if "/" not in v[:3] and "|" not in v[:3]: cols[i] = f"{a}/{a}{r}"
         outf.write('\t'.join(cols) + '\n')
 subprocess.run(["bcftools", "view", vcf+".tmp", "-Oz", "-o", vcf], check=True)
 os.remove(vcf+".tmp")
-EOF "${APP3_SEX_DIR}/target_ALS_chrX.vcf.gz" "$sex"
+EOF
         fi
         bcftools index -f -t ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
     done
 done
+
+echo -e "\n--- ALL PROCESSES COMPLETE ---"
 
 # ============ VALIDATION SUITE ============
 echo -e "\n--- STARTING REFINED VALIDATION ---"
