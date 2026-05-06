@@ -111,31 +111,69 @@ for sex in males females; do
     APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified/${sex}"
     mkdir -p ${APP3_SEX_DIR}
     SEX_LIST="${OUTPUT_DIR}/${sex}.txt"
+    
     for chr in {1..22} X Y; do
-        bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
+        # We add 'bcftools norm -m-any' to split multi-allelic sites 
+        # and 'view -m2 -M2' to ensure only biallelic SNPs proceed.
+        bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF | \
+        bcftools norm -m-any --fasta-ref $REF_FASTA | \
+        bcftools view -m2 -M2 -v snps -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
+        
         if [ "$chr" == "X" ]; then
             export CURRENT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
             export CURRENT_SEX="$sex"
             python3 << 'EOF'
 import gzip, os, subprocess
+
 vcf = os.environ['CURRENT_VCF']
 sex = os.environ['CURRENT_SEX']
+# GRCh38 PAR regions for X
 PAR = [(10001, 2781479), (155701383, 156030895)]
+
 with gzip.open(vcf, 'rt') as inf, open(vcf+".tmp", 'w') as outf:
     for line in inf:
-        if line.startswith('#'): outf.write(line); continue
-        cols = line.strip().split('\t'); pos = int(cols[1])
+        if line.startswith('#'):
+            outf.write(line)
+            continue
+        
+        cols = line.strip().split('\t')
+        pos = int(cols[1])
         is_par = any(s <= pos <= e for s, e in PAR)
+        
         for i in range(9, len(cols)):
             v = cols[i]
-            if v.startswith("."): continue
-            a = v[0]; r = v[v.find(":"):] if ":" in v else ""
+            if v.startswith("."): 
+                continue
+            
+            # Split the genotype from other fields (AD, DP, etc.)
+            parts = v.split(':')
+            gt = parts[0]
+            rest = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
+            
+            # Extract first allele safely
+            a1 = gt[0]
+            
             if sex == "males":
-                if not is_par: cols[i] = f"{a}{r}"
-                elif "/" not in v[:3] and "|" not in v[:3]: cols[i] = f"{a}/{a}{rest}"
-            else: # Force Females to Diploid
-                if "/" not in v[:3] and "|" not in v[:3]: cols[i] = f"{a}/{a}{r}"
+                if not is_par:
+                    # Force haploid (0 or 1)
+                    new_gt = a1
+                else:
+                    # Force diploid in PAR (0/0, 0/1, 1/1)
+                    if "/" not in gt and "|" not in gt:
+                        new_gt = f"{a1}/{a1}"
+                    else:
+                        new_gt = gt
+            else:
+                # Force Females to Diploid everywhere
+                if "/" not in gt and "|" not in gt:
+                    new_gt = f"{a1}/{a1}"
+                else:
+                    new_gt = gt
+            
+            cols[i] = f"{new_gt}{rest}"
+            
         outf.write('\t'.join(cols) + '\n')
+
 subprocess.run(["bcftools", "view", vcf+".tmp", "-Oz", "-o", vcf], check=True)
 os.remove(vcf+".tmp")
 EOF
@@ -144,21 +182,32 @@ EOF
     done
 done
 
-echo -e "\n--- ALL PROCESSES COMPLETE ---"
-
 # ============ VALIDATION SUITE ============
 echo -e "\n--- STARTING REFINED VALIDATION ---"
+
 for sex in males females; do
     VCF_FILE="${OUTPUT_DIR}/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
     ACTUAL_COUNT=$(bcftools query -l $VCF_FILE | wc -l)
     echo "Check: Approach 3 ${sex} folder - Found: $ACTUAL_COUNT samples"
+    
+    # NEW: Check for ghost/multi-allelic alleles (anything > 1)
+    GHOST_ALLELES=$(bcftools query -f '[%GT\t]\n' $VCF_FILE | grep -E "[2-9]" | wc -l)
+    if [ "$GHOST_ALLELES" -eq 0 ]; then
+        echo "  - Biallelic Check: SUCCESS (No alleles > 1)"
+    else
+        echo "  - Biallelic Check: ERROR (Found $GHOST_ALLELES genotypes with alleles > 1!)"
+    fi
 done
 
-echo -e "\nVerifying Female nonPAR is ONLY diploid..."
-FEMALE_HAP_IN_X=$(bcftools query -f '[%GT\t]\n' ${OUTPUT_DIR}/approach3_sexstratified/females/target_ALS_chrX.vcf.gz | grep -vE "/|\||\." | wc -l)
+echo -e "\nVerifying Female ChrX is ONLY diploid/missing..."
+# Improved check to ensure no single-digit genotypes (0 or 1) exist
+FEMALE_HAP_IN_X=$(bcftools query -f '[%GT\t]\n' ${OUTPUT_DIR}/approach3_sexstratified/females/target_ALS_chrX.vcf.gz | \
+    tr '\t' '\n' | grep -v "\." | grep -E "^[01]$" | wc -l)
+
 if [ "$FEMALE_HAP_IN_X" -eq 0 ]; then
     echo "SUCCESS: Female ChrX is 100% diploid/missing."
 else
     echo "ERROR: Found $FEMALE_HAP_IN_X haploid calls in female file!"
 fi
+
 echo -e "\n--- ALL VALIDATIONS COMPLETE ---"
