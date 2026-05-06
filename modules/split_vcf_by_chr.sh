@@ -113,72 +113,60 @@ for sex in males females; do
     SEX_LIST="${OUTPUT_DIR}/${sex}.txt"
     
     for chr in {1..22} X Y; do
-        # We add 'bcftools norm -m-any' to split multi-allelic sites 
-        # and 'view -m2 -M2' to ensure only biallelic SNPs proceed.
-        bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF | \
-        bcftools norm -m-any --fasta-ref $REF_FASTA | \
-        bcftools view -m2 -M2 -v snps -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
-        
+        OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
+        echo "Processing Chromosome ${chr} for ${sex}..."
+
+        # Step 1: Subset, Normalize, and Filter to Biallelic
+        # We output to a temporary file first to ensure the pipeline finishes
+        bcftools view -r chr${chr} -S ${SEX_LIST} "$INPUT_VCF" -Ou | \
+        bcftools norm -m-any -Ou | \
+        bcftools view -m2 -M2 -v snps -Oz -o "$OUT_VCF"
+
+        # Check if the file was actually created and has content
+        if [ ! -s "$OUT_VCF" ]; then
+            echo "ERROR: VCF for chr${chr} (${sex}) was not created or is empty!"
+            continue
+        fi
+
+        # Step 2: Run Python ploidy fix for X
         if [ "$chr" == "X" ]; then
-            export CURRENT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
+            export CURRENT_VCF="$OUT_VCF"
             export CURRENT_SEX="$sex"
             python3 << 'EOF'
 import gzip, os, subprocess
-
 vcf = os.environ['CURRENT_VCF']
 sex = os.environ['CURRENT_SEX']
-# GRCh38 PAR regions for X
 PAR = [(10001, 2781479), (155701383, 156030895)]
+tmp_vcf = vcf + ".tmp.gz"
 
-with gzip.open(vcf, 'rt') as inf, open(vcf+".tmp", 'w') as outf:
+with gzip.open(vcf, 'rt') as inf, gzip.open(tmp_vcf, 'wt') as outf:
     for line in inf:
         if line.startswith('#'):
             outf.write(line)
             continue
-        
         cols = line.strip().split('\t')
         pos = int(cols[1])
         is_par = any(s <= pos <= e for s, e in PAR)
-        
         for i in range(9, len(cols)):
             v = cols[i]
-            if v.startswith("."): 
-                continue
-            
-            # Split the genotype from other fields (AD, DP, etc.)
+            if v.startswith("."): continue
             parts = v.split(':')
             gt = parts[0]
             rest = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
-            
-            # Extract first allele safely
             a1 = gt[0]
-            
             if sex == "males":
-                if not is_par:
-                    # Force haploid (0 or 1)
-                    new_gt = a1
-                else:
-                    # Force diploid in PAR (0/0, 0/1, 1/1)
-                    if "/" not in gt and "|" not in gt:
-                        new_gt = f"{a1}/{a1}"
-                    else:
-                        new_gt = gt
+                new_gt = a1 if not is_par else (f"{a1}/{a1}" if "/" not in gt and "|" not in gt else gt)
             else:
-                # Force Females to Diploid everywhere
-                if "/" not in gt and "|" not in gt:
-                    new_gt = f"{a1}/{a1}"
-                else:
-                    new_gt = gt
-            
+                new_gt = f"{a1}/{a1}" if "/" not in gt and "|" not in gt else gt
             cols[i] = f"{new_gt}{rest}"
-            
         outf.write('\t'.join(cols) + '\n')
 
-subprocess.run(["bcftools", "view", vcf+".tmp", "-Oz", "-o", vcf], check=True)
-os.remove(vcf+".tmp")
+os.replace(tmp_vcf, vcf)
 EOF
         fi
-        bcftools index -f -t ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
+
+        # Step 3: Index the final file
+        bcftools index -f -t "$OUT_VCF"
     done
 done
 
