@@ -31,21 +31,20 @@ mkdir -p ${APPROACH1_DIR}
 for chr in {1..22} X Y; do
     bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
     if [ "$chr" == "X" ]; then
-        export VCF_APP1="${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz"
-        export MALE_FILE_APP1="${OUTPUT_DIR}/males.txt"
+        export VCF_PROC="${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz"
+        export MALE_PROC="${OUTPUT_DIR}/males.txt"
         python3 << 'EOF'
 import gzip, os, subprocess
-vcf = os.environ['VCF_APP1']
-male_file = os.environ['MALE_FILE_APP1']
+vcf = os.environ['VCF_PROC']
+male_file = os.environ['MALE_PROC']
 PAR = [(10001, 2781479), (155701383, 156030895)]
 with open(male_file, 'r') as f: males = set(line.strip() for line in f)
 
-proc = subprocess.Popen(['bcftools', 'view', '-Oz', '-o', vcf + ".tmp.gz"], stdin=subprocess.PIPE, text=True)
-with gzip.open(vcf, 'rt') as inf:
+with gzip.open(vcf, 'rt') as inf, open(vcf + ".tmp", 'w') as outf:
     for line in inf:
         if line.startswith('#'):
             if line.startswith('#CHROM'): samples = line.strip().split('\t')[9:]
-            proc.stdin.write(line); continue
+            outf.write(line); continue
         cols = line.strip().split('\t'); pos = int(cols[1])
         is_par = any(s <= pos <= e for s, e in PAR)
         for i in range(9, len(cols)):
@@ -58,9 +57,9 @@ with gzip.open(vcf, 'rt') as inf:
             else:
                 new_gt = f"{a}/{a}" if "/" not in gt and "|" not in gt else gt
             cols[i] = f"{new_gt}{rest}"
-        proc.stdin.write('\t'.join(cols) + '\n')
-proc.stdin.close(); proc.wait()
-os.replace(vcf + ".tmp.gz", vcf)
+        outf.write('\t'.join(cols) + '\n')
+subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
+os.remove(vcf + ".tmp")
 EOF
     fi
     bcftools index -f -t ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
@@ -81,19 +80,19 @@ bcftools view -r chrX:155701383-156030895 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_V
 echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895" > ${APPROACH2_DIR}/par.bed
 bcftools view -T ^${APPROACH2_DIR}/par.bed -r chrX -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
 
-export MALE_FILE_APP2="${OUTPUT_DIR}/males.txt"
-export VCF_APP2="${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz"
+export MALE_PROC="${OUTPUT_DIR}/males.txt"
+export VCF_PROC="${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz"
 python3 << 'EOF'
 import gzip, os, subprocess
-vcf = os.environ['VCF_APP2']
-male_file = os.environ['MALE_FILE_APP2']
+vcf = os.environ['VCF_PROC']
+male_file = os.environ['MALE_PROC']
 with open(male_file, 'r') as f: males = set(line.strip() for line in f)
-proc = subprocess.Popen(['bcftools', 'view', '-Oz', '-o', vcf + ".tmp.gz"], stdin=subprocess.PIPE, text=True)
-with gzip.open(vcf, 'rt') as inf:
+
+with gzip.open(vcf, 'rt') as inf, open(vcf + ".tmp", 'w') as outf:
     for line in inf:
         if line.startswith('#'):
             if line.startswith('#CHROM'): samples = line.strip().split('\t')[9:]
-            proc.stdin.write(line); continue
+            outf.write(line); continue
         cols = line.strip().split('\t')
         for i in range(9, len(cols)):
             v = cols[i]
@@ -102,9 +101,9 @@ with gzip.open(vcf, 'rt') as inf:
             a = gt[0]
             new_gt = a if samples[i-9] in males else (f"{a}/{a}" if "/" not in gt and "|" not in gt else gt)
             cols[i] = f"{new_gt}{rest}"
-        proc.stdin.write('\t'.join(cols) + '\n')
-proc.stdin.close(); proc.wait()
-os.replace(vcf + ".tmp.gz", vcf)
+        outf.write('\t'.join(cols) + '\n')
+subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
+os.remove(vcf + ".tmp")
 EOF
 bcftools index -f -t ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
 bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
@@ -121,7 +120,6 @@ for sex in males females; do
         OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
         echo "Processing Chromosome ${chr} for ${sex}..."
         
-        # Split multi-allelic and force biallelic
         bcftools view -r chr${chr} -S ${SEX_LIST} "$INPUT_VCF" -Ou | \
         bcftools norm -m-any -Ou | \
         bcftools view -m2 -M2 -v snps -Oz -o "$OUT_VCF"
@@ -136,25 +134,30 @@ import gzip, os, subprocess
 vcf = os.environ['CURRENT_VCF']
 sex = os.environ['CURRENT_SEX']
 PAR = [(10001, 2781479), (155701383, 156030895)]
-proc = subprocess.Popen(['bcftools', 'view', '-Oz', '-o', vcf + ".tmp.gz"], stdin=subprocess.PIPE, text=True)
-with gzip.open(vcf, 'rt') as inf:
+
+with open(vcf + ".tmp", 'w') as outf, gzip.open(vcf, 'rt') as inf:
     for line in inf:
-        if line.startswith('#'): proc.stdin.write(line); continue
-        cols = line.strip().split('\t'); pos = int(cols[1])
+        if line.startswith('#'):
+            outf.write(line)
+            continue
+        cols = line.strip().split('\t')
+        pos = int(cols[1])
         is_par = any(s <= pos <= e for s, e in PAR)
         for i in range(9, len(cols)):
             v = cols[i]
             if v.startswith("."): continue
-            parts = v.split(':'); gt = parts[0]; rest = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
-            a1 = gt[0]
+            parts = v.split(':')
+            gt = parts[0]
+            suffix = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
+            a = gt[0]
             if sex == "males":
-                new_gt = a1 if not is_par else (f"{a1}/{a1}" if "/" not in gt and "|" not in gt else gt)
+                cols[i] = f"{a}/{a}{suffix}" if is_par else f"{a}{suffix}"
             else:
-                new_gt = f"{a1}/{a1}" if "/" not in gt and "|" not in gt else gt
-            cols[i] = f"{new_gt}{rest}"
-        proc.stdin.write('\t'.join(cols) + '\n')
-proc.stdin.close(); proc.wait()
-os.replace(vcf + ".tmp.gz", vcf)
+                cols[i] = f"{a}/{a}{suffix}"
+        outf.write('\t'.join(cols) + '\n')
+
+subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
+os.remove(vcf + ".tmp")
 EOF
         fi
         bcftools index -f -t "$OUT_VCF"
@@ -162,7 +165,7 @@ EOF
 done
 
 # ============ VALIDATION SUITE ============
-echo -e "\n--- STARTING REFINED VALIDATION ---"
+echo -e "\n--- STARTING FINAL VALIDATION ---"
 for sex in males females; do
     VCF_FILE="${OUTPUT_DIR}/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
     ACTUAL_COUNT=$(bcftools query -l $VCF_FILE | wc -l)
