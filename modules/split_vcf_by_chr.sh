@@ -17,9 +17,18 @@ METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
 mkdir -p ${OUTPUT_DIR}
 
-# 1. Prep lists
-awk 'NR>1 {print $1}' $PSAM_FILE > ${OUTPUT_DIR}/pass_ids.txt
-tr -d '\r' < $METADATA | awk -F',' 'NR>1 {s=tolower($0); if(s ~ /female/) sex="female"; else if(s ~ /male/) sex="male"; else sex="unknown"; print $2, sex}' | sort -u > ${OUTPUT_DIR}/full_meta.txt
+# 1. Prep lists - REFINED TO RESCUE XX/XY FROM COLUMN 28
+awk 'NR>1 {print $1}' ${PSAM_FILE} > ${OUTPUT_DIR}/pass_ids.txt
+
+tr -d '\r' < ${METADATA} | awk -F',' 'NR>1 {
+    s=tolower($0); 
+    # Check standard sex column string OR column 28 for XX/XY
+    if(s ~ /female/ || $28 == "XX") sex="female"; 
+    else if(s ~ /male/ || $28 == "XY") sex="male"; 
+    else sex="unknown"; 
+    print $2, sex
+}' | sort -u > ${OUTPUT_DIR}/full_meta.txt
+
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="male" {print $1}' > ${OUTPUT_DIR}/males.txt
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="female" {print $1}' > ${OUTPUT_DIR}/females.txt
 
@@ -29,7 +38,7 @@ APPROACH1_DIR="${OUTPUT_DIR}/approach1_standard"
 mkdir -p ${APPROACH1_DIR}
 
 for chr in {1..22} X Y; do
-    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples ${INPUT_VCF} -Oz -o ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
     if [ "$chr" == "X" ]; then
         export VCF_PROC="${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz"
         export MALE_PROC="${OUTPUT_DIR}/males.txt"
@@ -75,10 +84,10 @@ for chr in {1..22} Y; do
     ln -sf ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz.tbi ${APPROACH2_DIR}/
 done
 
-bcftools view -r chrX:10001-2781479 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
-bcftools view -r chrX:155701383-156030895 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
+bcftools view -r chrX:10001-2781479 -S ${OUTPUT_DIR}/pass_ids.txt ${INPUT_VCF} -Oz -o ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
+bcftools view -r chrX:155701383-156030895 -S ${OUTPUT_DIR}/pass_ids.txt ${INPUT_VCF} -Oz -o ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
 echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895" > ${APPROACH2_DIR}/par.bed
-bcftools view -T ^${APPROACH2_DIR}/par.bed -r chrX -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
+bcftools view -T ^${APPROACH2_DIR}/par.bed -r chrX -S ${OUTPUT_DIR}/pass_ids.txt ${INPUT_VCF} -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
 
 export MALE_PROC="${OUTPUT_DIR}/males.txt"
 export VCF_PROC="${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz"
@@ -120,15 +129,15 @@ for sex in males females; do
         OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
         echo "Processing Chromosome ${chr} for ${sex}..."
         
-        bcftools view -r chr${chr} -S ${SEX_LIST} "$INPUT_VCF" -Ou | \
+        bcftools view -r chr${chr} -S ${SEX_LIST} "${INPUT_VCF}" -Ou | \
         bcftools norm -m-any -Ou | \
-        bcftools view -m2 -M2 -v snps -Oz -o "$OUT_VCF"
+        bcftools view -m2 -M2 -v snps -Oz -o "${OUT_VCF}"
 
-        if [ ! -s "$OUT_VCF" ]; then echo "ERROR: ${OUT_VCF} empty"; continue; fi
+        if [ ! -s "${OUT_VCF}" ]; then echo "ERROR: ${OUT_VCF} empty"; continue; fi
 
         if [ "$chr" == "X" ]; then
-            export CURRENT_VCF="$OUT_VCF"
-            export CURRENT_SEX="$sex"
+            export CURRENT_VCF="${OUT_VCF}"
+            export CURRENT_SEX="${sex}"
             python3 << 'EOF'
 import gzip, os, subprocess
 vcf = os.environ['CURRENT_VCF']
@@ -160,18 +169,18 @@ subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
 os.remove(vcf + ".tmp")
 EOF
         fi
-        bcftools index -f -t "$OUT_VCF"
+        bcftools index -f -t "${OUT_VCF}"
     done
 done
 
 # ============ VALIDATION SUITE ============
 echo -e "\n--- STARTING FINAL VALIDATION ---"
 for sex in males females; do
-    VCF_FILE="${OUTPUT_DIR}/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
-    ACTUAL_COUNT=$(bcftools query -l $VCF_FILE | wc -l)
-    GHOSTS=$(bcftools query -f '[%GT\t]\n' $VCF_FILE | grep -E "[2-9]" | wc -l)
-    echo "Check: Approach 3 ${sex} - Samples: $ACTUAL_COUNT, Ghost Alleles: $GHOSTS"
+    VCF_FILE="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
+    ACTUAL_COUNT=$(bcftools query -l ${VCF_FILE} | wc -l)
+    GHOSTS=$(bcftools query -f '[%GT\t]\n' ${VCF_FILE} | grep -E "[2-9]" | wc -l)
+    echo "Check: Approach 3 ${sex} - Samples: ${ACTUAL_COUNT}, Ghost Alleles: ${GHOSTS}"
 done
 
-FEMALE_HAP_IN_X=$(bcftools query -f '[%GT\t]\n' ${OUTPUT_DIR}/approach3_sexstratified/females/target_ALS_chrX.vcf.gz | tr '\t' '\n' | grep -v "\." | grep -E "^[01]$" | wc -l)
-if [ "$FEMALE_HAP_IN_X" -eq 0 ]; then echo "SUCCESS: Female X 100% Diploid"; else echo "FAIL: $FEMALE_HAP_IN_X haploids in Female X"; fi
+FEMALE_HAP_IN_X=$(bcftools query -f '[%GT\t]\n' /home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/females/target_ALS_chrX.vcf.gz | tr '\t' '\n' | grep -v "\." | grep -E "^[01]$" | wc -l)
+if [ "${FEMALE_HAP_IN_X}" -eq 0 ]; then echo "SUCCESS: Female X 100% Diploid"; else echo "FAIL: ${FEMALE_HAP_IN_X} haploids in Female X"; fi
