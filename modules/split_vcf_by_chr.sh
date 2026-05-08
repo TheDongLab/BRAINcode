@@ -121,7 +121,7 @@ bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
 # ============ APPROACH 3: Sex-stratified (Strict Biallelic) ============
 echo "Running Approach 3..."
 for sex in males females; do
-    APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified/${sex}"
+    APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified_fixed/${sex}"
     mkdir -p ${APP3_SEX_DIR}
     SEX_LIST="${OUTPUT_DIR}/${sex}.txt"
     
@@ -129,26 +129,22 @@ for sex in males females; do
         OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
         echo "Processing Chromosome ${chr} for ${sex}..."
         
+        # KEY CHANGE: Remove -m2 -M2 -v snps filter — it kills haploids
         bcftools view -r chr${chr} -S ${SEX_LIST} "${INPUT_VCF}" -Ou | \
         bcftools norm -m-any -Ou | \
-        bcftools view -m2 -M2 -v snps -Oz -o "${OUT_VCF}"
+        bcftools norm -d both -Oz -o "${OUT_VCF}"
 
-        if [ ! -s "${OUT_VCF}" ]; then echo "ERROR: ${OUT_VCF} empty"; continue; fi
-
-        if [ "$chr" == "X" ]; then
+        if [ "$chr" == "X" ] && [ "$sex" == "males" ]; then
             export CURRENT_VCF="${OUT_VCF}"
-            export CURRENT_SEX="${sex}"
             python3 << 'EOF'
 import gzip, os, subprocess
 vcf = os.environ['CURRENT_VCF']
-sex = os.environ['CURRENT_SEX']
 PAR = [(10001, 2781479), (155701383, 156030895)]
 
 with open(vcf + ".tmp", 'w') as outf, gzip.open(vcf, 'rt') as inf:
     for line in inf:
         if line.startswith('#'):
-            outf.write(line)
-            continue
+            outf.write(line); continue
         cols = line.strip().split('\t')
         pos = int(cols[1])
         is_par = any(s <= pos <= e for s, e in PAR)
@@ -159,12 +155,9 @@ with open(vcf + ".tmp", 'w') as outf, gzip.open(vcf, 'rt') as inf:
             gt = parts[0]
             suffix = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
             a = gt[0]
-            if sex == "males":
-                cols[i] = f"{a}/{a}{suffix}" if is_par else f"{a}{suffix}"
-            else:
-                cols[i] = f"{a}/{a}{suffix}"
+            new_gt = f"{a}/{a}{suffix}" if is_par else f"{a}{suffix}"
+            cols[i] = new_gt
         outf.write('\t'.join(cols) + '\n')
-
 subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
 os.remove(vcf + ".tmp")
 EOF
