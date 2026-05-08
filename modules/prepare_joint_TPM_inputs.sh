@@ -16,7 +16,6 @@ fi
 TISSUE=$1
 BASE="/home/zw529/donglab/data/target_ALS"
 COV_FILE="$BASE/QTL/covariates.tsv"
-TISSUE_DIR="$BASE/$TISSUE/RNAseq/Processed"
 OUT_DIR="$BASE/$TISSUE/eQTL"
 FINAL_TPM="$OUT_DIR/joint_TPM_matrix.tsv"
 
@@ -29,8 +28,18 @@ module load Python/3.12.3-GCCcore-13.3.0
 
 echo "Processing Tissue: $TISSUE"
 
-# Find files
-find "$TISSUE_DIR" -name "normalization.tab" ! -path "*/eQTL/*" > "$OUT_DIR/tpm_file_list.txt"
+# --- STEP 1: FIND FILES (Fuzzy Path Matching) ---
+# We look for any 'normalization.tab' within the BASE directory that contains the Tissue name and 'Processed' in its path.
+echo "Searching for files in $BASE..."
+find "$BASE" -name "normalization.tab" | grep -i "$TISSUE" | grep "Processed" | grep -v "/eQTL/" > "$OUT_DIR/tpm_file_list.txt" || true
+
+NUM_FILES=$(wc -l < "$OUT_DIR/tpm_file_list.txt")
+echo "Found $NUM_FILES potential normalization.tab files."
+
+if [ "$NUM_FILES" -eq 0 ]; then
+    echo "Error: No files found for tissue $TISSUE"
+    exit 1
+fi
 
 # --- STEP 2: PYTHON MERGE & FILTER ---
 python3 - <<EOF
@@ -38,7 +47,6 @@ import pandas as pd
 from pathlib import Path
 import sys
 
-# Silence the downcasting warning (Supported in Python 3.12.3 / Pandas 2.2+)
 pd.set_option('future.no_silent_downcasting', True)
 
 list_file = "$OUT_DIR/tpm_file_list.txt"
@@ -60,22 +68,41 @@ TISSUE_REMAP = {
     'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
 
+# 1. Load Metadata and find columns dynamically
+meta = pd.read_csv(covariate_path, sep='\t')
+meta.columns = meta.columns.str.strip()
+
+id_col = 'externalsampleid'
+tissue_col = 'tissue'
+
+if id_col not in meta.columns or tissue_col not in meta.columns:
+    print(f"Error: Columns {id_col} or {tissue_col} not found in {covariate_path}")
+    print(f"Available columns: {list(meta.columns)}")
+    sys.exit(1)
+
+# 2. Filter metadata for the target tissue
+meta['mapped_tissue'] = meta[tissue_col].map(TISSUE_REMAP).fillna(meta[tissue_col])
+meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
+
+# 3. Create a flexible set of valid IDs (checking both original and underscore versions)
+# This handles the case where folders might be 'SD-001' but metadata is 'SD_001' or vice versa
+valid_ids = set(meta_subset[id_col].astype(str))
+valid_ids.update(set(meta_subset[id_col].astype(str).str.replace('-', '_')))
+valid_ids.update(set(meta_subset[id_col].astype(str).str.replace('_', '-')))
+
+print(f"Metadata filtered for {target_tissue}: {len(meta_subset)} potential samples.")
+
+# 4. Read file list
 try:
     with open(list_file, 'r') as f:
         files = [line.strip() for line in f if line.strip()]
 except FileNotFoundError:
-    print(f"Error: {list_file} not found.")
     sys.exit(1)
-
-meta = pd.read_csv(covariate_path, sep='\t')
-meta['mapped_tissue'] = meta['tissue'].map(TISSUE_REMAP).fillna(meta['tissue'])
-meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
-meta_subset['folder_id'] = meta_subset['externalsampleid'].str.replace('-', '_')
-valid_ids = set(meta_subset['folder_id'])
 
 all_dfs = []
 for fpath in files:
     sample_id = Path(fpath).parent.name
+    # Match the folder name against our valid ID set
     if sample_id in valid_ids:
         try:
             df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
@@ -90,17 +117,16 @@ if all_dfs:
     print(f"Merging {len(all_dfs)} dataframes...")
     joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
     
-    # GTEx-inspired filter: > 0.1 TPM in at least 20% of samples (GTEx Consortium, Nature, 2020)
+    # Filter: > 0.1 TPM in >= 20% of samples
     threshold = len(all_dfs) * 0.2
     mask = (joint_df > 0.1).sum(axis=1) >= threshold
     joint_df = joint_df[mask]
     
-    joint_df.columns = [c.replace('_', '-') for c in joint_df.columns]
     joint_df.to_csv(output_file, sep='\t')
     print(f"Successfully merged {len(all_dfs)} samples.")
     print(f"Final Matrix dimensions: {joint_df.shape}")
 else:
-    print("No samples matched.")
+    print("No samples matched metadata IDs.")
     sys.exit(1)
 EOF
 
