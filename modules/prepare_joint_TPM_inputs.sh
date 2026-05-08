@@ -31,7 +31,7 @@ echo "Processing Tissue: $TISSUE"
 # --- STEP 1: FIND ALL POTENTIAL FILES ---
 find "$BASE" -name "normalization.tab" | grep -i "$TISSUE" | grep "Processed" | grep -v "/eQTL/" > "$OUT_DIR/tpm_file_list.txt" || true
 
-# --- STEP 2: PYTHON MERGE (Metadata-Matched & Deduplicated) ---
+# --- STEP 2: PYTHON MERGE (Aggressive ID Resolution & Deduplication) ---
 python3 - <<EOF
 import pandas as pd
 from pathlib import Path
@@ -68,11 +68,25 @@ sub_col = 'externalsubjectid'
 meta['mapped_tissue'] = meta['tissue'].map(TISSUE_REMAP).fillna(meta['tissue'])
 meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
 
-# 3. Mappings for ID resolution
-id_map = {str(val).replace('-', '_'): str(val) for val in meta_subset[id_col]}
-valid_ids = set(meta_subset[id_col].astype(str))
-# Map sample ID to subject ID for deduplication
-id_to_subject = meta_subset.set_index(id_col)[sub_col].to_dict()
+# 3. AGGRESSIVE MAPPING DICTIONARY
+# This maps every possible ID variant (JHU, NEU, SD, SiteID) to the Official Dash-ID
+id_to_official = {}
+id_to_subject = {}
+
+for _, row in meta_subset.iterrows():
+    official_id = str(row[id_col])
+    subject_id = str(row[sub_col])
+    id_to_subject[official_id] = subject_id
+    
+    # List of columns that might be used as folder names on the cluster
+    potential_cols = [id_col, sub_col, 'sampleid', 'subjectid']
+    
+    for col in potential_cols:
+        if col in row and pd.notna(row[col]):
+            val = str(row[col]).strip()
+            id_to_official[val] = official_id
+            id_to_official[val.replace('-', '_')] = official_id
+            id_to_official[val.replace('_', '-')] = official_id
 
 # 4. Read file list
 try:
@@ -83,19 +97,14 @@ except FileNotFoundError:
 
 all_dfs = []
 seen_subjects = set()
+matched_folders = []
 
 for fpath in files:
     folder_name = Path(fpath).parent.name
     
-    # Resolve the ID to the Dash-format in metadata
-    meta_id = None
-    if folder_name in id_map:
-        meta_id = id_map[folder_name]
-    elif folder_name.replace('_', '-') in valid_ids:
-        meta_id = folder_name.replace('_', '-')
-    elif folder_name in valid_ids:
-        meta_id = folder_name
-        
+    # Resolve the folder name to the Official ID
+    meta_id = id_to_official.get(folder_name)
+    
     if meta_id:
         subject = id_to_subject.get(meta_id)
         
@@ -107,17 +116,21 @@ for fpath in files:
             df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
             df['gene_id'] = df['gene_id'].astype(str).str.strip().str.split('.').str[0]
             df = df.drop_duplicates(subset=['gene_id'])
-            # We use meta_id so the R script can join with covariates.tsv correctly
+            # Rename TPM column to the Official ID so R can match the covariates
             df = df.set_index('gene_id').rename(columns={'TPM': meta_id})
             all_dfs.append(df)
             seen_subjects.add(subject)
+            matched_folders.append(folder_name)
         except Exception as e:
             print(f"Error reading {folder_name}: {e}")
 
 if all_dfs:
-    print(f"Merging {len(all_dfs)} unique subject samples...")
+    print(f"Successfully matched {len(all_dfs)} unique subjects.")
+    print(f"Matched Site IDs include: {matched_folders[:10]}...")
+    
     joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
     
+    # Filter: Genes present (>0.1 TPM) in at least 20% of samples
     threshold = len(all_dfs) * 0.2
     mask = (joint_df > 0.1).sum(axis=1) >= threshold
     joint_df = joint_df[mask]
@@ -125,12 +138,13 @@ if all_dfs:
     joint_df.to_csv(output_file, sep='\t')
     print(f"Final Matrix dimensions: {joint_df.shape}")
 else:
-    print("No samples matched metadata.")
+    print("FATAL: No folders matched metadata Site IDs or CGND IDs.")
     sys.exit(1)
 EOF
 
 # --- STEP 3: AUTOMATED QC PLOTTING ---
 echo "Merge complete. Launching R QC script for $TISSUE..."
+# This script joins the matrix by column name to the covariate file's first column.
 Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
 
 echo "Full QC pipeline complete for $TISSUE."
