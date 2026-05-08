@@ -2,9 +2,9 @@
 #SBATCH --job-name=prep_joint_TPM
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.err
-#SBATCH --time=06:00:00
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --time=03:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=30G
 
 set -euo pipefail
 
@@ -29,7 +29,6 @@ module load Python/3.12.3-GCCcore-13.3.0
 echo "Processing Tissue: $TISSUE"
 
 # --- STEP 1: FIND FILES (Fuzzy Path Matching) ---
-# We look for any 'normalization.tab' within the BASE directory that contains the Tissue name and 'Processed' in its path.
 echo "Searching for files in $BASE..."
 find "$BASE" -name "normalization.tab" | grep -i "$TISSUE" | grep "Processed" | grep -v "/eQTL/" > "$OUT_DIR/tpm_file_list.txt" || true
 
@@ -68,27 +67,21 @@ TISSUE_REMAP = {
     'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
 
-# 1. Load Metadata and find columns dynamically
+# 1. Load Metadata
 meta = pd.read_csv(covariate_path, sep='\t')
 meta.columns = meta.columns.str.strip()
 
 id_col = 'externalsampleid'
 tissue_col = 'tissue'
 
-if id_col not in meta.columns or tissue_col not in meta.columns:
-    print(f"Error: Columns {id_col} or {tissue_col} not found in {covariate_path}")
-    print(f"Available columns: {list(meta.columns)}")
-    sys.exit(1)
-
 # 2. Filter metadata for the target tissue
 meta['mapped_tissue'] = meta[tissue_col].map(TISSUE_REMAP).fillna(meta[tissue_col])
 meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
 
-# 3. Create a flexible set of valid IDs (checking both original and underscore versions)
-# This handles the case where folders might be 'SD-001' but metadata is 'SD_001' or vice versa
-valid_ids = set(meta_subset[id_col].astype(str))
-valid_ids.update(set(meta_subset[id_col].astype(str).str.replace('-', '_')))
-valid_ids.update(set(meta_subset[id_col].astype(str).str.replace('_', '-')))
+# 3. Create ID Mapping {folder_format: metadata_format}
+# This ensures final headers match the DASHED format in covariates.tsv
+id_map = {str(val).replace('-', '_'): str(val) for val in meta_subset[id_col]}
+valid_metadata_ids = set(meta_subset[id_col].astype(str))
 
 print(f"Metadata filtered for {target_tissue}: {len(meta_subset)} potential samples.")
 
@@ -101,17 +94,27 @@ except FileNotFoundError:
 
 all_dfs = []
 for fpath in files:
-    sample_id = Path(fpath).parent.name
-    # Match the folder name against our valid ID set
-    if sample_id in valid_ids:
+    folder_name = Path(fpath).parent.name
+    
+    # Resolve the ID to match the metadata format (Dashes)
+    meta_id = None
+    if folder_name in id_map:
+        meta_id = id_map[folder_name]
+    elif folder_name.replace('_', '-') in valid_metadata_ids:
+        meta_id = folder_name.replace('_', '-')
+    elif folder_name in valid_metadata_ids:
+        meta_id = folder_name
+        
+    if meta_id:
         try:
             df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
             df['gene_id'] = df['gene_id'].astype(str).str.strip().str.split('.').str[0]
             df = df.drop_duplicates(subset=['gene_id'])
-            df = df.set_index('gene_id').rename(columns={'TPM': sample_id})
+            # Set columns to meta_id so R can find them in the covariates file
+            df = df.set_index('gene_id').rename(columns={'TPM': meta_id})
             all_dfs.append(df)
         except Exception as e:
-            print(f"Error reading {sample_id}: {e}")
+            print(f"Error reading {folder_name}: {e}")
 
 if all_dfs:
     print(f"Merging {len(all_dfs)} dataframes...")
