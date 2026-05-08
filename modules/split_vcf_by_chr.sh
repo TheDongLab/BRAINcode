@@ -118,7 +118,7 @@ bcftools index -f -t ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
 bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
 bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
 
-# ============ APPROACH 3: Sex-stratified (Strict Biallelic) ============
+# ============ APPROACH 3: Sex-stratified ============
 echo "Running Approach 3..."
 for sex in males females; do
     APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified_fixed/${sex}"
@@ -127,13 +127,27 @@ for sex in males females; do
     
     for chr in {1..22} X Y; do
         OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
+        TEMP_VCF="/tmp/chr${chr}_${sex}_temp.vcf.gz"
         echo "Processing Chromosome ${chr} for ${sex}..."
         
-        # KEY CHANGE: Remove -m2 -M2 -v snps filter — it kills haploids
-        bcftools view -r chr${chr} -S ${SEX_LIST} "${INPUT_VCF}" -Ou | \
-        bcftools norm -m-any -Ou | \
-        bcftools norm -d both -Oz -o "${OUT_VCF}"
+        # Step 1: Extract & filter
+        bcftools view -r chr${chr} -S ${SEX_LIST} "${INPUT_VCF}" -Oz -o ${TEMP_VCF}
+        bcftools index -f ${TEMP_VCF}
+        
+        # Step 2: Normalize multiallelic (write to disk)
+        bcftools norm -m-any ${TEMP_VCF} -Oz -o ${TEMP_VCF}.norm.vcf.gz
+        bcftools index -f ${TEMP_VCF}.norm.vcf.gz
+        
+        # Step 3: Decompose (write final output)
+        bcftools norm -d both ${TEMP_VCF}.norm.vcf.gz -Oz -o ${OUT_VCF}
+        bcftools index -f -t ${OUT_VCF}
+        
+        # Cleanup temps
+        rm ${TEMP_VCF} ${TEMP_VCF}.csi ${TEMP_VCF}.norm.vcf.gz ${TEMP_VCF}.norm.vcf.gz.csi
 
+        if [ ! -s "${OUT_VCF}" ]; then echo "ERROR: ${OUT_VCF} empty"; continue; fi
+
+        # Only for chrX males: haploid conversion
         if [ "$chr" == "X" ] && [ "$sex" == "males" ]; then
             export CURRENT_VCF="${OUT_VCF}"
             python3 << 'EOF'
@@ -161,8 +175,8 @@ with open(vcf + ".tmp", 'w') as outf, gzip.open(vcf, 'rt') as inf:
 subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
 os.remove(vcf + ".tmp")
 EOF
+            bcftools index -f -t ${OUT_VCF}
         fi
-        bcftools index -f -t "${OUT_VCF}"
     done
 done
 
