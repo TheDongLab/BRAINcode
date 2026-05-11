@@ -135,46 +135,66 @@ for sex in males females; do
         OUT_VCF="${APP3_DIR}/target_ALS_chr${chr}.vcf.gz"
         echo "Processing ${sex} chr${chr}..."
         
-        # Simple extract + normalize + index
-        # NO decomposition, NO Python, just bcftools
+        # Simple extract + normalize
         bcftools view -r chr${chr} -S ${SEX_LIST} ${INPUT_VCF} -Ou | \
         bcftools norm -m-any -Oz -o ${OUT_VCF}
         
         bcftools index -f -t ${OUT_VCF}
         
-        # Only for chrX males: use bcftools +setGT to fix haploids in non-PAR
+        # Only for chrX males: split into PAR regions (diploid) and non-PAR (haploid)
         if [ "$chr" == "X" ] && [ "$sex" == "males" ]; then
             echo "  Converting males non-PAR to haploid..."
             
-            # Create temp file with haploid conversions using bcftools +setGT
-            bcftools view ${OUT_VCF} -Ou | \
-            bcftools +setGT - -t . -n p --type f -Oz -o ${OUT_VCF}.tmp
-            
-            # The above converts all to haploid, but we need PAR to be diploid
-            # So we extract PAR regions separately, keep them diploid, then concat
-            
-            TEMP_DIR="/tmp/chrX_${sex}_$$"
+            TEMP_DIR="/tmp/chrX_male_$$"
             mkdir -p ${TEMP_DIR}
             
-            # PAR1: keep diploid
+            # Extract PAR1 (keep diploid)
             bcftools view -r chrX:10001-2781479 ${OUT_VCF} -Oz -o ${TEMP_DIR}/PAR1.vcf.gz
             bcftools index -f -t ${TEMP_DIR}/PAR1.vcf.gz
             
-            # PAR2: keep diploid
+            # Extract PAR2 (keep diploid)
             bcftools view -r chrX:155701383-156030895 ${OUT_VCF} -Oz -o ${TEMP_DIR}/PAR2.vcf.gz
             bcftools index -f -t ${TEMP_DIR}/PAR2.vcf.gz
             
-            # Non-PAR: convert to haploid using bcftools +setGT
-            bcftools view -T ^<(echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895") -r chrX ${OUT_VCF} -Ou | \
-            bcftools +setGT - -t . -n p --type f -Oz -o ${TEMP_DIR}/nonPAR.vcf.gz
-            bcftools index -f -t ${TEMP_DIR}/nonPAR.vcf.gz
+            # Extract non-PAR, convert to haploid with Python
+            bcftools view -T ^<(echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895") -r chrX ${OUT_VCF} -o ${TEMP_DIR}/nonPAR.vcf
             
-            # Concatenate PAR1 + PAR2 + nonPAR
-            bcftools concat ${TEMP_DIR}/PAR1.vcf.gz ${TEMP_DIR}/PAR2.vcf.gz ${TEMP_DIR}/nonPAR.vcf.gz -Oz -o ${OUT_VCF}
+            # Convert non-PAR genotypes to haploid
+            python3 << 'PYTHON_SCRIPT'
+import sys
+vcf_in = '${TEMP_DIR}/nonPAR.vcf'
+vcf_out = '${TEMP_DIR}/nonPAR_haploid.vcf'
+
+with open(vcf_in, 'r') as fin, open(vcf_out, 'w') as fout:
+    for line in fin:
+        if line.startswith('#'):
+            fout.write(line)
+            continue
+        
+        fields = line.rstrip('\n').split('\t')
+        # Convert genotypes (columns 9+) to haploid
+        for i in range(9, len(fields)):
+            gt_full = fields[i]
+            if not gt_full.startswith('.'):
+                parts = gt_full.split(':')
+                gt = parts[0]
+                rest = ':' + ':'.join(parts[1:]) if len(parts) > 1 else ''
+                allele = gt[0]  # First allele only
+                fields[i] = f"{allele}{rest}"
+        
+        fout.write('\t'.join(fields) + '\n')
+PYTHON_SCRIPT
+            
+            # Compress non-PAR
+            bgzip -f ${TEMP_DIR}/nonPAR_haploid.vcf
+            bcftools index -f -t ${TEMP_DIR}/nonPAR_haploid.vcf.gz
+            
+            # Concatenate PAR1 + PAR2 + non-PAR (sorted by position)
+            bcftools concat ${TEMP_DIR}/PAR1.vcf.gz ${TEMP_DIR}/PAR2.vcf.gz ${TEMP_DIR}/nonPAR_haploid.vcf.gz -Oz -o ${OUT_VCF}
             bcftools index -f -t ${OUT_VCF}
             
             # Cleanup
-            rm -rf ${TEMP_DIR} ${OUT_VCF}.tmp ${OUT_VCF}.tmp.csi
+            rm -rf ${TEMP_DIR}
         fi
     done
 done
@@ -188,10 +208,19 @@ for sex in males females; do
     VCF="${OUTPUT_DIR}/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
     echo ""
     echo "Checking ${sex} chrX:"
-    echo "  Variants: $(bcftools view ${VCF} 2>/dev/null | grep -v '^#' | wc -l)"
-    echo "  Samples: $(bcftools query -l ${VCF} | wc -l)"
+    VARIANTS=$(bcftools view ${VCF} 2>/dev/null | grep -v '^#' | wc -l)
+    SAMPLES=$(bcftools query -l ${VCF} 2>/dev/null | wc -l)
+    echo "  Variants: ${VARIANTS}"
+    echo "  Samples: ${SAMPLES}"
     
-    # Sample a genotype
-    echo "  Sample GTs (first variant):"
+    if [ "$sex" == "males" ]; then
+        # Check that non-PAR males are haploid (single allele, no /)
+        HAPLOID_COUNT=$(bcftools query -f '[%GT\n]' ${VCF} 2>/dev/null | grep -E "^[01]$" | wc -l)
+        DIPLOID_COUNT=$(bcftools query -f '[%GT\n]' ${VCF} 2>/dev/null | grep "/" | wc -l)
+        echo "  Haploid GTs: ${HAPLOID_COUNT}"
+        echo "  Diploid GTs (PAR): ${DIPLOID_COUNT}"
+    fi
+    
+    echo "  Sample GTs (first 5):"
     bcftools query -f '[%SAMPLE\t%GT\n]' ${VCF} 2>/dev/null | head -5
 done
