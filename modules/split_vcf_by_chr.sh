@@ -102,33 +102,44 @@ for sex in males females; do
     for chr in {1..22} X Y; do
         bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
         
-        # Apply the logic fix for chrX specifically
-        if [ "$chr" == "X" ]; then
+        if [ "$sex" == "males" ] && [ "$chr" == "X" ]; then
+            # MALE LOGIC
             python3 << 'EOF'
 import gzip, os
-vcf = "${APP3_SEX_DIR}/target_ALS_chrX.vcf.gz"
-is_male = ("${sex}" == "males")
+vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/males/target_ALS_chrX.vcf.gz"
 PAR = [(10001, 2781479), (155701383, 156030895)]
-temp = vcf + ".tmp.gz"
-
-with gzip.open(vcf, 'rt') as inf, gzip.open(temp, 'wt') as outf:
+with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
     for line in inf:
         if line.startswith('#'): outf.write(line); continue
         cols = line.strip().split('\t'); pos = int(cols[1])
-        is_par = any(s <= pos <= e for s, e in PAR)
-        
-        for i in range(9, len(cols)):
-            v = cols[i]; a = v[0]; r = v[v.find(":"):] if ":" in v else ""
-            if is_male and not is_par:
-                # Force Haploid for Male non-PAR
+        if not any(s <= pos <= e for s, e in PAR):
+            for i in range(9, len(cols)):
+                v = cols[i]; a = v[0]; r = v[v.find(":"):] if ":" in v else ""
                 cols[i] = f"{a}{r}"
-            else:
-                # Force Diploid for Females (all X) and Male PAR
-                if "/" not in v[:3] and "|" not in v[:3]:
-                    sep = "/" if a != "." else "."
-                    cols[i] = f"{a}{sep}{a}{r}"
         outf.write('\t'.join(cols) + '\n')
-os.replace(temp, vcf)
+os.replace(vcf+".tmp.gz", vcf)
+EOF
+        elif [ "$sex" == "females" ] && [ "$chr" == "X" ]; then
+            # FEMALE LOGIC
+            python3 << 'EOF'
+import gzip, os
+vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/females/target_ALS_chrX.vcf.gz"
+with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
+    for line in inf:
+        if line.startswith('#'): outf.write(line); continue
+        cols = line.strip().split('\t')
+        for i in range(9, len(cols)):
+            v = cols[i]
+            # Only fix if it is haploid
+            if "/" not in v[:3] and "|" not in v[:3]:
+                a = v[0]
+                r = v[v.find(":"):] if ":" in v else ""
+                # If it's a real call like '0', make it '0/0'. 
+                # If it's '.', keep it as '.' to avoid file bloat, or make it './.' if server complains.
+                if a != ".":
+                    cols[i] = f"{a}/{a}{r}"
+        outf.write('\t'.join(cols) + '\n')
+os.replace(vcf+".tmp.gz", vcf)
 EOF
         fi
         bcftools index -f -t ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
