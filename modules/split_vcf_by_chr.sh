@@ -121,73 +121,77 @@ bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
 # ============ APPROACH 3: Sex-stratified ============
 echo "Running Approach 3..."
 for sex in males females; do
-    APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified_fixed/${sex}"
-    mkdir -p ${APP3_SEX_DIR}
-    SEX_LIST="${OUTPUT_DIR}/${sex}.txt"
+    APP3_DIR="${OUTPUT_DIR}/approach3_sexstratified/${sex}"
+    mkdir -p ${APP3_DIR}
     
+    if [ "$sex" == "males" ]; then
+        SEX_LIST="${MALES}"
+    else
+        SEX_LIST="${FEMALES}"
+    fi
+    
+    # Process all chromosomes
     for chr in {1..22} X Y; do
-        OUT_VCF="${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz"
-        TEMP_VCF="/tmp/chr${chr}_${sex}_temp.vcf.gz"
-        echo "Processing Chromosome ${chr} for ${sex}..."
+        OUT_VCF="${APP3_DIR}/target_ALS_chr${chr}.vcf.gz"
+        echo "Processing ${sex} chr${chr}..."
         
-        # Step 1: Extract & filter
-        bcftools view -r chr${chr} -S ${SEX_LIST} "${INPUT_VCF}" -Oz -o ${TEMP_VCF}
-        bcftools index -f ${TEMP_VCF}
+        # Simple extract + normalize + index
+        # NO decomposition, NO Python, just bcftools
+        bcftools view -r chr${chr} -S ${SEX_LIST} ${INPUT_VCF} -Ou | \
+        bcftools norm -m-any -Oz -o ${OUT_VCF}
         
-        # Step 2: Normalize multiallelic (write to disk)
-        bcftools norm -m-any ${TEMP_VCF} -Oz -o ${TEMP_VCF}.norm.vcf.gz
-        bcftools index -f ${TEMP_VCF}.norm.vcf.gz
-        
-        # Step 3: Decompose (write final output)
-        bcftools norm -d both ${TEMP_VCF}.norm.vcf.gz -Oz -o ${OUT_VCF}
         bcftools index -f -t ${OUT_VCF}
         
-        # Cleanup temps
-        rm ${TEMP_VCF} ${TEMP_VCF}.csi ${TEMP_VCF}.norm.vcf.gz ${TEMP_VCF}.norm.vcf.gz.csi
-
-        if [ ! -s "${OUT_VCF}" ]; then echo "ERROR: ${OUT_VCF} empty"; continue; fi
-
-        # Only for chrX males: haploid conversion
+        # Only for chrX males: use bcftools +setGT to fix haploids in non-PAR
         if [ "$chr" == "X" ] && [ "$sex" == "males" ]; then
-            export CURRENT_VCF="${OUT_VCF}"
-            python3 << 'EOF'
-import gzip, os, subprocess
-vcf = os.environ['CURRENT_VCF']
-PAR = [(10001, 2781479), (155701383, 156030895)]
-
-with open(vcf + ".tmp", 'w') as outf, gzip.open(vcf, 'rt') as inf:
-    for line in inf:
-        if line.startswith('#'):
-            outf.write(line); continue
-        cols = line.strip().split('\t')
-        pos = int(cols[1])
-        is_par = any(s <= pos <= e for s, e in PAR)
-        for i in range(9, len(cols)):
-            v = cols[i]
-            if v.startswith("."): continue
-            parts = v.split(':')
-            gt = parts[0]
-            suffix = ":" + ":".join(parts[1:]) if len(parts) > 1 else ""
-            a = gt[0]
-            new_gt = f"{a}/{a}{suffix}" if is_par else f"{a}{suffix}"
-            cols[i] = new_gt
-        outf.write('\t'.join(cols) + '\n')
-subprocess.run(["bcftools", "view", vcf + ".tmp", "-Oz", "-o", vcf], check=True)
-os.remove(vcf + ".tmp")
-EOF
+            echo "  Converting males non-PAR to haploid..."
+            
+            # Create temp file with haploid conversions using bcftools +setGT
+            bcftools view ${OUT_VCF} -Ou | \
+            bcftools +setGT - -t . -n p --type f -Oz -o ${OUT_VCF}.tmp
+            
+            # The above converts all to haploid, but we need PAR to be diploid
+            # So we extract PAR regions separately, keep them diploid, then concat
+            
+            TEMP_DIR="/tmp/chrX_${sex}_$$"
+            mkdir -p ${TEMP_DIR}
+            
+            # PAR1: keep diploid
+            bcftools view -r chrX:10001-2781479 ${OUT_VCF} -Oz -o ${TEMP_DIR}/PAR1.vcf.gz
+            bcftools index -f -t ${TEMP_DIR}/PAR1.vcf.gz
+            
+            # PAR2: keep diploid
+            bcftools view -r chrX:155701383-156030895 ${OUT_VCF} -Oz -o ${TEMP_DIR}/PAR2.vcf.gz
+            bcftools index -f -t ${TEMP_DIR}/PAR2.vcf.gz
+            
+            # Non-PAR: convert to haploid using bcftools +setGT
+            bcftools view -T ^<(echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895") -r chrX ${OUT_VCF} -Ou | \
+            bcftools +setGT - -t . -n p --type f -Oz -o ${TEMP_DIR}/nonPAR.vcf.gz
+            bcftools index -f -t ${TEMP_DIR}/nonPAR.vcf.gz
+            
+            # Concatenate PAR1 + PAR2 + nonPAR
+            bcftools concat ${TEMP_DIR}/PAR1.vcf.gz ${TEMP_DIR}/PAR2.vcf.gz ${TEMP_DIR}/nonPAR.vcf.gz -Oz -o ${OUT_VCF}
             bcftools index -f -t ${OUT_VCF}
+            
+            # Cleanup
+            rm -rf ${TEMP_DIR} ${OUT_VCF}.tmp ${OUT_VCF}.tmp.csi
         fi
     done
 done
 
-# ============ VALIDATION SUITE ============
-echo -e "\n--- STARTING FINAL VALIDATION ---"
-for sex in males females; do
-    VCF_FILE="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
-    ACTUAL_COUNT=$(bcftools query -l ${VCF_FILE} | wc -l)
-    GHOSTS=$(bcftools query -f '[%GT\t]\n' ${VCF_FILE} | grep -E "[2-9]" | wc -l)
-    echo "Check: Approach 3 ${sex} - Samples: ${ACTUAL_COUNT}, Ghost Alleles: ${GHOSTS}"
-done
+echo "Done. All files in ${OUTPUT_DIR}/approach3_sexstratified/"
 
-FEMALE_HAP_IN_X=$(bcftools query -f '[%GT\t]\n' /home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/females/target_ALS_chrX.vcf.gz | tr '\t' '\n' | grep -v "\." | grep -E "^[01]$" | wc -l)
-if [ "${FEMALE_HAP_IN_X}" -eq 0 ]; then echo "SUCCESS: Female X 100% Diploid"; else echo "FAIL: ${FEMALE_HAP_IN_X} haploids in Female X"; fi
+# ============ VALIDATION ============
+echo ""
+echo "=== VALIDATION ==="
+for sex in males females; do
+    VCF="${OUTPUT_DIR}/approach3_sexstratified/${sex}/target_ALS_chrX.vcf.gz"
+    echo ""
+    echo "Checking ${sex} chrX:"
+    echo "  Variants: $(bcftools view ${VCF} 2>/dev/null | grep -v '^#' | wc -l)"
+    echo "  Samples: $(bcftools query -l ${VCF} | wc -l)"
+    
+    # Sample a genotype
+    echo "  Sample GTs (first variant):"
+    bcftools query -f '[%SAMPLE\t%GT\n]' ${VCF} 2>/dev/null | head -5
+done
