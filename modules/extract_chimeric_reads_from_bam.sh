@@ -22,7 +22,7 @@ ANNOT_BEDS="${STAR_GENOME}"
 # Environment
 ###########################################
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate RNAseq
+conda activate bulkRNAseq
  
 CPU=${SLURM_CPUS_PER_TASK:-4}
  
