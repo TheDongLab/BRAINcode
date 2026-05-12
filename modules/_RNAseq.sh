@@ -17,7 +17,7 @@ export CONDA_BACKUP_GXX="${CONDA_BACKUP_GXX:-}"
 ###########################################
 set +u
 source ~/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh
-conda activate RNAseq
+conda activate bulkRNAseq
 set -u
  
 ###########################################
