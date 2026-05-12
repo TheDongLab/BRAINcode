@@ -118,7 +118,25 @@ df = df.merge(sk, on='externalsampleid', how='left')
 
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
-# 2. DEFINITIVE REMAPPING
+# 2. HELPER FUNCTIONS
+def normalize_tissue(s):
+    s = str(s).strip()
+    if s.lower() in ['nan', 'none', '']: return 'Unknown'
+    if any(x in s.upper() for x in ['NT-CELL', 'NT_CELL', 'NTCELL', '/NT']): return 'PBMC/Non-T-Cell'
+    if 'T-CELL' in s.upper() or 'T_CELL' in s.upper(): return 'PBMC/T-Cell'
+    return s
+
+def extract_sample_prefix(sample_id):
+    """Extract prefix before first hyphen or underscore (e.g., CGND from CGND-HRA-03838, SD from SD_034_24_SCL)"""
+    sample_id = str(sample_id).strip()
+    if sample_id.lower() in ['nan', 'none', '']: return 'Unknown'
+    # Split on either hyphen or underscore and take the first part
+    prefix = sample_id.replace('_', '-').split('-')[0].upper()
+    return prefix if prefix else 'Unknown'
+
+df['sample_prefix'] = df['externalsampleid'].apply(extract_sample_prefix)
+
+# 3. DEFINITIVE REMAPPING
 TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
@@ -133,7 +151,7 @@ SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
     'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    'Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
     'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
@@ -143,7 +161,7 @@ SUBJECT_GROUP_REMAP = {
 }
 
 FTD_REMAP = {
-    'Alzheimer’s Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
+    'Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
     'FTLD-TDP, Cerebrovascular disease': 'Yes',
     'FTD, TDP43 subtype': 'Yes',
@@ -171,7 +189,7 @@ C9_REMAP = {
     'nan': 'Not Applicable/NaN', 'Unknown': 'Not Applicable/NaN'
 }
 
-# 3. GLOBAL CLEANING
+# 4. GLOBAL CLEANING
 df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
 # FTD Status
@@ -198,7 +216,7 @@ for col in anc_cols:
 wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 shared_df = df[df['externalsubjectid'].isin(wgs_subs)].copy()
 
-# 4. PLOTTING (Collinearity Check)
+# 5. PLOTTING (Collinearity Check)
 num_plot_cols = ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours', 'rna_skew'] + anc_cols
 plot_df = df[num_plot_cols].apply(pd.to_numeric, errors='coerce')
 
@@ -228,10 +246,10 @@ plt.xticks(rotation=45, ha='right') # 'ha' ensures labels align correctly
 plt.tight_layout()
 plt.savefig("$OUTDIR/covariate_correlation_heatmap.png")
 
-# 5. EXPORT
+# 6. EXPORT
 df.to_csv("$FINAL_COVARIATES", sep="\t", index=False)
 
-# 6. COVARIATE SUMMARY AUDIT
+# 7. COVARIATE SUMMARY AUDIT
 with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n")
     f.write(" target_ALS Covariate Frequency Audit\n")
@@ -240,7 +258,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
     f.write("============================================================\n\n")
 
     # Categorical Stats
-    cat_cols = ['sex', 'subject_group', 'site_of_motor_onset', 'c9orf72_repeat_expansion', 'ftd_ftld_status'] + anc_binary_cols
+    cat_cols = ['sex', 'subject_group', 'site_of_motor_onset', 'c9orf72_repeat_expansion', 'ftd_ftld_status', 'sample_prefix'] + anc_binary_cols
     for col in cat_cols:
         if col not in df.columns: continue
         f.write(f"── {col.upper():<35} {'GLOBAL':<15} {'SHARED':<15}\n")
@@ -281,7 +299,7 @@ with open("$COVARIATE_SUMMARY", "w") as f:
             f.write(f"{label} (n={len(vals)}, {missing} missing)\n")
             f.write(f"    mean: {vals.mean():.2f} | median: {vals.median():.2f} | std: {vals.std():.2f}\n\n")
 
-# 7. TISSUE SUMMARY
+# 8. TISSUE SUMMARY
 shared_df['tissue'] = shared_df['tissue'].str.strip()
 subject_counts = shared_df.groupby('tissue')['externalsubjectid'].nunique()
 sample_counts = shared_df['tissue'].value_counts()
