@@ -8,164 +8,230 @@
 export LC_ALL=C
 module load BCFtools/1.21
 
-# Paths
 INPUT_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 BASE_OUTPUT_DIR="/home/zw529/donglab/data/target_ALS/QTL"
-OUTPUT_DIR="${BASE_OUTPUT_DIR}/chromosome_joint_vcfs"
-PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtered.psam"
 METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
+PSAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtered.psam"
 
-mkdir -p ${OUTPUT_DIR}
+# Define the subject to exclude due to sex mismatch
+EXCLUDE_ID="NEUTN269WMP"
 
-# 1. Prep lists
-awk 'NR>1 {print $1}' $PSAM_FILE > ${OUTPUT_DIR}/pass_ids.txt
+mkdir -p ${BASE_OUTPUT_DIR}/chromosome_joint_vcfs
+OUTPUT_DIR="${BASE_OUTPUT_DIR}/chromosome_joint_vcfs"
+
+# Generate pass_ids and explicitly filter out the mismatch subject
+awk 'NR>1 {print $1}' $PSAM_FILE | grep -v "$EXCLUDE_ID" > ${OUTPUT_DIR}/pass_ids.txt
+
+# Create metadata mappings
 tr -d '\r' < $METADATA | awk -F',' 'NR>1 && $2 != "" {print $2, tolower($5)}' | sort -u > ${OUTPUT_DIR}/full_meta.txt
+
+# These lists will now be clean because they reference the filtered pass_ids.txt
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="male" {print $1}' > ${OUTPUT_DIR}/males.txt
 grep -Fwf ${OUTPUT_DIR}/pass_ids.txt ${OUTPUT_DIR}/full_meta.txt | awk '$2=="female" {print $1}' > ${OUTPUT_DIR}/females.txt
 
-# ============ APPROACH 1: Standard (Baseline) ============
-echo "Running Approach 1..."
+echo "QC samples: $(wc -l < ${OUTPUT_DIR}/pass_ids.txt), Males: $(wc -l < ${OUTPUT_DIR}/males.txt), Females: $(wc -l < ${OUTPUT_DIR}/females.txt)"
+
+# ============ APPROACH 1: Standard ============
+echo "APPROACH 1: Standard separation"
 APPROACH1_DIR="${OUTPUT_DIR}/approach1_standard"
 mkdir -p ${APPROACH1_DIR}
-
-for chr in {1..22} X Y; do
-    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
-    # Special ploidy fix for chrX only
-    if [ "$chr" == "X" ]; then
-        python3 << 'EOF'
-import gzip, os
-vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach1_standard/target_ALS_chrX.vcf.gz"
-male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
-PAR = [(10001, 2781479), (155701383, 156030895)]
-with open(male_file, 'r') as f: males = set(line.strip() for line in f)
-with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
-    for line in inf:
-        if line.startswith('#'):
-            if line.startswith('#CHROM'): samples = line.strip().split('\t')[9:]
-            outf.write(line); continue
-        cols = line.strip().split('\t'); pos = int(cols[1])
-        is_par = any(s <= pos <= e for s, e in PAR)
-        for i in range(9, len(cols)):
-            if samples[i-9] in males:
-                v = cols[i]; a = v[0]; r = v[v.find(":"):] if ":" in v else ""
-                cols[i] = f"{a}/{a}{r}" if is_par and "/" not in v[:3] and "|" not in v[:3] else f"{a}{r}" if not is_par else v
-        outf.write('\t'.join(cols) + '\n')
-os.replace(vcf+".tmp.gz", vcf)
-EOF
-    fi
-    bcftools index -f -t ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
-done
-
-# ============ APPROACH 2: PAR Separated ============
-echo "Running Approach 2 (Linking Autosomes)..."
-APPROACH2_DIR="${OUTPUT_DIR}/approach2_par_removed"
-mkdir -p ${APPROACH2_DIR}
-
-for chr in {1..22} Y; do
-    ln -sf ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz ${APPROACH2_DIR}/
-    ln -sf ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz.tbi ${APPROACH2_DIR}/
-done
-
-bcftools view -r chrX:10001-2781479 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
-bcftools view -r chrX:155701383-156030895 -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
-echo -e "chrX\t10001\t2781479\nchrX\t155701383\t156030895" > ${APPROACH2_DIR}/par.bed
-bcftools view -T ^${APPROACH2_DIR}/par.bed -r chrX -S ${OUTPUT_DIR}/pass_ids.txt $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
+bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH1_DIR}/target_ALS_chrX.vcf.gz
 
 python3 << 'EOF'
 import gzip, os
-vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrX_nonPAR.vcf.gz"
+vcf_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach1_standard/target_ALS_chrX.vcf.gz"
 male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
-with open(male_file, 'r') as f: males = set(line.strip() for line in f)
-with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
+temp_file = vcf_file + ".tmp.gz"
+PAR = [(10001, 2781479), (155701383, 156030895)]
+with open(male_file, 'r') as f:
+    males = set(line.strip() for line in f)
+with gzip.open(vcf_file, 'rt') as inf, gzip.open(temp_file, 'wt') as outf:
     for line in inf:
         if line.startswith('#'):
-            if line.startswith('#CHROM'): samples = line.strip().split('\t')[9:]
-            outf.write(line); continue
+            if line.startswith('#CHROM'):
+                samples = line.strip().split('\t')[9:]
+            outf.write(line)
+            continue
         cols = line.strip().split('\t')
+        pos = int(cols[1])
+        is_par = any(start <= pos <= end for start, end in PAR)
         for i in range(9, len(cols)):
             if samples[i-9] in males:
-                v = cols[i]; a = v[0]; r = v[v.find(":"):] if ":" in v else ""
-                cols[i] = f"{a}{r}"
+                val = cols[i]
+                allele = val[0]
+                sep_idx = val.find(":")
+                rest = val[sep_idx:] if sep_idx != -1 else ""
+                if is_par:
+                    if "/" not in val[:3] and "|" not in val[:3]:
+                        cols[i] = f"{allele}/{allele}{rest}"
+                else:
+                    cols[i] = f"{allele}{rest}"
         outf.write('\t'.join(cols) + '\n')
-os.replace(vcf+".tmp.gz", vcf)
+os.replace(temp_file, vcf_file)
 EOF
-bcftools index -f -t ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz
-bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz
-bcftools index -f -t ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz
+
+bcftools view ${APPROACH1_DIR}/target_ALS_chrX.vcf.gz -Oz -o ${APPROACH1_DIR}/target_ALS_chrX_final.vcf.gz
+mv ${APPROACH1_DIR}/target_ALS_chrX_final.vcf.gz ${APPROACH1_DIR}/target_ALS_chrX.vcf.gz
+bcftools index -f -t ${APPROACH1_DIR}/target_ALS_chrX.vcf.gz
+
+for chr in {1..22} Y; do
+    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools index -f -t ${APPROACH1_DIR}/target_ALS_chr${chr}.vcf.gz
+done
+
+# ============ APPROACH 2: PAR Removed ============
+echo "APPROACH 2: PAR as separate chromosomes"
+APPROACH2_DIR="${OUTPUT_DIR}/approach2_par_removed"
+mkdir -p ${APPROACH2_DIR}
+bcftools view -r chrX -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrX_full.vcf.gz
+
+python3 << 'PYEOF'
+import gzip, os
+vcf_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrX_full.vcf.gz"
+male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
+nonpar_vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrX_nonPAR.vcf.gz"
+par1_vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_PAR1.vcf.gz"
+par2_vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_PAR2.vcf.gz"
+PAR1 = (10001, 2781479)
+PAR2 = (155701383, 156030895)
+with open(male_file, 'r') as f:
+    males = set(line.strip() for line in f)
+header_lines = []
+sample_indices = {}
+with gzip.open(vcf_file, 'rt') as f:
+    for line in f:
+        if line.startswith('#CHROM'):
+            header_lines.append(line)
+            samples = line.strip().split('\t')[9:]
+            sample_indices = {s: i for i, s in enumerate(samples)}
+            break
+        else:
+            header_lines.append(line)
+with gzip.open(vcf_file, 'rt') as inf:
+    with gzip.open(nonpar_vcf, 'wt') as nonpar_f, gzip.open(par1_vcf, 'wt') as par1_f, gzip.open(par2_vcf, 'wt') as par2_f:
+        for header_line in header_lines:
+            nonpar_f.write(header_line)
+            par1_f.write(header_line)
+            par2_f.write(header_line)
+        for line in inf:
+            if line.startswith('#'):
+                continue
+            cols = line.strip().split('\t')
+            pos = int(cols[1])
+            in_par1 = PAR1[0] <= pos <= PAR1[1]
+            in_par2 = PAR2[0] <= pos <= PAR2[1]
+            in_nonpar = not (in_par1 or in_par2)
+            if in_nonpar:
+                for i in range(9, len(cols)):
+                    if samples[i-9] in males:
+                        val = cols[i]
+                        allele = val[0]
+                        sep_idx = val.find(":")
+                        rest = val[sep_idx:] if sep_idx != -1 else ""
+                        cols[i] = f"{allele}{rest}"
+                nonpar_f.write('\t'.join(cols) + '\n')
+            if in_par1:
+                cols[0] = 'PAR1'
+                par1_f.write('\t'.join(cols) + '\n')
+            if in_par2:
+                cols[0] = 'PAR2'
+                par2_f.write('\t'.join(cols) + '\n')
+os.remove(vcf_file)
+PYEOF
+
+for vcf in ${APPROACH2_DIR}/target_ALS_chrX_nonPAR.vcf.gz ${APPROACH2_DIR}/target_ALS_PAR1.vcf.gz ${APPROACH2_DIR}/target_ALS_PAR2.vcf.gz; do
+    [ -f "$vcf" ] && bcftools view ${vcf} -Oz -o ${vcf}.tmp && mv ${vcf}.tmp ${vcf} && bcftools index -f -t ${vcf}
+done
+
+bcftools view -r chrY -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chrY_full.vcf.gz
+
+python3 << 'PYEOF'
+import gzip, os
+vcf_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrY_full.vcf.gz"
+male_file = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
+nonpar_vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach2_par_removed/target_ALS_chrY_nonPAR.vcf.gz"
+PAR1 = (10001, 2781479)
+PAR2 = (155701383, 156030895)
+with open(male_file, 'r') as f:
+    males = set(line.strip() for line in f)
+header_lines = []
+with gzip.open(vcf_file, 'rt') as f:
+    for line in f:
+        if line.startswith('#CHROM'):
+            header_lines.append(line)
+            samples = line.strip().split('\t')[9:]
+            break
+        else:
+            header_lines.append(line)
+with gzip.open(vcf_file, 'rt') as inf:
+    with gzip.open(nonpar_vcf, 'wt') as nonpar_f:
+        for header_line in header_lines:
+            nonpar_f.write(header_line)
+        for line in inf:
+            if line.startswith('#'):
+                continue
+            cols = line.strip().split('\t')
+            pos = int(cols[1])
+            in_par = (PAR1[0] <= pos <= PAR1[1]) or (PAR2[0] <= pos <= PAR2[1])
+            if not in_par:
+                for i in range(9, len(cols)):
+                    if samples[i-9] in males:
+                        val = cols[i]
+                        allele = val[0]
+                        sep_idx = val.find(":")
+                        rest = val[sep_idx:] if sep_idx != -1 else ""
+                        cols[i] = f"{allele}{rest}"
+                nonpar_f.write('\t'.join(cols) + '\n')
+os.remove(vcf_file)
+PYEOF
+
+bcftools view ${APPROACH2_DIR}/target_ALS_chrY_nonPAR.vcf.gz -Oz -o ${APPROACH2_DIR}/target_ALS_chrY_nonPAR_final.vcf.gz
+mv ${APPROACH2_DIR}/target_ALS_chrY_nonPAR_final.vcf.gz ${APPROACH2_DIR}/target_ALS_chrY_nonPAR.vcf.gz
+bcftools index -f -t ${APPROACH2_DIR}/target_ALS_chrY_nonPAR.vcf.gz
+
+for chr in {1..22}; do
+    bcftools view -r chr${chr} -S ${OUTPUT_DIR}/pass_ids.txt --force-samples $INPUT_VCF -Oz -o ${APPROACH2_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools index -f -t ${APPROACH2_DIR}/target_ALS_chr${chr}.vcf.gz
+done
 
 # ============ APPROACH 3: Sex-stratified ============
-echo "Running Approach 3..."
+echo "APPROACH 3: Sex-stratified (males/females separate)"
 for sex in males females; do
-    APP3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified/${sex}"
-    mkdir -p ${APP3_SEX_DIR}
-    SEX_LIST="${OUTPUT_DIR}/${sex}.txt"
-    for chr in {1..22} X Y; do
-        bcftools view -r chr${chr} -S ${SEX_LIST} $INPUT_VCF -Oz -o ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
-        
-        if [ "$sex" == "males" ] && [ "$chr" == "X" ]; then
-            # MALE LOGIC
-            python3 << 'EOF'
+    SEX_LIST_FILE="${OUTPUT_DIR}/${sex}.txt"
+    APPROACH3_SEX_DIR="${OUTPUT_DIR}/approach3_sexstratified/${sex}"
+    mkdir -p ${APPROACH3_SEX_DIR}
+    bcftools view -r chrX -S ${SEX_LIST_FILE} --force-samples $INPUT_VCF -Oz -o ${APPROACH3_SEX_DIR}/target_ALS_chrX.vcf.gz
+    python3 << EOF
 import gzip, os
-vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/males/target_ALS_chrX.vcf.gz"
+vcf_file = "${APPROACH3_SEX_DIR}/target_ALS_chrX.vcf.gz"
+is_male = ('${sex}' == 'males')
+temp_file = vcf_file + ".tmp.gz"
 PAR = [(10001, 2781479), (155701383, 156030895)]
-with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
+with gzip.open(vcf_file, 'rt') as inf, gzip.open(temp_file, 'wt') as outf:
     for line in inf:
-        if line.startswith('#'): outf.write(line); continue
-        cols = line.strip().split('\t'); pos = int(cols[1])
-        if not any(s <= pos <= e for s, e in PAR):
-            for i in range(9, len(cols)):
-                v = cols[i]; a = v[0]; r = v[v.find(":"):] if ":" in v else ""
-                cols[i] = f"{a}{r}"
-        outf.write('\t'.join(cols) + '\n')
-os.replace(vcf+".tmp.gz", vcf)
-EOF
-        elif [ "$sex" == "females" ] && [ "$chr" == "X" ]; then
-            # FEMALE LOGIC
-            python3 << 'EOF'
-import gzip, os
-vcf = "/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/approach3_sexstratified/females/target_ALS_chrX.vcf.gz"
-with gzip.open(vcf, 'rt') as inf, gzip.open(vcf+".tmp.gz", 'wt') as outf:
-    for line in inf:
-        if line.startswith('#'): outf.write(line); continue
+        if line.startswith('#'):
+            outf.write(line)
+            continue
         cols = line.strip().split('\t')
-        for i in range(9, len(cols)):
-            v = cols[i]
-            # Only fix if it is haploid
-            if "/" not in v[:3] and "|" not in v[:3]:
-                a = v[0]
-                r = v[v.find(":"):] if ":" in v else ""
-                # If it's a real call like '0', make it '0/0'. 
-                # If it's '.', keep it as '.' to avoid file bloat, or make it './.' if server complains.
-                if a != ".":
-                    cols[i] = f"{a}/{a}{r}"
+        pos = int(cols[1])
+        is_par = any(start <= pos <= end for start, end in PAR)
+        if is_male and not is_par:
+            for i in range(9, len(cols)):
+                val = cols[i]
+                allele = val[0]
+                sep_idx = val.find(":")
+                rest = val[sep_idx:] if sep_idx != -1 else ""
+                cols[i] = f"{allele}{rest}"
         outf.write('\t'.join(cols) + '\n')
-os.replace(vcf+".tmp.gz", vcf)
+os.replace(temp_file, vcf_file)
 EOF
-        fi
-        bcftools index -f -t ${APP3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
+    bcftools view ${APPROACH3_SEX_DIR}/target_ALS_chrX.vcf.gz -Oz -o ${APPROACH3_SEX_DIR}/target_ALS_chrX_final.vcf.gz
+    mv ${APPROACH3_SEX_DIR}/target_ALS_chrX_final.vcf.gz ${APPROACH3_SEX_DIR}/target_ALS_chrX.vcf.gz
+    bcftools index -f -t ${APPROACH3_SEX_DIR}/target_ALS_chrX.vcf.gz
+    for chr in {1..22} Y; do
+        bcftools view -r chr${chr} -S ${SEX_LIST_FILE} --force-samples $INPUT_VCF -Oz -o ${APPROACH3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
+        bcftools index -f -t ${APPROACH3_SEX_DIR}/target_ALS_chr${chr}.vcf.gz
     done
 done
 
-# ============ VALIDATION SUITE ============
-echo -e "\n--- STARTING REFINED VALIDATION ---"
-
-# 1. Verify Females are 100% Diploid
-FEMALE_X="${OUTPUT_DIR}/approach3_sexstratified/females/target_ALS_chrX.vcf.gz"
-HAPLOID_FEMALE=$(bcftools query -f '[%GT\t]\n' $FEMALE_X | grep -vE "/|\|" | wc -l)
-if [ "$HAPLOID_FEMALE" -eq 0 ]; then
-    echo "SUCCESS: Female chrX is now 100% Diploid."
-else
-    echo "ERROR: Found $HAPLOID_FEMALE haploid genotypes in female chrX!"
-fi
-
-# 2. Verify Males are Haploid in non-PAR
-MALE_X="${OUTPUT_DIR}/approach3_sexstratified/males/target_ALS_chrX.vcf.gz"
-# Sample a non-PAR position (e.g., pos 5,000,000)
-MALE_NONPAR_CHECK=$(bcftools view -H -r chrX:5000000-6000000 $MALE_X | head -n 1 | cut -f 10 | grep -E "/|\|" | wc -l)
-if [ "$MALE_NONPAR_CHECK" -eq 0 ]; then
-    echo "SUCCESS: Male non-PAR chrX appears haploid."
-else
-    echo "ERROR: Male non-PAR chrX still contains diploid calls!"
-fi
-
-echo -e "\n--- ALL VALIDATIONS COMPLETE ---"
+echo "All approaches complete: approach1_standard, approach2_par_removed, approach3_sexstratified"
