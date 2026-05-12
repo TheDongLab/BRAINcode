@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=extract_targetALS_tissues_covariates
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=150G
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=140G
 #SBATCH --time=23:00:00
 #SBATCH -p day
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/extract_targetALS_tissues_covariates.out
@@ -135,6 +135,9 @@ def extract_sample_prefix(sample_id):
     return prefix if prefix else 'Unknown'
 
 df['sample_prefix'] = df['externalsampleid'].apply(extract_sample_prefix)
+
+# --- REMOVE PROBLEMATIC SUBJECT ---
+df = df[df['externalsubjectid'] != "NEUTN269WMP"]
 
 # 3. DEFINITIVE REMAPPING
 TISSUE_REMAP = {
