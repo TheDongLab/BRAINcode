@@ -153,12 +153,12 @@ if(!is.na(idxX) & !is.na(idxY)) {
   # Handle NAs in sex metadata if any
   plot_cols[is.na(plot_cols)] <- "gray50"
 
-  plot(plot_data$XIST, plot_data$RPS4Y1, 
-       xlab="log10(XIST + 1)", ylab="log10(RPS4Y1 + 1)", 
-       col=plot_cols, 
-       alpha=0.6,
-       pch=19, 
-       main=paste(TISSUE, "Gender Check"))
+plot(plot_data$XIST, plot_data$RPS4Y1, 
+       xlab = expression(log[10](TPM + 1)~~XIST), 
+       ylab = expression(log[10](TPM + 1)~~RPS4Y1), 
+       col = plot_cols, 
+       pch = 19, 
+       main = paste(TISSUE, "Gender Check"))
   
   legend("topright", 
          legend=c("Male", "Female", "Unknown"), 
