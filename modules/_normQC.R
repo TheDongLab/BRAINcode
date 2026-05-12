@@ -96,7 +96,7 @@ boxplot(Value ~ bymedian, data=rle_melt, outline=F, las=2, boxwex=1,
         xlab="", ylab="Relative Log Expression", frame=F)
 abline(h=0, col="red", lty=2)
 
-# --- 2. Unrooted Clustering ---
+# --- 2. Unrooted Clustering (Fixed & Improved Colors) ---
 message("Generating clustering plot...")
 sampleDists <- 1 - cor(tpm, method='spearman')
 sampleDists[is.na(sampleDists)] <- 1 
@@ -105,58 +105,68 @@ hc <- hclust(as.dist(sampleDists), method = "complete")
 tree <- as.phylo(hc)
 
 # 1. Extract prefixes (e.g., CGND, SD, GBB)
-# This regex takes everything before the first underscore or hyphen
 prefixes <- gsub("^([^-^_]+).*", "\\1", tree$tip.label)
-unique_prefixes <- unique(prefixes)
+unique_prefixes <- sort(unique(prefixes))
 
-# 2. Create a color palette
-# rainbow() is easy, but you can use RColorBrewer for better colors
-prefix_colors <- rainbow(length(unique_prefixes))
+# 2. Use a "Professional" color palette (Darker, non-neon colors)
+# We use a color ramp to avoid bright yellows
+base_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#A65628", "#F781BF", "#000000")
+if(length(unique_prefixes) <= length(base_colors)) {
+  prefix_colors <- base_colors[1:length(unique_prefixes)]
+} else {
+  prefix_colors <- colorRampPalette(c("darkblue", "darkred", "darkgreen", "purple4"))(length(unique_prefixes))
+}
 names(prefix_colors) <- unique_prefixes
 
-# 3. Map prefixes to the tips of the tree
+# 3. Map prefixes to the tips
 tip_colors <- prefix_colors[prefixes]
 
 # 4. Plot
-plot(tree, type = "unrooted", cex=.4, lab4ut='axial', 
+plot(tree, type = "unrooted", cex=.35, lab4ut='axial', 
      tip.color = tip_colors,
      main = paste(TISSUE, "Clustering (Colored by Prefix)"))
 
-# Add a legend so you know which color is which
-legend("bottomleft", legend = names(prefix_colors), 
-       fill = prefix_colors, cex = 0.6, btitle = "n", bg = "white")
+# 5. Legend (Fixed: bty='n' removes the box, cex adjusts size)
+legend("bottomleft", 
+       legend = names(prefix_colors), 
+       fill = prefix_colors, 
+       cex = 0.7, 
+       bty = "n", 
+       border = "black")
 
-# --- 3. Gender Marker Check ---
+# --- 3. Gender Marker Check (Fixed: log10(x+1) and Independent of RLE) ---
 message("Generating gender-match plot...")
 clean_rows <- gsub("\\..*", "", rownames(tpm))
 idxX <- which(clean_rows == "ENSG00000229807")[1] # XIST
 idxY <- which(clean_rows == "ENSG00000129824")[1] # RPS4Y1
 
 if(!is.na(idxX) & !is.na(idxY)) {
-  # Use raw TPM values from the original 'tpm' matrix
-  raw_xist <- as.numeric(tpm[idxX, ])
-  raw_rps4y1 <- as.numeric(tpm[idxY, ])
-  
-  # Option: Use log10(x + 1) instead of log10(x + 0.0001)
-  # This ensures that 0 TPM remains 0 on the plot (log10(1) = 0)
+  # Use original tpm matrix to avoid the -4 baseline from RLE step
   plot_data <- data.frame(
-    XIST = log10(raw_xist + 1),
-    RPS4Y1 = log10(raw_rps4y1 + 1),
+    XIST = log10(as.numeric(tpm[idxX, ]) + 1),
+    RPS4Y1 = log10(as.numeric(tpm[idxY, ]) + 1),
     Sex = sex
   )
   
-  # Calculate axis limits to keep the plot tidy
-  max_val <- max(c(plot_data$XIST, plot_data$RPS4Y1), na.rm=TRUE)
-  
+  # Ensure we have a valid color vector for Sex
+  plot_cols <- ifelse(plot_data$Sex == "Male", "blue3", "firebrick2")
+  # Handle NAs in sex metadata if any
+  plot_cols[is.na(plot_cols)] <- "gray50"
+
   plot(plot_data$XIST, plot_data$RPS4Y1, 
        xlab="log10(XIST + 1)", ylab="log10(RPS4Y1 + 1)", 
-       col=ifelse(plot_data$Sex == "Male", "blue", "red"), 
+       col=plot_cols, 
+       alpha=0.6,
        pch=19, 
-       xlim=c(0, max_val), ylim=c(0, max_val),
-       main=paste(TISSUE, "Gender Check (Raw TPM Adjusted)"))
+       main=paste(TISSUE, "Gender Check"))
   
-  legend("topright", legend=c("Male", "Female"), col=c("blue", "red"), pch=19)
-  grid() # Optional: adds a grid to help see the 0 lines
+  legend("topright", 
+         legend=c("Male", "Female", "Unknown"), 
+         col=c("blue3", "firebrick2", "gray50"), 
+         pch=19, bty="n")
+  grid(lty = "dotted", col = "gray80")
+} else {
+  message("Warning: Gender markers (XIST/RPS4Y1) not found in matrix. Skipping plot.")
 }
 
 dev.off()
