@@ -151,7 +151,7 @@ SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
     'Other Neurological Disorders': 'Other Neurological Disorders',
     'ALS Spectrum MND, Other Neurological Diseases': 'ALS Spectrum MND, Other Neurological Disorders',
-    'Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
+    "Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis": 'ALS/FTLD Spectrum',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'ALS/FTLD Spectrum',
     'FTLD-TDP, Cerebrovascular disease': 'ALS/FTLD Spectrum',
     'FTD, TDP43 subtype': 'ALS/FTLD Spectrum',
@@ -159,9 +159,9 @@ SUBJECT_GROUP_REMAP = {
     'FTLD with tau positive inclusions': 'ALS/FTLD Spectrum',
     'Non Neurological Control': 'Non-Neurological Control'
 }
-
+ 
 FTD_REMAP = {
-    'Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
+    "Alzheimer's Disease, Definite: CERAD criteria,FTLD-MND/MNI,Amyotrophic Lateral Sclerosis": 'Yes',
     'FTLD-MND/MNI,Amyotrophic Lateral Sclerosis': 'Yes',
     'FTLD-TDP, Cerebrovascular disease': 'Yes',
     'FTD, TDP43 subtype': 'Yes',
