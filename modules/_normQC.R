@@ -34,6 +34,12 @@ message(paste("Output File:", outputfile))
 
 # Load expression matrix
 tpm <- read.table(TPMfile, header=T, check.names=F, row.names=1, sep="\t")
+
+# --- REMOVE PROBLEMATIC SUBJECT SAMPLES ---
+exclude_samples <- c("CGND-HRA-03028", "CGND-HRA-03029", "CGND-HRA-03030", 
+                     "CGND-HRA-03031", "CGND-HRA-03032", "CGND-HRA-03033")
+tpm <- tpm[, !colnames(tpm) %in% exclude_samples]
+
 message(paste("# Data dimensions:", nrow(tpm), "genes x", ncol(tpm), "samples"))
 
 # --- Metadata Alignment ---
