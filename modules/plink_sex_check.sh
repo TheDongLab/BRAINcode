@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=TargetALS_Final_Full_Pipeline
+#SBATCH --job-name=TargetALS_Final_Full_Fix
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=128G
 #SBATCH --time=06:00:00
@@ -15,7 +15,6 @@ TEMP_PREFIX="${OUT_DIR}/tmp_p19_process"
 
 # Load modules
 module load PLINK/1.90-beta6.10
-module load bcftools/1.17
 
 mkdir -p ${OUT_DIR}
 
@@ -24,7 +23,7 @@ echo "STARTING FULL WORKFLOW: $(date)"
 # ---------------------------------------------------------
 # STEP 1: CONVERT VCF TO BINARY (Handle chrX specifically)
 # ---------------------------------------------------------
-echo "Step 1: Converting VCF to PLINK binary and splitting PAR..."
+echo "Step 1: Converting VCF to PLINK binary..."
 plink --vcf ${VCF_IN} \
       --make-bed \
       --split-x hg38 no-fail \
@@ -32,7 +31,7 @@ plink --vcf ${VCF_IN} \
       --out ${TEMP_PREFIX}
 
 # ---------------------------------------------------------
-# STEP 2: SEX AUDIT (Determine who is who genetically)
+# STEP 2: SEX AUDIT
 # ---------------------------------------------------------
 echo "Step 2: Running genetic sex check..."
 plink --bfile ${TEMP_PREFIX} \
@@ -41,45 +40,47 @@ plink --bfile ${TEMP_PREFIX} \
       --out ${OUT_DIR}/final_audit
 
 # ---------------------------------------------------------
-# STEP 3: FILTER SAMPLES (Remove the 68 Ambiguous Samples)
+# STEP 3: FILTER SAMPLES
 # ---------------------------------------------------------
-echo "Step 3: Creating clean exclusion/inclusion lists..."
-
-# Extract IDs based on SNPSEX (Column 4 of .sexcheck)
-# SNPSEX 1 = Male, 2 = Female, 0 = Ambiguous
+echo "Step 3: Creating clean inclusion lists..."
+# SNPSEX 1 = Male, 2 = Female
 awk '$4 == 1 {print $1, $2}' ${OUT_DIR}/final_audit.sexcheck > ${OUT_DIR}/ids_male_clean.txt
 awk '$4 == 2 {print $1, $2}' ${OUT_DIR}/final_audit.sexcheck > ${OUT_DIR}/ids_female_clean.txt
 
-# Count the results for the log
 M_COUNT=$(wc -l < ${OUT_DIR}/ids_male_clean.txt)
 F_COUNT=$(wc -l < ${OUT_DIR}/ids_female_clean.txt)
-echo "Found ${M_COUNT} clear males and ${F_COUNT} clear females."
+echo "Identified ${M_COUNT} clear males and ${F_COUNT} clear females."
 
 # ---------------------------------------------------------
-# STEP 4: EXPORT FINAL CLEAN VCFS (Stratified by Sex)
+# STEP 4: EXPORT FINAL CLEAN VCFS (Added --allow-extra-chr)
 # ---------------------------------------------------------
-echo "Step 4: Exporting final VCFs for TOPMed upload..."
+echo "Step 4: Exporting final VCFs..."
 
-# Clean Males ChrX
+# Export Clean Males
 plink --bfile ${TEMP_PREFIX} \
       --keep ${OUT_DIR}/ids_male_clean.txt \
       --chr X \
       --recode vcf bgz \
+      --allow-extra-chr \
       --out ${OUT_DIR}/TargetALS_chrX_CLEAN_MALES
 
-# Clean Females ChrX
+# Export Clean Females
 plink --bfile ${TEMP_PREFIX} \
       --keep ${OUT_DIR}/ids_female_clean.txt \
       --chr X \
       --recode vcf bgz \
+      --allow-extra-chr \
       --out ${OUT_DIR}/TargetALS_chrX_CLEAN_FEMALES
 
 # ---------------------------------------------------------
-# STEP 5: CLEAN UP INTERMEDIATE FILES
+# STEP 5: VERIFICATION & CLEANUP
 # ---------------------------------------------------------
-echo "Step 5: Cleaning up temp binary files..."
-rm ${TEMP_PREFIX}.bed ${TEMP_PREFIX}.bim ${TEMP_PREFIX}.fam ${TEMP_PREFIX}.log ${TEMP_PREFIX}.nosex
-
 echo "WORKFLOW COMPLETE: $(date)"
-echo "Files ready for upload in ${OUT_DIR}:"
-ls -lh ${OUT_DIR}/TargetALS_chrX_CLEAN_*.vcf.gz
+if [[ -f "${OUT_DIR}/TargetALS_chrX_CLEAN_MALES.vcf.gz" && -f "${OUT_DIR}/TargetALS_chrX_CLEAN_FEMALES.vcf.gz" ]]; then
+    echo "Success! VCFs generated."
+    ls -lh ${OUT_DIR}/TargetALS_chrX_CLEAN_*.vcf.gz
+    # rm ${TEMP_PREFIX}.* # Uncomment once you've verified the VCFs
+else
+    echo "ERROR: VCF generation failed."
+    exit 1
+fi
