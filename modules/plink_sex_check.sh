@@ -15,16 +15,25 @@ FAM_FILE="/home/zw529/donglab/data/target_ALS/QTL/diagnostics/perfect_match.fam"
 OUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/diagnostics"
 
 # ---------------------------------------------------------
-# STEP 1: PLINK 1.9 - The "Legacy" Tests
+# STEP 1: PLINK 1.9 - The "Legacy" & Boss's Requirements
 # ---------------------------------------------------------
 echo "Running PLINK 1.9 Comprehensive Audit..."
-module load PLINK/1.9b_7.11-x86_64  || echo "P1.9 Load Failed"
+module load PLINK/1.90-beta6.10 || echo "P1.9 Load Failed"
 
-# We chain these with '|| true' so one failure doesn't kill the batch
-plink --vcf ${VCF_IN} --make-bed --split-x hg38 no-fail --out ${OUT_DIR}/p19_temp || true
+# Added --allow-extra-chr to prevent crash on random contigs
+plink --vcf ${VCF_IN} \
+      --make-bed \
+      --split-x hg38 no-fail \
+      --allow-extra-chr \
+      --out ${OUT_DIR}/p19_temp || true
 
-# Apply HH fix and run full diagnostics
-plink --bfile ${OUT_DIR}/p19_temp --chr X --set-hh-missing --make-bed --out ${OUT_DIR}/p19_chrX_clean || true
+# Apply Boss's HH fix and run full diagnostics
+plink --bfile ${OUT_DIR}/p19_temp \
+      --chr X \
+      --set-hh-missing \
+      --make-bed \
+      --allow-extra-chr \
+      --out ${OUT_DIR}/p19_chrX_clean || true
 
 # Full Suite: Sex Check, Missingness, Freq, Heterozygosity, and HWE
 plink --bfile ${OUT_DIR}/p19_chrX_clean \
@@ -33,6 +42,7 @@ plink --bfile ${OUT_DIR}/p19_chrX_clean \
       --freq \
       --het \
       --hardy \
+      --allow-extra-chr \
       --out ${OUT_DIR}/p19_full_audit || echo "P1.9 Diagnostics encountered an error"
 
 # ---------------------------------------------------------
@@ -41,7 +51,7 @@ plink --bfile ${OUT_DIR}/p19_chrX_clean \
 echo "Running PLINK 2.0 Comprehensive Audit..."
 module load PLINK2/avx2_20250707 || echo "P2.0 Load Failed"
 
-# PLINK 2 diagnostics are much faster and handle VCF metadata better
+# Added --allow-extra-chr and removed the bare --sample-diff flag
 plink2 --vcf ${VCF_IN} \
        --psam ${PSAM} \
        --split-par hg38 \
@@ -50,7 +60,7 @@ plink2 --vcf ${VCF_IN} \
        --freq \
        --het \
        --hardy \
-       --sample-diff \
+       --allow-extra-chr \
        --out ${OUT_DIR}/p20_full_audit || echo "P2.0 Diagnostics encountered an error"
 
 # ---------------------------------------------------------
