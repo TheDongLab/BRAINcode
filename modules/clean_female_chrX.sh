@@ -3,74 +3,101 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=clean_chrX_topmed.out
-#SBATCH --error=clean_chrX_topmed.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/diagnostics/clean_chrX_topmed.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/diagnostics/clean_chrX_topmed.err
 
 set -euo pipefail
+
+############################################
+# MODULES
+############################################
+
+module purge
+module load BCFtools/1.21
+module load PLINK/1.9b_7.11-x86_64
 
 ############################################
 # INPUTS
 ############################################
 
-VCF="target_ALS_chrX.vcf.gz"
-REF="reference.fa"
-PREFIX="target_ALS_chrX.TOPMed"
+VCF_IN="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
+PSAM_IN="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_autosomes_filtered.psam"
+REF="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/WholeGenomeFasta/genome.fa"
+OUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/diagnostics"
+USER_DATA_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
+MALES_SRC="${USER_DATA_DIR}/males.txt"
+FEMALES_SRC="${USER_DATA_DIR}/females.txt"
+PREFIX="${OUT_DIR}/target_ALS_chrX_TOPMed"
+
+mkdir -p "${OUT_DIR}"
 
 ############################################
-# LOAD MODULES
-############################################
-
-module load BCFtools
-module load htslib
-
-############################################
-# STEP 1: INITIAL SUMMARY
+# STEP 1: EXTRACT FEMALE chrX
 ############################################
 
 echo "==========================================="
-echo "INITIAL GT SUMMARY"
+echo "STEP 1: EXTRACTING FEMALE chrX"
 echo "==========================================="
 
-bcftools query -f '[%GT\n]' "$VCF" \
+bcftools view \
+-S "${FEMALES_SRC}" \
+-r chrX,X \
+"${VCF_IN}" \
+-Oz \
+-o "${PREFIX}.female.raw.vcf.gz"
+
+tabix -f -p vcf "${PREFIX}.female.raw.vcf.gz"
+
+############################################
+# STEP 2: INITIAL GT SUMMARY
+############################################
+
+echo "==========================================="
+echo "STEP 2: INITIAL GT SUMMARY"
+echo "==========================================="
+
+bcftools query \
+-f '[%GT\n]' \
+"${PREFIX}.female.raw.vcf.gz" \
 | sort \
 | uniq -c \
 > "${PREFIX}.initial_GT_summary.txt"
 
 ############################################
-# STEP 2: REMOVE SYMBOLIC / GVCF ALLELES
+# STEP 3: REMOVE SYMBOLIC / NON_REF ALLELES
 ############################################
 
 echo "==========================================="
-echo "REMOVING NON_REF AND SYMBOLIC ALLELES"
+echo "STEP 3: REMOVING SYMBOLIC/NON_REF"
 echo "==========================================="
 
 bcftools view \
 -e 'ALT="<NON_REF>" || ALT="*" || ALT~"<"' \
-"$VCF" \
+"${PREFIX}.female.raw.vcf.gz" \
 -Ou \
 > "${PREFIX}.step1.bcf"
 
 ############################################
-# STEP 3: SPLIT MULTIALLELICS
+# STEP 4: SPLIT MULTIALLELICS
 ############################################
 
 echo "==========================================="
-echo "NORMALIZING MULTIALLELICS"
+echo "STEP 4: SPLITTING MULTIALLELICS"
 echo "==========================================="
 
 bcftools norm \
--f "$REF" \
+-f "${REF}" \
 -m -any \
 "${PREFIX}.step1.bcf" \
 -Ou \
 > "${PREFIX}.step2.bcf"
 
 ############################################
-# STEP 4: KEEP ONLY BIALLELIC VARIANTS
+# STEP 5: KEEP ONLY BIALLELIC SNP/INDEL
 ############################################
 
 echo "==========================================="
-echo "KEEPING ONLY BIALLELIC SNPs/INDELs"
+echo "STEP 5: KEEPING BIALLELIC SNP/INDEL"
 echo "==========================================="
 
 bcftools view \
@@ -82,11 +109,11 @@ bcftools view \
 > "${PREFIX}.step3.bcf"
 
 ############################################
-# STEP 5: REMOVE MONOMORPHIC SITES
+# STEP 6: REMOVE MONOMORPHIC SITES
 ############################################
 
 echo "==========================================="
-echo "REMOVING MONOMORPHIC SITES"
+echo "STEP 6: REMOVING MONOMORPHIC SITES"
 echo "==========================================="
 
 bcftools view \
@@ -96,51 +123,54 @@ bcftools view \
 > "${PREFIX}.step4.bcf"
 
 ############################################
-# STEP 6: FORCE DIPLOID MISSINGNESS
+# STEP 7: CONVERT '.' TO './.'
 ############################################
 
 echo "==========================================="
-echo "FIXING MISSING GT REPRESENTATION"
+echo "STEP 7: FIXING MISSING GT"
 echo "==========================================="
 
 bcftools +setGT \
 "${PREFIX}.step4.bcf" \
+-Ou \
 -- \
 -n "./." \
 -i 'GT="."' \
--Ou \
 > "${PREFIX}.step5.bcf"
 
 ############################################
-# STEP 7: REMOVE PHASING
+# STEP 8: REMOVE PHASING
 ############################################
 
 echo "==========================================="
-echo "CONVERTING PHASED TO UNPHASED"
+echo "STEP 8: REMOVING PHASING"
 echo "==========================================="
 
-bcftools query -l "${PREFIX}.step5.bcf" > samples.txt
+bcftools query \
+-l \
+"${PREFIX}.step5.bcf" \
+> "${PREFIX}.samples.txt"
 
 bcftools reheader \
--s samples.txt \
+-s "${PREFIX}.samples.txt" \
 "${PREFIX}.step5.bcf" \
 -Ou \
 | bcftools annotate \
 -x FORMAT/PGT,FORMAT/PID \
 -Ou \
 | bcftools +setGT \
+-Ou \
 -- \
 -t q \
 -n u \
--Ou \
 > "${PREFIX}.step6.bcf"
 
 ############################################
-# STEP 8: WRITE FINAL VCF
+# STEP 9: WRITE FINAL VCF
 ############################################
 
 echo "==========================================="
-echo "WRITING FINAL VCF"
+echo "STEP 9: WRITING FINAL VCF"
 echo "==========================================="
 
 bcftools view \
@@ -151,23 +181,31 @@ bcftools view \
 tabix -f -p vcf "${PREFIX}.cleaned.vcf.gz"
 
 ############################################
-# STEP 9: FINAL VALIDATION
+# STEP 10: FINAL GT SUMMARY
 ############################################
 
 echo "==========================================="
-echo "FINAL GT SUMMARY"
+echo "STEP 10: FINAL GT SUMMARY"
 echo "==========================================="
 
-bcftools query -f '[%GT\n]' "${PREFIX}.cleaned.vcf.gz" \
+bcftools query \
+-f '[%GT\n]' \
+"${PREFIX}.cleaned.vcf.gz" \
 | sort \
 | uniq -c \
 > "${PREFIX}.final_GT_summary.txt"
 
+############################################
+# STEP 11: BAD GT CHECK
+############################################
+
 echo "==========================================="
-echo "CHECKING FOR BAD GT TOKENS"
+echo "STEP 11: BAD GT CHECK"
 echo "==========================================="
 
-bcftools query -f '[%SAMPLE\t%GT\n]' "${PREFIX}.cleaned.vcf.gz" \
+bcftools query \
+-f '[%SAMPLE\t%GT\n]' \
+"${PREFIX}.cleaned.vcf.gz" \
 | awk '
 $2 != "." &&
 $2 != "./." &&
@@ -176,8 +214,12 @@ $2 !~ /^[0-9]+\/[0-9]+$/ {
 }' \
 > "${PREFIX}.bad_GT_tokens.txt"
 
+############################################
+# STEP 12: COLUMN CONSISTENCY CHECK
+############################################
+
 echo "==========================================="
-echo "CHECKING COLUMN CONSISTENCY"
+echo "STEP 12: COLUMN CONSISTENCY CHECK"
 echo "==========================================="
 
 zcat "${PREFIX}.cleaned.vcf.gz" \
@@ -192,9 +234,38 @@ BEGIN{FS="\t"}
 }' \
 > "${PREFIX}.bad_lines.txt"
 
+############################################
+# STEP 13: CHECK FOR REMAINING SYMBOLIC ALLELES
+############################################
+
+echo "==========================================="
+echo "STEP 13: SYMBOLIC ALLELE CHECK"
+echo "==========================================="
+
+bcftools view \
+-H \
+"${PREFIX}.cleaned.vcf.gz" \
+| awk '
+$5 ~ /</ || $5 == "*" {
+    print
+}' \
+> "${PREFIX}.remaining_symbolic_alleles.txt"
+
+############################################
+# STEP 14: FINAL SUMMARY
+############################################
+
 echo "==========================================="
 echo "DONE"
 echo "==========================================="
 
-echo "Final VCF:"
+echo "FINAL FILE:"
 echo "${PREFIX}.cleaned.vcf.gz"
+
+echo ""
+echo "VALIDATION FILES:"
+echo "${PREFIX}.initial_GT_summary.txt"
+echo "${PREFIX}.final_GT_summary.txt"
+echo "${PREFIX}.bad_GT_tokens.txt"
+echo "${PREFIX}.bad_lines.txt"
+echo "${PREFIX}.remaining_symbolic_alleles.txt"
