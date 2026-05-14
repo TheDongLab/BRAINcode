@@ -43,23 +43,35 @@ sig_thresh_fdr <- fdr_cutoff
 message(paste("## FDR threshold set to:", sig_thresh_fdr))
 message(paste("## SNPs with FDR <", sig_thresh_fdr, "will be colored red/blue"))
 
-message("## Processing SNP coordinates...")
-snp_plot[, chr_num := as.integer(gsub("chr", "", as.character(chr)))]
-lead_plot[, chr_num := as.integer(gsub("chr", "", as.character(chr)))]
+message("## Processing SNP coordinates (1-22 + X)...")
 
-snp_plot <- snp_plot[!is.na(chr_num)]
-lead_plot <- lead_plot[!is.na(chr_num)]
+# 1. Standardize 'chr' by removing prefix and mapping X to 23
+prepare_coords <- function(df) {
+    df[, chr_name := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
+    df[chr_name == "X" | chr_name == "x", chr_name := "23"]
+    df[, chr_num := as.integer(chr_name)]
+    return(df[!is.na(chr_num)]) # Drops Y, M, or parsing errors
+}
 
+snp_plot  <- prepare_coords(snp_plot)
+lead_plot <- prepare_coords(lead_plot)
+
+# 2. Calculate cumulative positions
 chr_info <- snp_plot[, .(chr_len = max(as.numeric(pos))), by = chr_num][order(chr_num)]
 chr_info[, tot := shift(cumsum(as.numeric(chr_len)), fill = 0)]
 
 setkey(snp_plot, chr_num); setkey(lead_plot, chr_num); setkey(chr_info, chr_num)
 
-snp_plot <- chr_info[snp_plot]
+snp_plot  <- chr_info[snp_plot]
 snp_plot[, cum_pos := pos + tot]
 
 lead_plot <- chr_info[lead_plot]
 lead_plot[, cum_pos := pos + tot]
+
+# 3. Create axis labels (mapping 23 back to X)
+snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
+snp_axis[, label := as.character(chr_num)]
+snp_axis[label == "23", label := "X"]
 
 message("## Assigning colors based on significance and beta direction...")
 
