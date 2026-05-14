@@ -427,7 +427,6 @@ plink \
 --vcf "${SEX_PREFIX}.cleaned.vcf.gz" \
 --double-id \
 --allow-extra-chr \
---set-missing-var-ids @:# \
 --make-bed \
 --out "${SEX_PREFIX}.plink_test"
 
