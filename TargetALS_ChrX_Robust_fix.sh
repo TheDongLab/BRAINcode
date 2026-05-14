@@ -8,167 +8,455 @@
 
 set -euo pipefail
 
+############################################
+# MODULES
+############################################
+
 module purge
 module load BCFtools/1.21
 module load HTSlib/1.21
-module load PLINK/1.9b_7.11-x86_64
+module load PLINK/1.9b_7.11-x86_64 
+
+############################################
+# INPUTS
+############################################
 
 VCF_IN="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
 REF="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/WholeGenomeFasta/genome.fa"
 OUT_DIR="/home/zw529/donglab/data/target_ALS/QTL/diagnostics"
 USER_DATA_DIR="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs"
-
 FEMALES_SRC="${USER_DATA_DIR}/females.txt"
 MALES_SRC="${USER_DATA_DIR}/males.txt"
-
-PAR="chrX:10001-2781479,chrX:155701383-156030895"
+PREFIX="${OUT_DIR}/target_ALS_chrX_TOPMed"
 
 mkdir -p "${OUT_DIR}"
 
-process_group () {
+############################################
+# PROCESS FEMALES AND MALES
+############################################
 
-    GROUP="$1"
-    SAMPLE_LIST="$2"
-    PREFIX="$3"
+for SEX in females males; do
+  
+  if [ "${SEX}" == "females" ]; then
+    SAMPLE_SRC="${FEMALES_SRC}"
+    SEX_PREFIX="${PREFIX}.female"
+  else
+    SAMPLE_SRC="${MALES_SRC}"
+    SEX_PREFIX="${PREFIX}.male"
+  fi
 
-    echo "=============================="
-    echo "${GROUP}"
-    echo "=============================="
+############################################
+# STEP 1: EXTRACT ${SEX} chrX
+############################################
 
-    bcftools view \
-        -S "${SAMPLE_LIST}" \
-        -r chrX,X \
-        "${VCF_IN}" \
-        -Oz \
-        -o "${PREFIX}.raw.vcf.gz"
+echo "==========================================="
+echo "STEP 1: EXTRACT ${SEX^^} chrX"
+echo "==========================================="
 
-    tabix -f -p vcf "${PREFIX}.raw.vcf.gz"
+bcftools view \
+-S "${SAMPLE_SRC}" \
+-r chrX,X \
+"${VCF_IN}" \
+-Oz \
+-o "${SEX_PREFIX}.raw.vcf.gz"
 
-    bcftools view -H "${PREFIX}.raw.vcf.gz" | wc -l > "${PREFIX}.initial_variant_count.txt"
-    bcftools stats "${PREFIX}.raw.vcf.gz" > "${PREFIX}.initial.stats.txt"
+tabix -f -p vcf "${SEX_PREFIX}.raw.vcf.gz"
 
-    bcftools query -f '[%GT\n]' "${PREFIX}.raw.vcf.gz" | sort | uniq -c > "${PREFIX}.initial_GT_summary.txt"
+############################################
+# STEP 2: INITIAL VARIANT COUNTS
+############################################
 
-    bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' "${PREFIX}.raw.vcf.gz" \
-    | awk -v out_sym="${PREFIX}.initial_symbolic.txt" -v out_cmp="${PREFIX}.initial_complex.txt" '
-    $4 ~ /<|\\*/ {print > out_sym}
-    length($3)>1 || length($4)>1 || $4 ~ /,/ {print > out_cmp}
-    '
+echo "==========================================="
+echo "STEP 2: INITIAL VARIANT COUNTS"
+echo "==========================================="
 
-    bcftools view \
-        -e 'ALT="<NON_REF>" || ALT="*" || ALT~"<"' \
-        "${PREFIX}.raw.vcf.gz" \
-        -Ou > "${PREFIX}.step1.bcf"
+bcftools view -H "${SEX_PREFIX}.raw.vcf.gz" | wc -l \
+> "${SEX_PREFIX}.initial_variant_count.txt"
 
-    bcftools norm \
-        -f "${REF}" \
-        -m -any \
-        "${PREFIX}.step1.bcf" \
-        -Ou > "${PREFIX}.step2.bcf"
+bcftools stats "${SEX_PREFIX}.raw.vcf.gz" \
+> "${SEX_PREFIX}.initial.stats.txt"
 
-    bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' "${PREFIX}.step2.bcf" \
-    | awk -v out="${PREFIX}.post_norm_complex.txt" '
-    length($3)>1 || length($4)>1 || $4 ~ /,/ {print > out}
-    '
+############################################
+# STEP 3: INITIAL GT SUMMARY
+############################################
 
-    bcftools view \
-        -m2 -M2 -v snps,indels \
-        "${PREFIX}.step2.bcf" \
-        -Ou > "${PREFIX}.step3.bcf"
+echo "==========================================="
+echo "STEP 3: INITIAL GT SUMMARY"
+echo "==========================================="
 
-    bcftools view \
-        -i 'strlen(REF)<=50 && strlen(ALT)<=50' \
-        "${PREFIX}.step3.bcf" \
-        -Ou > "${PREFIX}.step4.bcf"
+bcftools query \
+-f '[%GT\n]' \
+"${SEX_PREFIX}.raw.vcf.gz" \
+| sort \
+| uniq -c \
+> "${SEX_PREFIX}.initial_GT_summary.txt"
 
-    bcftools view \
-        -c 1:minor \
-        "${PREFIX}.step4.bcf" \
-        -Ou > "${PREFIX}.step5.bcf"
+############################################
+# STEP 4: CHECK ORIGINAL ALT TYPES
+############################################
 
-    bcftools +setGT \
-        "${PREFIX}.step5.bcf" \
-        -Ou -- \
-        -t q -n "./." -i 'GT="."' \
-        > "${PREFIX}.step6.bcf"
+echo "==========================================="
+echo "STEP 4: ORIGINAL ALT TYPE CHECK"
+echo "==========================================="
 
-    bcftools annotate \
-        -x FORMAT/PID,FORMAT/PGT,FORMAT/PS \
-        "${PREFIX}.step6.bcf" \
-        -Ou > "${PREFIX}.step7.bcf"
-
-    bcftools view "${PREFIX}.step7.bcf" \
-    | awk -v par="${PAR}" '
-    function in_par(p, a, i, b, c, start, end) {
-        n = split(par, a, ",")
-        for (i=1; i<=n; i++) {
-            split(a[i], b, ":")
-            split(b[2], c, "-")
-            start=c[1]; end=c[2]
-            if (p>=start && p<=end) return 1
-        }
-        return 0
-    }
-
-    BEGIN {FS="\t"}
-
-    /^#/ {print; next}
-
-    {
-        pos=$2
-
-        if (in_par(pos)) {
-            for (i=10; i<=NF; i++) {
-                gsub(/\|/, "/", $i)
-            }
-        } else {
-            for (i=10; i<=NF; i++) {
-                if ($i ~ /^[0-9][\/|][0-9]/) {
-                    split($i, a, /[\/|]/)
-                    $i=a[1]
-                }
-            }
-        }
-        print
-    }' \
-    | bcftools view -Ob -o "${PREFIX}.step8.bcf"
-
-    bcftools view "${PREFIX}.step8.bcf" -Oz -o "${PREFIX}.cleaned.vcf.gz"
-    tabix -f -p vcf "${PREFIX}.cleaned.vcf.gz"
-
-    bcftools query -f '[%GT\n]' "${PREFIX}.cleaned.vcf.gz" | sort | uniq -c > "${PREFIX}.final_GT_summary.txt"
-    bcftools view -H "${PREFIX}.cleaned.vcf.gz" | wc -l > "${PREFIX}.final_variant_count.txt"
-    bcftools stats "${PREFIX}.cleaned.vcf.gz" > "${PREFIX}.final.stats.txt"
-
-    bcftools query -f '[%SAMPLE\t%GT\n]' "${PREFIX}.cleaned.vcf.gz" \
-    | awk '$2!="." && $2!="./." && $2!~/^[0-9]+\/[0-9]+$/' \
-    > "${PREFIX}.bad_GT_tokens.txt"
-
-    zcat "${PREFIX}.cleaned.vcf.gz" | awk '
-    BEGIN{FS="\t"}
-    /^#CHROM/{n=NF; next}
-    !/^#/ && NF!=n{print "BAD",NR,NF,n,$1,$2}
-    ' > "${PREFIX}.bad_lines.txt"
-
-    bcftools view -H "${PREFIX}.cleaned.vcf.gz" \
-    | awk '$5 ~ /<|\\*/' > "${PREFIX}.remaining_symbolic.txt"
-
-    bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' "${PREFIX}.cleaned.vcf.gz" \
-    | awk 'length($3)>50 || length($4)>50' > "${PREFIX}.remaining_large_indels.txt"
-
-    bcftools query -f '%CHROM\t%POS\t%ALT\n' "${PREFIX}.cleaned.vcf.gz" \
-    | awk '$3 ~ /,/' > "${PREFIX}.remaining_multiallelic.txt"
-
-    plink \
-        --vcf "${PREFIX}.cleaned.vcf.gz" \
-        --double-id \
-        --allow-extra-chr \
-        --set-missing-var-ids @:# \
-        --make-bed \
-        --out "${PREFIX}.plink_test"
-
-    echo "${PREFIX}.cleaned.vcf.gz"
+bcftools query \
+-f '%CHROM\t%POS\t%REF\t%ALT\n' \
+"${SEX_PREFIX}.raw.vcf.gz" \
+| awk '
+$4 ~ /</ || $4 == "*" {
+    print > "'"${SEX_PREFIX}.original_symbolic_alleles.txt"'"
 }
 
-process_group "FEMALE" "${FEMALES_SRC}" "${OUT_DIR}/target_ALS_chrX_TOPMed_female"
-process_group "MALE" "${MALES_SRC}" "${OUT_DIR}/target_ALS_chrX_TOPMed_male"
+length($3)>1 || length($4)>1 || $4 ~ /,/ {
+    print > "'"${SEX_PREFIX}.original_indels_multiallelics.txt"'"
+}
+'
+
+############################################
+# STEP 5: REMOVE SYMBOLIC / NON_REF ALLELES
+############################################
+
+echo "==========================================="
+echo "STEP 5: REMOVE SYMBOLIC/NON_REF"
+echo "==========================================="
+
+bcftools view \
+-e 'ALT="<NON_REF>" || ALT="*" || ALT~"<"' \
+"${SEX_PREFIX}.raw.vcf.gz" \
+-Ou \
+> "${SEX_PREFIX}.step1.bcf"
+
+############################################
+# STEP 6: SPLIT MULTIALLELICS + LEFT NORMALIZE
+############################################
+
+echo "==========================================="
+echo "STEP 6: SPLIT MULTIALLELICS"
+echo "==========================================="
+
+bcftools norm \
+-f "${REF}" \
+-m -any \
+"${SEX_PREFIX}.step1.bcf" \
+-Ou \
+> "${SEX_PREFIX}.step2.bcf"
+
+############################################
+# STEP 7: POST-NORM DIAGNOSTICS
+############################################
+
+echo "==========================================="
+echo "STEP 7: POST-NORM DIAGNOSTICS"
+echo "==========================================="
+
+bcftools query \
+-f '%CHROM\t%POS\t%REF\t%ALT\n' \
+"${SEX_PREFIX}.step2.bcf" \
+| awk '
+length($3)>1 || length($4)>1 || $4 ~ /,/ {
+    print
+}
+' \
+> "${SEX_PREFIX}.post_norm_complex_variants.txt"
+
+############################################
+# STEP 8: KEEP ONLY BIALLELIC SNP/INDEL
+############################################
+
+echo "==========================================="
+echo "STEP 8: KEEP BIALLELIC SNP/INDEL"
+echo "==========================================="
+
+bcftools view \
+-m2 \
+-M2 \
+-v snps,indels \
+"${SEX_PREFIX}.step2.bcf" \
+-Ou \
+> "${SEX_PREFIX}.step3.bcf"
+
+############################################
+# STEP 9: REMOVE VERY LARGE INDELS
+############################################
+
+echo "==========================================="
+echo "STEP 9: REMOVE LARGE INDELS"
+echo "==========================================="
+
+bcftools view \
+-i 'strlen(REF)<=50 && strlen(ALT)<=50' \
+"${SEX_PREFIX}.step3.bcf" \
+-Ou \
+> "${SEX_PREFIX}.step4.bcf"
+
+############################################
+# STEP 10: REMOVE MONOMORPHIC SITES
+############################################
+
+echo "==========================================="
+echo "STEP 10: REMOVE MONOMORPHIC"
+echo "==========================================="
+
+bcftools view \
+-c 1:minor \
+"${SEX_PREFIX}.step4.bcf" \
+-Ou \
+> "${SEX_PREFIX}.step5.bcf"
+
+############################################
+# STEP 11: MALE HAPLOID VALIDATION (nonPAR)
+############################################
+
+if [ "${SEX}" == "males" ]; then
+
+echo "==========================================="
+echo "STEP 11: MALE HAPLOID VALIDATION (nonPAR)"
+echo "==========================================="
+
+bcftools query \
+-f '%CHROM\t%POS\t[%SAMPLE\t%GT\n]' \
+"${SEX_PREFIX}.step5.bcf" \
+| awk '
+($1 == "X" || $1 == "chrX") &&
+(($2 >= 2781480 && $2 <= 155701382) || ($2 >= 57217416)) {
+    if ($3 !~ /^[0-9]$/ && $3 !~ /^\./ && $3 != "./." && $3 != ".") {
+        print
+    }
+}
+' \
+> "${SEX_PREFIX}.nonPAR_diploid_errors.txt"
+
+fi
+
+############################################
+# STEP 12: FIX MISSING GT TOKENS
+############################################
+
+echo "==========================================="
+echo "STEP 12: FIX MISSING GT"
+echo "==========================================="
+
+bcftools +setGT \
+"${SEX_PREFIX}.step5.bcf" \
+-Ou \
+-- \
+-t q \
+-n "./." \
+-i 'GT="."' \
+> "${SEX_PREFIX}.step6.bcf"
+
+############################################
+# STEP 13: REMOVE PHASING TAGS
+############################################
+
+echo "==========================================="
+echo "STEP 13: REMOVE PHASING"
+echo "==========================================="
+
+bcftools annotate \
+-x FORMAT/PID,FORMAT/PGT \
+"${SEX_PREFIX}.step6.bcf" \
+-Ou \
+> "${SEX_PREFIX}.step7.bcf"
+
+############################################
+# STEP 14: CONVERT PHASED GT TO UNPHASED
+############################################
+
+echo "==========================================="
+echo "STEP 14: UNPHASE GT"
+echo "==========================================="
+
+bcftools view \
+"${SEX_PREFIX}.step7.bcf" \
+| sed 's/|/\//g' \
+| bcftools view \
+-Ou \
+> "${SEX_PREFIX}.step8.bcf"
+
+############################################
+# STEP 15: FINAL VCF
+############################################
+
+echo "==========================================="
+echo "STEP 15: WRITE FINAL VCF"
+echo "==========================================="
+
+bcftools view \
+"${SEX_PREFIX}.step8.bcf" \
+-Oz \
+-o "${SEX_PREFIX}.cleaned.vcf.gz"
+
+tabix -f -p vcf "${SEX_PREFIX}.cleaned.vcf.gz"
+
+############################################
+# STEP 16: FINAL GT SUMMARY
+############################################
+
+echo "==========================================="
+echo "STEP 16: FINAL GT SUMMARY"
+echo "==========================================="
+
+bcftools query \
+-f '[%GT\n]' \
+"${SEX_PREFIX}.cleaned.vcf.gz" \
+| sort \
+| uniq -c \
+> "${SEX_PREFIX}.final_GT_summary.txt"
+
+############################################
+# STEP 17: FINAL VARIANT COUNTS
+############################################
+
+echo "==========================================="
+echo "STEP 17: FINAL VARIANT COUNTS"
+echo "==========================================="
+
+bcftools view -H "${SEX_PREFIX}.cleaned.vcf.gz" | wc -l \
+> "${SEX_PREFIX}.final_variant_count.txt"
+
+bcftools stats "${SEX_PREFIX}.cleaned.vcf.gz" \
+> "${SEX_PREFIX}.final.stats.txt"
+
+############################################
+# STEP 18: BAD GT CHECK
+############################################
+
+echo "==========================================="
+echo "STEP 18: BAD GT CHECK"
+echo "==========================================="
+
+bcftools query \
+-f '[%SAMPLE\t%GT\n]' \
+"${SEX_PREFIX}.cleaned.vcf.gz" \
+| awk '
+$2 != "." &&
+$2 != "./." &&
+$2 !~ /^[0-9]+\/[0-9]+$/ {
+    print
+}
+' \
+> "${SEX_PREFIX}.bad_GT_tokens.txt"
+
+############################################
+# STEP 19: COLUMN CONSISTENCY CHECK
+############################################
+
+echo "==========================================="
+echo "STEP 19: COLUMN CONSISTENCY CHECK"
+echo "==========================================="
+
+zcat "${SEX_PREFIX}.cleaned.vcf.gz" \
+| awk '
+BEGIN{FS="\t"}
+
+/^#CHROM/{
+    expected=NF
+    next
+}
+
+!/^#/ && NF!=expected{
+    print "BAD_LINE", NR, NF, expected, $1, $2
+}
+' \
+> "${SEX_PREFIX}.bad_lines.txt"
+
+############################################
+# STEP 20: SYMBOLIC ALLELE CHECK
+############################################
+
+echo "==========================================="
+echo "STEP 20: SYMBOLIC ALLELE CHECK"
+echo "==========================================="
+
+bcftools view \
+-H \
+"${SEX_PREFIX}.cleaned.vcf.gz" \
+| awk '
+$5 ~ /</ || $5 == "*" {
+    print
+}
+' \
+> "${SEX_PREFIX}.remaining_symbolic_alleles.txt"
+
+############################################
+# STEP 21: LARGE INDEL CHECK
+############################################
+
+echo "==========================================="
+echo "STEP 21: LARGE INDEL CHECK"
+echo "==========================================="
+
+bcftools query \
+-f '%CHROM\t%POS\t%REF\t%ALT\n' \
+"${SEX_PREFIX}.cleaned.vcf.gz" \
+| awk '
+length($3)>50 || length($4)>50 {
+    print
+}
+' \
+> "${SEX_PREFIX}.remaining_large_indels.txt"
+
+############################################
+# STEP 22: MULTIALLELIC CHECK
+############################################
+
+echo "==========================================="
+echo "STEP 22: MULTIALLELIC CHECK"
+echo "==========================================="
+
+bcftools query \
+-f '%CHROM\t%POS\t%ALT\n' \
+"${SEX_PREFIX}.cleaned.vcf.gz" \
+| awk '
+$3 ~ /,/ {
+    print
+}
+' \
+> "${SEX_PREFIX}.remaining_multiallelic.txt"
+
+############################################
+# STEP 23: PLINK VALIDATION
+############################################
+
+echo "==========================================="
+echo "STEP 23: PLINK VALIDATION"
+echo "==========================================="
+
+plink \
+--vcf "${SEX_PREFIX}.cleaned.vcf.gz" \
+--double-id \
+--allow-extra-chr \
+--set-missing-var-ids @:# \
+--make-bed \
+--out "${SEX_PREFIX}.plink_test"
+
+############################################
+# STEP 24: FINAL SUMMARY
+############################################
+
+echo "==========================================="
+echo "DONE: ${SEX^^} chrX"
+echo "==========================================="
+
+echo ""
+echo "FINAL FILE:"
+echo "${SEX_PREFIX}.cleaned.vcf.gz"
+
+echo ""
+echo "QC FILES:"
+echo "${SEX_PREFIX}.initial_GT_summary.txt"
+echo "${SEX_PREFIX}.final_GT_summary.txt"
+echo "${SEX_PREFIX}.bad_GT_tokens.txt"
+echo "${SEX_PREFIX}.bad_lines.txt"
+echo "${SEX_PREFIX}.remaining_symbolic_alleles.txt"
+echo "${SEX_PREFIX}.remaining_large_indels.txt"
+echo "${SEX_PREFIX}.remaining_multiallelic.txt"
+echo "${SEX_PREFIX}.initial.stats.txt"
+echo "${SEX_PREFIX}.final.stats.txt"
+
+echo ""
+echo "PLINK PREFIX:"
+echo "${SEX_PREFIX}.plink_test"
+
+done
