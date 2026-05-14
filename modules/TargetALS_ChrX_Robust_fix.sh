@@ -193,6 +193,8 @@ bcftools view \
 # STEP 10: REMOVE MONOMORPHIC SITES
 ############################################
 
+if [ "${SEX}" == "females" ]; then
+
 echo "==========================================="
 echo "STEP 10: REMOVE MONOMORPHIC"
 echo "==========================================="
@@ -203,37 +205,22 @@ bcftools view \
 -Ou \
 > "${SEX_PREFIX}.step5.bcf"
 
-############################################
-# STEP 11: MALE HAPLOID VALIDATION (nonPAR)
-############################################
-
-if [ "${SEX}" == "males" ]; then
+else
 
 echo "==========================================="
-echo "STEP 11: MALE HAPLOID VALIDATION (nonPAR)"
+echo "STEP 10: SKIP MONOMORPHIC (MALES HAPLOID)"
 echo "==========================================="
 
-bcftools query \
--f '%CHROM\t%POS\t[%SAMPLE\t%GT\n]' \
-"${SEX_PREFIX}.step5.bcf" \
-| awk '
-($1 == "X" || $1 == "chrX") &&
-(($2 >= 2781480 && $2 <= 155701382) || ($2 >= 57217416)) {
-    if ($3 !~ /^[0-9]$/ && $3 !~ /^\./ && $3 != "./." && $3 != ".") {
-        print
-    }
-}
-' \
-> "${SEX_PREFIX}.nonPAR_diploid_errors.txt"
+cp "${SEX_PREFIX}.step4.bcf" "${SEX_PREFIX}.step5.bcf"
 
 fi
 
 ############################################
-# STEP 12: FIX MISSING GT TOKENS
+# STEP 11: FIX MISSING GT TOKENS
 ############################################
 
 echo "==========================================="
-echo "STEP 12: FIX MISSING GT"
+echo "STEP 11: FIX MISSING GT"
 echo "==========================================="
 
 bcftools +setGT \
@@ -246,11 +233,11 @@ bcftools +setGT \
 > "${SEX_PREFIX}.step6.bcf"
 
 ############################################
-# STEP 13: REMOVE PHASING TAGS
+# STEP 12: REMOVE PHASING TAGS
 ############################################
 
 echo "==========================================="
-echo "STEP 13: REMOVE PHASING"
+echo "STEP 12: REMOVE PHASING"
 echo "==========================================="
 
 bcftools annotate \
@@ -260,11 +247,11 @@ bcftools annotate \
 > "${SEX_PREFIX}.step7.bcf"
 
 ############################################
-# STEP 14: CONVERT PHASED GT TO UNPHASED
+# STEP 13: CONVERT PHASED GT TO UNPHASED
 ############################################
 
 echo "==========================================="
-echo "STEP 14: UNPHASE GT"
+echo "STEP 13: UNPHASE GT"
 echo "==========================================="
 
 bcftools view \
@@ -275,11 +262,11 @@ bcftools view \
 > "${SEX_PREFIX}.step8.bcf"
 
 ############################################
-# STEP 15: FINAL VCF
+# STEP 14: FINAL VCF
 ############################################
 
 echo "==========================================="
-echo "STEP 15: WRITE FINAL VCF"
+echo "STEP 14: WRITE FINAL VCF"
 echo "==========================================="
 
 bcftools view \
@@ -290,11 +277,11 @@ bcftools view \
 tabix -f -p vcf "${SEX_PREFIX}.cleaned.vcf.gz"
 
 ############################################
-# STEP 16: FINAL GT SUMMARY
+# STEP 15: FINAL GT SUMMARY
 ############################################
 
 echo "==========================================="
-echo "STEP 16: FINAL GT SUMMARY"
+echo "STEP 15: FINAL GT SUMMARY"
 echo "==========================================="
 
 bcftools query \
@@ -305,11 +292,11 @@ bcftools query \
 > "${SEX_PREFIX}.final_GT_summary.txt"
 
 ############################################
-# STEP 17: FINAL VARIANT COUNTS
+# STEP 16: FINAL VARIANT COUNTS
 ############################################
 
 echo "==========================================="
-echo "STEP 17: FINAL VARIANT COUNTS"
+echo "STEP 16: FINAL VARIANT COUNTS"
 echo "==========================================="
 
 bcftools view -H "${SEX_PREFIX}.cleaned.vcf.gz" | wc -l \
@@ -319,11 +306,11 @@ bcftools stats "${SEX_PREFIX}.cleaned.vcf.gz" \
 > "${SEX_PREFIX}.final.stats.txt"
 
 ############################################
-# STEP 18: BAD GT CHECK
+# STEP 17: BAD GT CHECK
 ############################################
 
 echo "==========================================="
-echo "STEP 18: BAD GT CHECK"
+echo "STEP 17: BAD GT CHECK"
 echo "==========================================="
 
 bcftools query \
@@ -332,18 +319,19 @@ bcftools query \
 | awk '
 $2 != "." &&
 $2 != "./." &&
-$2 !~ /^[0-9]+\/[0-9]+$/ {
+$2 !~ /^[0-9]+\/[0-9]+$/ &&
+$2 !~ /^[0-9]$/ {
     print
 }
 ' \
 > "${SEX_PREFIX}.bad_GT_tokens.txt"
 
 ############################################
-# STEP 19: COLUMN CONSISTENCY CHECK
+# STEP 18: COLUMN CONSISTENCY CHECK
 ############################################
 
 echo "==========================================="
-echo "STEP 19: COLUMN CONSISTENCY CHECK"
+echo "STEP 18: COLUMN CONSISTENCY CHECK"
 echo "==========================================="
 
 zcat "${SEX_PREFIX}.cleaned.vcf.gz" \
@@ -362,11 +350,11 @@ BEGIN{FS="\t"}
 > "${SEX_PREFIX}.bad_lines.txt"
 
 ############################################
-# STEP 20: SYMBOLIC ALLELE CHECK
+# STEP 19: SYMBOLIC ALLELE CHECK
 ############################################
 
 echo "==========================================="
-echo "STEP 20: SYMBOLIC ALLELE CHECK"
+echo "STEP 19: SYMBOLIC ALLELE CHECK"
 echo "==========================================="
 
 bcftools view \
@@ -380,11 +368,11 @@ $5 ~ /</ || $5 == "*" {
 > "${SEX_PREFIX}.remaining_symbolic_alleles.txt"
 
 ############################################
-# STEP 21: LARGE INDEL CHECK
+# STEP 20: LARGE INDEL CHECK
 ############################################
 
 echo "==========================================="
-echo "STEP 21: LARGE INDEL CHECK"
+echo "STEP 20: LARGE INDEL CHECK"
 echo "==========================================="
 
 bcftools query \
@@ -398,11 +386,11 @@ length($3)>50 || length($4)>50 {
 > "${SEX_PREFIX}.remaining_large_indels.txt"
 
 ############################################
-# STEP 22: MULTIALLELIC CHECK
+# STEP 21: MULTIALLELIC CHECK
 ############################################
 
 echo "==========================================="
-echo "STEP 22: MULTIALLELIC CHECK"
+echo "STEP 21: MULTIALLELIC CHECK"
 echo "==========================================="
 
 bcftools query \
@@ -416,11 +404,11 @@ $3 ~ /,/ {
 > "${SEX_PREFIX}.remaining_multiallelic.txt"
 
 ############################################
-# STEP 23: PLINK VALIDATION
+# STEP 22: PLINK VALIDATION
 ############################################
 
 echo "==========================================="
-echo "STEP 23: PLINK VALIDATION"
+echo "STEP 22: PLINK VALIDATION"
 echo "==========================================="
 
 plink \
@@ -431,7 +419,7 @@ plink \
 --out "${SEX_PREFIX}.plink_test"
 
 ############################################
-# STEP 24: FINAL SUMMARY
+# STEP 23: FINAL SUMMARY
 ############################################
 
 echo "==========================================="
