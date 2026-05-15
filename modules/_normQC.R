@@ -180,10 +180,10 @@ legend(
 )
 
 ###########################################
-# 3. Sex Gene tSNE
+# 3. Sex Gene PCA
 ###########################################
 
-message("Generating sex-gene tSNE plot...")
+message("Generating sex-gene PCA plot...")
 
 SEX_GENE_MAP <- c(
   "ENSG00000229807", # XIST
@@ -202,108 +202,73 @@ sex_idx <- which(clean_rows %in% SEX_GENE_MAP)
 if(length(sex_idx) >= 2) {
 
   sex_tpm <- tpm[sex_idx, , drop=FALSE]
-  log_sex_tpm <- log10(sex_tpm + 0.01)
 
-  tsne_input <- t(log_sex_tpm)
-  tsne_input <- scale(tsne_input)
+  pca_input <- t(log10(sex_tpm + 0.01))
+  pca_input <- scale(pca_input)
 
-  keep <- apply(tsne_input, 2, sd, na.rm=TRUE) > 0
-  tsne_input <- tsne_input[, keep, drop=FALSE]
+  keep <- apply(pca_input, 2, sd, na.rm=TRUE) > 0
+  pca_input <- pca_input[, keep, drop=FALSE]
 
-  tsne_input <- tsne_input[complete.cases(tsne_input), , drop=FALSE]
+  pca_input <- pca_input[complete.cases(pca_input), , drop=FALSE]
 
-  dup_mask <- duplicated(tsne_input)
+  pca_samples <- rownames(pca_input)
+  sex_pca <- sex[match(pca_samples, colnames(tpm))]
 
-  if(any(dup_mask)) {
-    message(paste("Removing", sum(dup_mask), "duplicate samples before tSNE"))
-    tsne_input <- tsne_input[!dup_mask, , drop=FALSE]
-  }
+  pca_res <- prcomp(pca_input, center=TRUE, scale.=TRUE)
 
-  tsne_samples <- rownames(tsne_input)
-  sex_tsne <- sex[match(tsne_samples, colnames(tpm))]
+  pc1 <- pca_res$x[,1]
+  pc2 <- pca_res$x[,2]
 
-  n_samples <- nrow(tsne_input)
-  perplexity <- min(30, floor((n_samples - 1) / 3))
+  male_idx <- which(sex_pca == "Male")
+  female_idx <- which(sex_pca == "Female")
 
-  if(perplexity < 2) perplexity <- 2
+  male_center <- c(mean(pc1[male_idx], na.rm=TRUE),
+                   mean(pc2[male_idx], na.rm=TRUE))
 
-  set.seed(1234)
-
-  tsne_res <- Rtsne(
-    tsne_input,
-    dims=2,
-    perplexity=perplexity,
-    max_iter=2000,
-    verbose=FALSE,
-    check_duplicates=FALSE
-  )
-
-  male_idx <- which(sex_tsne == "Male")
-  female_idx <- which(sex_tsne == "Female")
-
-  male_center <- colMeans(tsne_res$Y[male_idx, , drop=FALSE], na.rm=TRUE)
-  female_center <- colMeans(tsne_res$Y[female_idx, , drop=FALSE], na.rm=TRUE)
-
-  male_dists <- apply(
-    tsne_res$Y[male_idx, , drop=FALSE],
-    1,
-    function(x) sqrt(sum((x - male_center)^2))
-  )
-
-  female_dists <- apply(
-    tsne_res$Y[female_idx, , drop=FALSE],
-    1,
-    function(x) sqrt(sum((x - female_center)^2))
-  )
-
-  male_thresh <- median(male_dists, na.rm=TRUE) + 3 * mad(male_dists, na.rm=TRUE)
-  female_thresh <- median(female_dists, na.rm=TRUE) + 3 * mad(female_dists, na.rm=TRUE)
+  female_center <- c(mean(pc1[female_idx], na.rm=TRUE),
+                     mean(pc2[female_idx], na.rm=TRUE))
 
   flagged <- c()
 
-  for(i in seq_len(nrow(tsne_res$Y))) {
+  for(i in seq_along(pc1)) {
 
-    if(is.na(sex_tsne[i])) next
+    if(is.na(sex_pca[i])) next
 
-    pt <- tsne_res$Y[i, ]
+    pt <- c(pc1[i], pc2[i])
 
     d_male <- sqrt(sum((pt - male_center)^2))
     d_female <- sqrt(sum((pt - female_center)^2))
 
-    if(
-      sex_tsne[i] == "Male" &&
-      (
-        d_female < d_male ||
-        d_male > male_thresh
-      )
-    ) {
+    if(sex_pca[i] == "Male" && d_female < d_male) {
       flagged <- c(flagged, i)
     }
 
-    if(
-      sex_tsne[i] == "Female" &&
-      (
-        d_male < d_female ||
-        d_female > female_thresh
-      )
-    ) {
+    if(sex_pca[i] == "Female" && d_male < d_female) {
       flagged <- c(flagged, i)
     }
   }
 
   flagged <- unique(flagged)
 
-  plot_cols <- ifelse(sex_tsne == "Male", "blue3", "firebrick2")
+  plot_cols <- ifelse(sex_pca == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
 
   plot(
-    tsne_res$Y[,1],
-    tsne_res$Y[,2],
+    pc1,
+    pc2,
     col=plot_cols,
     pch=19,
-    xlab="tSNE 1",
-    ylab="tSNE 2",
-    main=paste(TISSUE, "Sex Gene tSNE")
+    xlab=paste0(
+      "PC1 (",
+      round(100 * summary(pca_res)$importance[2,1], 1),
+      "%)"
+    ),
+    ylab=paste0(
+      "PC2 (",
+      round(100 * summary(pca_res)$importance[2,2], 1),
+      "%)"
+    ),
+    main=paste(TISSUE, "Sex Gene PCA")
   )
 
   grid(lty="dotted", col="gray80")
@@ -316,21 +281,21 @@ if(length(sex_idx) >= 2) {
     bty="n"
   )
 
-  points(
-    tsne_res$Y[flagged,1],
-    tsne_res$Y[flagged,2],
-    pch=1,
-    cex=2,
-    lwd=2
-  )
-
   if(length(flagged) > 0) {
 
-    flagged_samples <- tsne_samples[flagged]
+    flagged_samples <- pca_samples[flagged]
+
+    points(
+      pc1[flagged],
+      pc2[flagged],
+      pch=1,
+      cex=2,
+      lwd=2
+    )
 
     text(
-      tsne_res$Y[flagged,1],
-      tsne_res$Y[flagged,2],
+      pc1[flagged],
+      pc2[flagged],
       labels=flagged_samples,
       pos=4,
       cex=0.55
@@ -359,7 +324,7 @@ if(length(sex_idx) >= 2) {
 
 } else {
 
-  message("Warning: Fewer than 2 sex genes found. Skipping tSNE plot.")
+  message("Warning: Fewer than 2 sex genes found. Skipping PCA plot.")
 }
 
 dev.off()
