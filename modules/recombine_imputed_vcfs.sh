@@ -18,7 +18,6 @@ PASSWORD="4EDpN9tIAkPy@&6;db"   ### edit your password here
 cd $WORKDIR
 
 # --- STEP 0: DOWNLOAD FROM TOPMED SERVER ---
-# This looks for 'download_list.txt' in your current directory ($WORKDIR)
 if [ -f "download_list.txt" ]; then
     echo "Starting download of imputed chromosome zip files..."
     while read -r url; do
@@ -26,7 +25,7 @@ if [ -f "download_list.txt" ]; then
             echo "Downloading: $url"
             wget -q --show-progress "$url"
         fi
-     Dilone < download_list.txt
+    done < download_list.txt
 else
     echo "ERROR: download_list.txt not found in $WORKDIR. Skipping download step."
 fi
