@@ -9,15 +9,16 @@ if(length(args) < 1) {
   stop("Usage: Rscript _normQC.R <Tissue_Name>")
 }
 
-if(!require(ape)) install.packages('ape', repos='http://cran.us.r-project.org')
-if(!require(reshape2)) install.packages('reshape2', repos='http://cran.us.r-project.org')
-if(!require(Rtsne)) install.packages('Rtsne', repos='http://cran.us.r-project.org')
+if(!require(ape)) install.packages("ape", repos="http://cran.us.r-project.org")
+if(!require(reshape2)) install.packages("reshape2", repos="http://cran.us.r-project.org")
+if(!require(Rtsne)) install.packages("Rtsne", repos="http://cran.us.r-project.org")
 
 library(ape)
 library(reshape2)
 library(Rtsne)
 
 TISSUE <- args[1]
+
 BASE_DIR <- "~/donglab/data/target_ALS"
 TISSUE_DIR <- file.path(BASE_DIR, TISSUE, "eQTL")
 
@@ -35,7 +36,6 @@ message(paste("Output File:", outputfile))
 
 tpm <- read.table(TPMfile, header=TRUE, check.names=FALSE, row.names=1, sep="\t")
 
-# I believe these samples are mislabeled as the wrong sex (identified when performing subject-level QC) - adjust your list as needed
 exclude_samples <- c(
   "CGND-HRA-03028","CGND-HRA-03029","CGND-HRA-03030",
   "CGND-HRA-03031","CGND-HRA-03032","CGND-HRA-03033"
@@ -62,17 +62,27 @@ if(nrow(covariate) < 1) {
 }
 
 TISSUE_REMAP <- list(
-  'Motor Cortex Lateral'='Motor_Cortex','Motor Cortex Medial'='Motor_Cortex',
-  'Lateral Motor Cortex'='Motor_Cortex','Medial Motor Cortex'='Motor_Cortex',
-  'Primary Motor Cortex L'='Motor_Cortex','Primary Motor Cortex M'='Motor_Cortex',
-  'Cortex_Motor_Unspecified'='Motor_Cortex','Cortex_Motor_BA4'='Motor_Cortex',
-  'BA4 Motor Cortex'='Motor_Cortex','Lateral_motor_cortex'='Motor_Cortex',
-  'Frontal Cortex'='Frontal_Cortex','Cerebellum'='Cerebellum',
-  'Spinal_Cord_Cervical'='Cervical_Spinal_Cord','Cervical Spinal Cord'='Cervical_Spinal_Cord',
-  'Cervical_spinal_cord'='Cervical_Spinal_Cord','Spinal_cord_Cervical'='Cervical_Spinal_Cord',
-  'Lumbar Spinal Cord'='Lumbar_Spinal_Cord','Thoracic Spinal Cord'='Thoracic_Spinal_Cord',
-  'Spinal_Cord_Lumbosacral'='Lumbar_Spinal_Cord','Lumbosacral_Spinal_Cord'='Lumbar_Spinal_Cord',
-  'Lumbar_spinal_cord'='Lumbar_Spinal_Cord'
+  "Motor Cortex Lateral"="Motor_Cortex",
+  "Motor Cortex Medial"="Motor_Cortex",
+  "Lateral Motor Cortex"="Motor_Cortex",
+  "Medial Motor Cortex"="Motor_Cortex",
+  "Primary Motor Cortex L"="Motor_Cortex",
+  "Primary Motor Cortex M"="Motor_Cortex",
+  "Cortex_Motor_Unspecified"="Motor_Cortex",
+  "Cortex_Motor_BA4"="Motor_Cortex",
+  "BA4 Motor Cortex"="Motor_Cortex",
+  "Lateral_motor_cortex"="Motor_Cortex",
+  "Frontal Cortex"="Frontal_Cortex",
+  "Cerebellum"="Cerebellum",
+  "Spinal_Cord_Cervical"="Cervical_Spinal_Cord",
+  "Cervical Spinal Cord"="Cervical_Spinal_Cord",
+  "Cervical_spinal_cord"="Cervical_Spinal_Cord",
+  "Spinal_cord_Cervical"="Cervical_Spinal_Cord",
+  "Lumbar Spinal Cord"="Lumbar_Spinal_Cord",
+  "Thoracic Spinal Cord"="Thoracic_Spinal_Cord",
+  "Spinal_Cord_Lumbosacral"="Lumbar_Spinal_Cord",
+  "Lumbosacral_Spinal_Cord"="Lumbar_Spinal_Cord",
+  "Lumbar_spinal_cord"="Lumbar_Spinal_Cord"
 )
 
 covariate$mapped_tissue <- sapply(covariate$tissue, function(x) {
@@ -88,14 +98,17 @@ subject <- meta_sub$externalsubjectid[meta_idx]
 
 pdf(outputfile, width=12, height=10)
 
-# --- 1. RLE Plot ---
+###########################################
+# 1. RLE Plot
+###########################################
+
 message("Generating RLE plot...")
 
 logtpm <- log10(tpm + 1e-4)
 rle <- logtpm - apply(logtpm, 1, median)
 
 rle_melt <- melt(as.matrix(rle))
-colnames(rle_melt) <- c("Gene", "Sample", "Value")
+colnames(rle_melt) <- c("Gene","Sample","Value")
 
 bymedian <- with(rle_melt, reorder(Sample, Value, IQR))
 
@@ -107,7 +120,7 @@ boxplot(
   outline=FALSE,
   las=2,
   boxwex=1,
-  col='gray80',
+  col="gray80",
   cex.axis=0.4,
   main=paste("RLE:", TISSUE),
   xlab="",
@@ -117,10 +130,13 @@ boxplot(
 
 abline(h=0, col="red", lty=2)
 
-# --- 2. Clustering Plot ---
+###########################################
+# 2. Clustering Plot
+###########################################
+
 message("Generating clustering plot...")
 
-sampleDists <- 1 - cor(tpm, method='spearman')
+sampleDists <- 1 - cor(tpm, method="spearman")
 sampleDists[is.na(sampleDists)] <- 1
 
 hc <- hclust(as.dist(sampleDists), method="complete")
@@ -149,7 +165,7 @@ plot(
   tree,
   type="unrooted",
   cex=.35,
-  lab4ut='axial',
+  lab4ut="axial",
   tip.color=tip_colors,
   main=paste(TISSUE, "Clustering (Colored by Prefix)")
 )
@@ -163,13 +179,21 @@ legend(
   border="black"
 )
 
-# --- 3. Sex Gene tSNE ---
+###########################################
+# 3. Sex Gene tSNE
+###########################################
+
 message("Generating sex-gene tSNE plot...")
 
 SEX_GENE_MAP <- c(
-  "ENSG00000229807","ENSG00000129824","ENSG00000280969",
-  "ENSG00000012817","ENSG00000067048","ENSG00000114374",
-  "ENSG00000183878","ENSG00000198692"
+  "ENSG00000229807", # XIST
+  "ENSG00000129824", # RPS4Y1
+  "ENSG00000280969", # RPS4Y2
+  "ENSG00000012817", # KDM5D
+  "ENSG00000067048", # DDX3Y
+  "ENSG00000114374", # USP9Y
+  "ENSG00000183878", # UTY
+  "ENSG00000198692"  # EIF1AY
 )
 
 clean_rows <- gsub("\\..*", "", rownames(tpm))
@@ -209,10 +233,65 @@ if(length(sex_idx) >= 2) {
     tsne_input,
     dims=2,
     perplexity=perplexity,
+    max_iter=2000,
     verbose=FALSE,
-    max_iter=1000,
     check_duplicates=FALSE
   )
+
+  male_idx <- which(sex_tsne == "Male")
+  female_idx <- which(sex_tsne == "Female")
+
+  male_center <- colMeans(tsne_res$Y[male_idx, , drop=FALSE], na.rm=TRUE)
+  female_center <- colMeans(tsne_res$Y[female_idx, , drop=FALSE], na.rm=TRUE)
+
+  male_dists <- apply(
+    tsne_res$Y[male_idx, , drop=FALSE],
+    1,
+    function(x) sqrt(sum((x - male_center)^2))
+  )
+
+  female_dists <- apply(
+    tsne_res$Y[female_idx, , drop=FALSE],
+    1,
+    function(x) sqrt(sum((x - female_center)^2))
+  )
+
+  male_thresh <- median(male_dists, na.rm=TRUE) + 3 * mad(male_dists, na.rm=TRUE)
+  female_thresh <- median(female_dists, na.rm=TRUE) + 3 * mad(female_dists, na.rm=TRUE)
+
+  flagged <- c()
+
+  for(i in seq_len(nrow(tsne_res$Y))) {
+
+    if(is.na(sex_tsne[i])) next
+
+    pt <- tsne_res$Y[i, ]
+
+    d_male <- sqrt(sum((pt - male_center)^2))
+    d_female <- sqrt(sum((pt - female_center)^2))
+
+    if(
+      sex_tsne[i] == "Male" &&
+      (
+        d_female < d_male ||
+        d_male > male_thresh
+      )
+    ) {
+      flagged <- c(flagged, i)
+    }
+
+    if(
+      sex_tsne[i] == "Female" &&
+      (
+        d_male < d_female ||
+        d_female > female_thresh
+      )
+    ) {
+      flagged <- c(flagged, i)
+    }
+  }
+
+  flagged <- unique(flagged)
 
   plot_cols <- ifelse(sex_tsne == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
@@ -227,6 +306,8 @@ if(length(sex_idx) >= 2) {
     main=paste(TISSUE, "Sex Gene tSNE")
   )
 
+  grid(lty="dotted", col="gray80")
+
   legend(
     "topright",
     legend=c("Male","Female","Unknown"),
@@ -235,25 +316,13 @@ if(length(sex_idx) >= 2) {
     bty="n"
   )
 
-  grid(lty="dotted", col="gray80")
-
-  male_center <- colMeans(tsne_res$Y[sex_tsne == "Male", , drop=FALSE], na.rm=TRUE)
-  female_center <- colMeans(tsne_res$Y[sex_tsne == "Female", , drop=FALSE], na.rm=TRUE)
-
-  flagged <- c()
-
-  for(i in seq_len(nrow(tsne_res$Y))) {
-
-    if(is.na(sex_tsne[i])) next
-
-    pt <- tsne_res$Y[i, ]
-
-    d_male <- sqrt(sum((pt - male_center)^2))
-    d_female <- sqrt(sum((pt - female_center)^2))
-
-    if(sex_tsne[i] == "Male" && d_female < d_male) flagged <- c(flagged, i)
-    if(sex_tsne[i] == "Female" && d_male < d_female) flagged <- c(flagged, i)
-  }
+  points(
+    tsne_res$Y[flagged,1],
+    tsne_res$Y[flagged,2],
+    pch=1,
+    cex=2,
+    lwd=2
+  )
 
   if(length(flagged) > 0) {
 
@@ -264,7 +333,7 @@ if(length(sex_idx) >= 2) {
       tsne_res$Y[flagged,2],
       labels=flagged_samples,
       pos=4,
-      cex=0.5
+      cex=0.55
     )
 
     write.table(
