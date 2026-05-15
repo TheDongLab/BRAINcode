@@ -17,6 +17,8 @@ PASSWORD="4EDpN9tIAkPy@&6;db"   ### edit your password here
 
 cd $WORKDIR
 
+## before running this, make sure to save your urls into download_list.txt inside of WORKDIR! ##
+
 # --- STEP 0: DOWNLOAD FROM TOPMED SERVER ---
 if [ -f "download_list.txt" ]; then
     echo "Starting download of imputed chromosome zip files..."
