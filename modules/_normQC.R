@@ -211,6 +211,13 @@ if(length(sex_idx) >= 2) {
 
   pca_input <- pca_input[complete.cases(pca_input), , drop=FALSE]
 
+  dup_mask <- duplicated(pca_input)
+
+  if(any(dup_mask)) {
+    message(paste("Removing", sum(dup_mask), "duplicate samples before PCA"))
+    pca_input <- pca_input[!dup_mask, , drop=FALSE]
+  }
+
   pca_samples <- rownames(pca_input)
   sex_pca <- sex[match(pca_samples, colnames(tpm))]
 
@@ -219,31 +226,31 @@ if(length(sex_idx) >= 2) {
   pc1 <- pca_res$x[,1]
   pc2 <- pca_res$x[,2]
 
-  male_idx <- which(sex_pca == "Male")
-  female_idx <- which(sex_pca == "Female")
-
-  male_center <- c(mean(pc1[male_idx], na.rm=TRUE),
-                   mean(pc2[male_idx], na.rm=TRUE))
-
-  female_center <- c(mean(pc1[female_idx], na.rm=TRUE),
-                     mean(pc2[female_idx], na.rm=TRUE))
+  coords <- cbind(pc1, pc2)
 
   flagged <- c()
 
-  for(i in seq_along(pc1)) {
+  for(i in seq_len(nrow(coords))) {
 
     if(is.na(sex_pca[i])) next
 
-    pt <- c(pc1[i], pc2[i])
+    dists <- sqrt(
+      (coords[,1] - coords[i,1])^2 +
+      (coords[,2] - coords[i,2])^2
+    )
 
-    d_male <- sqrt(sum((pt - male_center)^2))
-    d_female <- sqrt(sum((pt - female_center)^2))
+    nn <- order(dists)[2:11]
 
-    if(sex_pca[i] == "Male" && d_female < d_male) {
+    nn_sex <- sex_pca[nn]
+
+    male_prop <- mean(nn_sex == "Male", na.rm=TRUE)
+    female_prop <- mean(nn_sex == "Female", na.rm=TRUE)
+
+    if(sex_pca[i] == "Female" && male_prop >= 0.8) {
       flagged <- c(flagged, i)
     }
 
-    if(sex_pca[i] == "Female" && d_male < d_female) {
+    if(sex_pca[i] == "Male" && female_prop >= 0.8) {
       flagged <- c(flagged, i)
     }
   }
