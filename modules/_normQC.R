@@ -11,8 +11,10 @@ if (length(args) < 1) {
 
 if(!require(ape)) install.packages('ape', repos='http://cran.us.r-project.org')
 if(!require(reshape2)) install.packages('reshape2', repos='http://cran.us.r-project.org')
+if(!require(Rtsne)) install.packages('Rtsne', repos='http://cran.us.r-project.org')
 library(ape)
 library(reshape2)
+library(Rtsne)
 
 # --- Dynamic Path Construction ---
 TISSUE     <- args[1]
@@ -140,40 +142,125 @@ legend("bottomleft",
        bty = "n", 
        border = "black")
 
-# --- 3. Gender Marker Check (Fixed: log10(x+1) and Independent of RLE) ---
-message("Generating gender-match plot...")
-clean_rows <- gsub("\\..*", "", rownames(tpm))
-idxX <- which(clean_rows == "ENSG00000229807")[1] # XIST
-idxY <- which(clean_rows == "ENSG00000129824")[1] # RPS4Y1
+# --- 3. Sex Gene tSNE Check ---
+message("Generating sex-gene tSNE plot...")
 
-if(!is.na(idxX) & !is.na(idxY)) {
-  # Use original tpm matrix to avoid the -4 baseline from RLE step
-  plot_data <- data.frame(
-    XIST = log10(as.numeric(tpm[idxX, ]) + 1),
-    RPS4Y1 = log10(as.numeric(tpm[idxY, ]) + 1),
-    Sex = sex
+SEX_GENE_MAP <- c(
+  "ENSG00000229807", # XIST
+  "ENSG00000129824", # RPS4Y1
+  "ENSG00000280969", # RPS4Y2
+  "ENSG00000012817", # KDM5D
+  "ENSG00000067048", # DDX3Y
+  "ENSG00000114374", # USP9Y
+  "ENSG00000183878", # UTY
+  "ENSG00000198692"  # EIF1AY
+)
+
+clean_rows <- gsub("\\..*", "", rownames(tpm))
+
+sex_idx <- which(clean_rows %in% SEX_GENE_MAP)
+
+if(length(sex_idx) >= 2) {
+
+  sex_tpm <- tpm[sex_idx, , drop=FALSE]
+
+  log_sex_tpm <- log10(sex_tpm + 0.01)
+
+  # samples x genes
+  tsne_input <- t(scale(t(log_sex_tpm)))
+
+  # Remove genes with zero variance
+  keep <- apply(tsne_input, 2, sd, na.rm=TRUE) > 0
+  tsne_input <- tsne_input[, keep, drop=FALSE]
+
+  n_samples <- nrow(tsne_input)
+
+  perplexity <- min(30, floor((n_samples - 1) / 3))
+
+  if(perplexity < 2) {
+    perplexity <- 2
+  }
+
+  set.seed(1234)
+
+  tsne_res <- Rtsne(
+    tsne_input,
+    dims=2,
+    perplexity=perplexity,
+    verbose=FALSE,
+    max_iter=1000
   )
-  
-  # Ensure we have a valid color vector for Sex
-  plot_cols <- ifelse(plot_data$Sex == "Male", "blue3", "firebrick2")
-  # Handle NAs in sex metadata if any
+
+  plot_cols <- ifelse(sex == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
 
-plot(plot_data$XIST, plot_data$RPS4Y1, 
-       xlab = expression(log[10](TPM + 1)~~XIST), 
-       ylab = expression(log[10](TPM + 1)~~RPS4Y1), 
-       col = plot_cols, 
-       pch = 19, 
-       main = paste(TISSUE, "Gender Check"))
-  
-  legend("topright", 
-         legend=c("Male", "Female", "Unknown"), 
-         col=c("blue3", "firebrick2", "gray50"), 
-         pch=19, bty="n")
-  grid(lty = "dotted", col = "gray80")
-} else {
-  message("Warning: Gender markers (XIST/RPS4Y1) not found in matrix. Skipping plot.")
-}
+  plot(
+    tsne_res$Y[,1],
+    tsne_res$Y[,2],
+    col=plot_cols,
+    pch=19,
+    xlab="tSNE 1",
+    ylab="tSNE 2",
+    main=paste(TISSUE, "Sex Gene tSNE")
+  )
 
+  legend(
+    "topright",
+    legend=c("Male", "Female", "Unknown"),
+    col=c("blue3", "firebrick2", "gray50"),
+    pch=19,
+    bty="n"
+  )
+
+  grid(lty="dotted", col="gray80")
+
+  # Optional sample labels for outliers
+  male_center <- colMeans(tsne_res$Y[sex == "Male", , drop=FALSE], na.rm=TRUE)
+  female_center <- colMeans(tsne_res$Y[sex == "Female", , drop=FALSE], na.rm=TRUE)
+
+  flagged <- c()
+
+  for(i in seq_len(nrow(tsne_res$Y))) {
+
+    if(is.na(sex[i])) {
+      next
+    }
+
+    pt <- tsne_res$Y[i, ]
+
+    d_male <- sqrt(sum((pt - male_center)^2))
+    d_female <- sqrt(sum((pt - female_center)^2))
+
+    if(sex[i] == "Male" && d_female < d_male) {
+      flagged <- c(flagged, i)
+    }
+
+    if(sex[i] == "Female" && d_male < d_female) {
+      flagged <- c(flagged, i)
+    }
+  }
+
+  if(length(flagged) > 0) {
+
+    text(
+      tsne_res$Y[flagged,1],
+      tsne_res$Y[flagged,2],
+      labels=colnames(tpm)[flagged],
+      pos=4,
+      cex=0.5
+    )
+
+    message(
+      paste(
+        "Potential sex mismatches:",
+        paste(colnames(tpm)[flagged], collapse=", ")
+      )
+    )
+  }
+
+} else {
+
+  message("Warning: Fewer than 2 sex genes found. Skipping tSNE plot.")
+}
 dev.off()
 message(paste("QC Complete. PDF saved to:", outputfile))
