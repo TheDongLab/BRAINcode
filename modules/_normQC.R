@@ -166,10 +166,15 @@ if(length(sex_idx) >= 2) {
 
   log_sex_tpm <- log10(sex_tpm + 0.01)
 
-  # samples x genes
-  tsne_input <- t(scale(t(log_sex_tpm)))
+  # transpose so:
+  # rows = samples
+  # cols = genes
+  tsne_input <- t(log_sex_tpm)
 
-  # Remove genes with zero variance
+  # z-score genes
+  tsne_input <- scale(tsne_input)
+
+  # remove zero-variance genes
   keep <- apply(tsne_input, 2, sd, na.rm=TRUE) > 0
   tsne_input <- tsne_input[, keep, drop=FALSE]
 
