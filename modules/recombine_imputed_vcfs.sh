@@ -11,6 +11,8 @@ module load BCFtools/1.21
 WORKDIR="/home/zw529/donglab/data/target_ALS/QTL/imputed_vcfs"
 OUTDIR="/home/zw529/donglab/data/target_ALS/QTL"
 MALES="/home/zw529/donglab/data/target_ALS/QTL/chromosome_joint_vcfs/males.txt"
+ORIGINAL_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz"
+IMPUTED_VCF="${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz"
 PASSWORD="l_hpXa9mH*#J3Z4YtR"   ### edit your password here
 
 cd $WORKDIR
@@ -74,10 +76,7 @@ if [ -f "$CHRX_FILTERED" ]; then
             print $0;
         }
     }' | bcftools view -Oz -o "$CHRX_FIXED"
-    
     bcftools index -t "$CHRX_FIXED"
-    
-    # Replace the filtered chrX with the fixed version so Step 3 picks it up
     mv "$CHRX_FIXED" "$CHRX_FILTERED"
     mv "${CHRX_FIXED}.tbi" "${CHRX_FILTERED}.tbi"
 fi
@@ -88,11 +87,30 @@ ls filtered_tmp/filtered_*.dose.vcf.gz | sort -V > vcf_list.txt
 
 # --- STEP 5: CONCATENATE ---
 echo "Concatenating filtered VCFs into master file..."
-bcftools concat -f vcf_list.txt -Oz -o ${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz
+bcftools concat -f vcf_list.txt -Oz -o "$IMPUTED_VCF"
 
 # --- STEP 6: INDEXING ---
 echo "Indexing final filtered master VCF..."
-bcftools index -f -t ${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz
+bcftools index -f -t "$IMPUTED_VCF"
+
+# --- STEP 7: STATISTICAL COMPARISON ---
+echo "-------------------------------------------------------"
+echo "Generating Variant Count Comparison..."
+
+# Count biallelic SNPs in Original (excluding MAF/Quality if desired, but here we just count total biallelic SNPs)
+orig_count=$(bcftools view -m2 -M2 -v snps "$ORIGINAL_VCF" | grep -v "^#" | wc -l)
+
+# Count biallelic SNPs in Imputed (Already filtered for R2 > 0.5 and MAF > 0.05 in Step 2)
+impute_count=$(bcftools view -m2 -M2 -v snps "$IMPUTED_VCF" | grep -v "^#" | wc -l)
+
+echo "Biallelic SNPs in Original VCF: $orig_count"
+echo "Biallelic SNPs in Imputed VCF (R2>0.5, MAF>0.05): $impute_count"
+
+if [ "$impute_count" -gt 0 ]; then
+    fold_increase=$(awk "BEGIN {print $impute_count / $orig_count}")
+    echo "Yield increase: ${fold_increase}x"
+fi
+echo "-------------------------------------------------------"
 
 echo "Workflow complete."
-echo "Master Filtered VCF: ${OUTDIR}/target_ALS_imputed_filtered_joint.vcf.gz"
+echo "Master Filtered VCF: $IMPUTED_VCF"
