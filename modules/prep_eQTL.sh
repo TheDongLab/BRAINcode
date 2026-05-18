@@ -45,7 +45,7 @@ import numpy as np
 # 1. LOAD DATA
 breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 meta = pd.read_csv("$METADATA_CSV", low_memory=False)
-pca = pd.read_csv("$PCA", sep='\s+').rename(columns={'#IID': 'IID'})
+pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'}) # Added 'r'
 
 # Load sex mismatch exclusions
 try:
@@ -98,7 +98,7 @@ print(f"DEBUG: After PMI/RIN filter: {len(meta_tissue)} samples")
 meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
 # 4. TRIPLE INTERSECTION
-raw_df = pd.read_csv("$RAW", sep='\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
+raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE']) # Added 'r'
 expr_headers = pd.read_csv("$EXPR", sep='\t', nrows=0).columns.tolist()
 
 meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
@@ -171,12 +171,11 @@ EOF
 ### Location Files ###
 echo "Generating deduplicated location files for $TISSUE..."
 
-# 1. SNP Location: Extract from BIM, then force unique IDs based on column 1
+# 1. SNP Location: Enclosed in single quotes so '$1' and '$4' pass safely to awk without backslashes
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
 awk 'BEGIN{OFS="\t"} {
-    # Check if BIM already contains the "chr" prefix or just numerical/X/Y labels
-    chrom = (\$1 ~ /^chr/) ? \$1 : "chr"\$1;
-    print "chr"\$1":"\$4, chrom, \$4;
+    chrom = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    print "chr"$1":"$4, chrom, $4;
 }' $BIM | sed 's/chrchr/chr/g' | sort -u -k1,1 >> $OUTDIR/snp_location.txt
 
 # 2. Gene Location: Extract from GTF, then force unique IDs based on column 1
