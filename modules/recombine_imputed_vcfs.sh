@@ -112,18 +112,21 @@ bcftools index -f -t "$IMPUTED_VCF"
 echo "-------------------------------------------------------"
 echo "Generating Variant Count Comparison..."
 
-# Count biallelic SNPs in Original (excluding MAF/Quality if desired, but here we just count total biallelic SNPs)
-orig_count=$(bcftools view -m2 -M2 -v snps "$ORIGINAL_VCF" | grep -v "^#" | wc -l)
+# Filter the original joint VCF for biallelic SNPs with MAF > 0.05 on the fly
+echo "Counting common biallelic SNPs in Original VCF (MAF > 0.05)..."
+orig_count=$(bcftools filter -i 'MAF>0.05' -m2 -M2 -v snps "$ORIGINAL_VCF" | grep -v "^#" | wc -l)
 
-# Count biallelic SNPs in Imputed (Already filtered for R2 > 0.5 and MAF > 0.05 in Step 2)
+# Count biallelic SNPs in Imputed VCF (already filtered for R2 > 0.5 and MAF > 0.05 in Step 2)
+echo "Counting high-quality common biallelic SNPs in Imputed VCF..."
 impute_count=$(bcftools view -m2 -M2 -v snps "$IMPUTED_VCF" | grep -v "^#" | wc -l)
 
-echo "Biallelic SNPs in Original VCF: $orig_count"
-echo "Biallelic SNPs in Imputed VCF (R2>0.5, MAF>0.05): $impute_count"
+echo ""
+echo "Biallelic SNPs in Original VCF (MAF > 0.05): $orig_count"
+echo "Biallelic SNPs in Imputed VCF (R2 > 0.5, MAF > 0.05): $impute_count"
 
-if [ "$impute_count" -gt 0 ]; then
+if [ "$orig_count" -gt 0 ]; then
     fold_increase=$(awk "BEGIN {print $impute_count / $orig_count}")
-    echo "Yield increase: ${fold_increase}x"
+    echo "True Yield Shift: ${fold_increase}x"
 fi
 echo "-------------------------------------------------------"
 
