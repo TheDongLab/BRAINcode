@@ -186,29 +186,37 @@ legend(
 message("Generating sex-gene PCA plot...")
 
 SEX_GENE_MAP <- c(
-  "ENSG00000229807","ENSG00000129824","ENSG00000280969",
-  "ENSG00000012817","ENSG00000067048","ENSG00000114374",
-  "ENSG00000183878","ENSG00000198692"
+  "ENSG00000229807", # XIST
+  "ENSG00000129824", # RPS4Y1
+  "ENSG00000280969", # RPS4Y2
+  "ENSG00000012817", # KDM5D
+  "ENSG00000067048", # DDX3Y
+  "ENSG00000114374", # USP9Y
+  "ENSG00000183878", # UTY
+  "ENSG00000198692"  # EIF1AY
 )
 
 clean_rows <- gsub("\\..*", "", rownames(tpm))
 sex_idx <- which(clean_rows %in% SEX_GENE_MAP)
 
-pca_table_file <- file.path(
-  TISSUE_DIR,
-  paste0(TISSUE, "_sex_gene_PCA_coordinates.txt")
-)
-
 if(length(sex_idx) >= 2) {
 
-  sex_tpm <- tpm[sex_idx,,drop=FALSE]
+  sex_tpm <- tpm[sex_idx, , drop=FALSE]
 
   pca_input <- t(log10(sex_tpm + 0.01))
   pca_input <- scale(pca_input)
 
   keep <- apply(pca_input, 2, sd, na.rm=TRUE) > 0
-  pca_input <- pca_input[,keep,drop=FALSE]
-  pca_input <- pca_input[complete.cases(pca_input),,drop=FALSE]
+  pca_input <- pca_input[, keep, drop=FALSE]
+
+  pca_input <- pca_input[complete.cases(pca_input), , drop=FALSE]
+
+  dup_mask <- duplicated(pca_input)
+
+  if(any(dup_mask)) {
+    message(paste("Removing", sum(dup_mask), "duplicate samples before PCA"))
+    pca_input <- pca_input[!dup_mask, , drop=FALSE]
+  }
 
   pca_samples <- rownames(pca_input)
   sex_pca <- sex[match(pca_samples, colnames(tpm))]
@@ -218,33 +226,41 @@ if(length(sex_idx) >= 2) {
   pc1 <- pca_res$x[,1]
   pc2 <- pca_res$x[,2]
 
-  male_idx <- which(sex_pca == "Male")
-  female_idx <- which(sex_pca == "Female")
+  coords <- cbind(pc1, pc2)
 
-  male_center <- median(pc1[male_idx], na.rm=TRUE)
-  female_center <- median(pc1[female_idx], na.rm=TRUE)
+  flagged <- c()
 
-  male_sd <- mad(pc1[male_idx], constant=1, na.rm=TRUE)
-  female_sd <- mad(pc1[female_idx], constant=1, na.rm=TRUE)
+  for(i in seq_len(nrow(coords))) {
 
-  male_bad <- male_idx[
-    pc1[male_idx] < (female_center + (3 * female_sd))
-  ]
+    if(is.na(sex_pca[i])) next
 
-  female_bad <- female_idx[
-    pc1[female_idx] > (male_center - (3 * male_sd))
-  ]
+    dists <- sqrt(
+      (coords[,1] - coords[i,1])^2 +
+      (coords[,2] - coords[i,2])^2
+    )
 
-  flagged <- sort(unique(c(male_bad, female_bad)))
+    nn <- order(dists)[2:11]
+
+    nn_sex <- sex_pca[nn]
+
+    male_prop <- mean(nn_sex == "Male", na.rm=TRUE)
+    female_prop <- mean(nn_sex == "Female", na.rm=TRUE)
+
+    if(sex_pca[i] == "Female" && male_prop >= 0.8) {
+      flagged <- c(flagged, i)
+    }
+
+    if(sex_pca[i] == "Male" && female_prop >= 0.8) {
+      flagged <- c(flagged, i)
+    }
+  }
+
+  flagged <- unique(flagged)
 
   plot_cols <- ifelse(sex_pca == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
-
-  ###########################################
-  # Save PCA coordinates table
-  ###########################################
-
-  pca_table <- data.frame(
+  
+   pca_table <- data.frame(
     Sample=pca_samples,
     Sex=sex_pca,
     PC1=pc1,
@@ -259,10 +275,6 @@ if(length(sex_idx) >= 2) {
     quote=FALSE,
     row.names=FALSE
   )
-
-  ###########################################
-  # PCA Plot
-  ###########################################
 
   plot(
     pc1,
