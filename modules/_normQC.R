@@ -199,6 +199,11 @@ SEX_GENE_MAP <- c(
 clean_rows <- gsub("\\..*", "", rownames(tpm))
 sex_idx <- which(clean_rows %in% SEX_GENE_MAP)
 
+pca_table_file <- file.path(
+  TISSUE_DIR,
+  paste0(TISSUE, "_sex_gene_PCA_coordinates.txt")
+)
+
 if(length(sex_idx) >= 2) {
 
   sex_tpm <- tpm[sex_idx, , drop=FALSE]
