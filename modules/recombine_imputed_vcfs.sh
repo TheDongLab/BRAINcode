@@ -114,7 +114,7 @@ echo "Generating Variant Count Comparison..."
 
 # Filter the original joint VCF for biallelic SNPs with MAF > 0.05 on the fly
 echo "Counting common biallelic SNPs in Original VCF (MAF > 0.05)..."
-orig_count=$(bcftools filter -i 'MAF>0.05' -m2 -M2 -v snps "$ORIGINAL_VCF" | grep -v "^#" | wc -l)
+orig_count=$(bcftools view -m2 -M2 -v snps "$ORIGINAL_VCF" | bcftools filter -i 'MAF>0.05' | grep -v "^#" | wc -l)
 
 # Count biallelic SNPs in Imputed VCF (already filtered for R2 > 0.5 and MAF > 0.05 in Step 2)
 echo "Counting high-quality common biallelic SNPs in Imputed VCF..."
