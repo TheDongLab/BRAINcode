@@ -20,11 +20,19 @@ mkdir -p ${OUTDIR}
 VCF_FILTERED=${OUTDIR}/joint_GQ0_temp.vcf.gz
 VCF_BIALLELIC=${OUTDIR}/joint_biallelic_temp.vcf.gz
 
-RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
+# --- OLD AUTOSOME-ONLY PREFIXES (HASHED OUT) ---
+# RAW_PREFIX=${OUTDIR}/joint_autosomes_raw
+# QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
+# FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
+# BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
+# MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
+
+# --- NEW ALL-CHROMOSOME PREFIXES ---
+RAW_PREFIX=${OUTDIR}/joint_all_chrs_raw
 QC_SAMPLE_PREFIX=${OUTDIR}/joint_samples_qc
-FILTERED_PREFIX=${OUTDIR}/joint_autosomes_filtered
-BED_PREFIX=${OUTDIR}/joint_autosomes_filtered_bed
-MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
+FILTERED_PREFIX=${OUTDIR}/joint_all_chrs_filtered
+BED_PREFIX=${OUTDIR}/joint_all_chrs_filtered_bed
+MATRIX_PREFIX=${OUTDIR}/joint_all_chrs_matrixEQTL
 
 #----------------------------------------
 # STEP 0: PRE-PROCESSING (OBSOLETE FOR IMPUTED VCFs)
@@ -42,7 +50,7 @@ MATRIX_PREFIX=${OUTDIR}/joint_autosomes_matrixEQTL
 # bcftools norm -m -any ${VCF_FILTERED} -O z -o ${VCF_BIALLELIC}
 # bcftools index -t ${VCF_BIALLELIC}
 # rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
-# VCF_IN=${VCF_BIALLELIC} # Redirect VCF_IN to the biallelic temp
+# VCF_IN=${VCF_BIALLELIC} 
 
 #----------------------------------------
 # STEP 1: VCF → PLINK2 IMPORT
@@ -52,38 +60,39 @@ module load StdEnv
 module load PLINK2/avx2_20250707
 
 #================================================================================
-# VERSION 1: WITH SEX CHROMOSOMES (HASHED OUT)
+# VERSION 1: WITH SEX CHROMOSOMES (ACTIVE)
 #================================================================================
-# echo "Importing VCF with Sex Chromosomes..."
+echo "Importing VCF with Sex Chromosomes..."
+plink2 --vcf ${VCF_IN} \
+        --chr chr1-22,chrX,chrY,chrM \
+        --split-par hg38 \
+        --set-all-var-ids @:#:\$r:\$a \
+        --new-id-max-allele-len 800 \
+        --vcf-half-call m \
+        --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
+        --make-pgen \
+        --out ${RAW_PREFIX} \
+        --threads ${SLURM_CPUS_PER_TASK}
+
+echo "Running sex-check validation..."
+plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
+grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+
+
+#================================================================================
+# VERSION 2: WITHOUT SEX CHROMOSOMES (HASHED OUT)
+#================================================================================
+# echo "Importing Autosome-only VCF..."
 # plink2 --vcf ${VCF_IN} \
-#        --chr chr1-22, chrX, chrY, chrM \
-#        --split-par hg38 \
+#        --chr chr1-22 \
 #        --set-all-var-ids @:#:\$r:\$a \
 #        --new-id-max-allele-len 800 \
 #        --vcf-half-call m \
-#        --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
 #        --make-pgen \
 #        --out ${RAW_PREFIX} \
 #        --threads ${SLURM_CPUS_PER_TASK}
 #
-# plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
-# grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
-
-
-#================================================================================
-# VERSION 2: WITHOUT SEX CHROMOSOMES (ACTIVE)
-#================================================================================
-echo "Importing Autosome-only VCF..."
-plink2 --vcf ${VCF_IN} \
-       --chr chr1-22 \
-       --set-all-var-ids @:#:\$r:\$a \
-       --new-id-max-allele-len 800 \
-       --vcf-half-call m \
-       --make-pgen \
-       --out ${RAW_PREFIX} \
-       --threads ${SLURM_CPUS_PER_TASK}
-
-touch ${OUTDIR}/fail_sex.txt
+# touch ${OUTDIR}/fail_sex.txt
 
 #----------------------------------------
 # SAMPLE-LEVEL QC (Shared Logic)
@@ -103,11 +112,13 @@ fi
 #----------------------------------------
 # FINAL QC FILTERING
 #----------------------------------------
+echo "Applying variant missingness filter (--geno 0.05)..."
 plink2 --pfile ${RAW_PREFIX} \
        --geno 0.05 \
        --make-pgen \
        --out ${OUTDIR}/temp_variant_filtered
 
+echo "Applying final hard sample filters, MAF, and HWE thresholds..."
 plink2 --pfile ${OUTDIR}/temp_variant_filtered \
        --remove ${OUTDIR}/all_fail_samples.txt \
        --mind 0.05 \
