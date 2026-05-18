@@ -40,7 +40,7 @@ EXPR_FILE=$INDIR/expression_${TISSUE_DIR}.txt
 COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 GENE_LOC=$INDIR/gene_location.txt
 SNP_LOC=$INDIR/snp_location.txt
-BIM=$PLINK/joint_autosomes_filtered_bed.bim
+BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 
 # Output naming (Modified to keep files flat in $OUTDIR)
 OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
