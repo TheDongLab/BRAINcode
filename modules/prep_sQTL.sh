@@ -4,51 +4,34 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.err
 #SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=499G
+#SBATCH --mem=699G
 
 set -euo pipefail
-module load R
 
-### Arguments: ###
-if [ $# -lt 2 ]; then
-    echo "ERROR: Missing arguments."
-    echo "Usage: sbatch prep_sQTL.sh \"Cerebellum\" \"Male\""
-    exit 1
-fi
-
-TISSUE="$1"
-STRAT_SEX="$2"
+TISSUE="$1" 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
-
-echo "============================================"
-echo "  sQTL Prep for tissue : $TISSUE"
-echo "  Stratification       : $STRAT_SEX"
-echo "  $(date)"
-echo "============================================"
-
-### Paths: ###
-BASE=/home/zw529/donglab/data/target_ALS
-PLINK=$BASE/QTL/plink
-SPLICING_RAW=$BASE/QTL/splicing_matrix.txt 
-SPLICING_LOC_SRC=$BASE/QTL/splicing_events_hg38.bed 
-
-RAW=$PLINK/joint_autosomes_matrixEQTL.raw
-META=$BASE/QTL/expression_sample_metadata.csv
-WGS_MAP=$BASE/QTL/wgs_samples_for_vcf_merge.csv
-COV=$BASE/QTL/covariates.tsv
-BIM=$PLINK/joint_autosomes_filtered_bed.bim
-
-OUTDIR=$BASE/$TISSUE_DIR/sQTL/$STRAT_SEX
+OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/sQTL
 mkdir -p $OUTDIR
 
-# Temp Files
-TMP_META=$OUTDIR/tmp_meta.txt
-TMP_WGS=$OUTDIR/tmp_wgs_map.txt
-TMP_MATCHED=$OUTDIR/tmp_matched.txt
-TMP_HRA=$OUTDIR/tmp_HRA_ids.txt
-TMP_HRA_UNDER=$OUTDIR/tmp_HRA_ids_underscore.txt
-TMP_HDA=$OUTDIR/tmp_HDA_ids.txt
-CLEAN_COV=$OUTDIR/covariates_stratified.tsv
+### Paths ###
+QTL_DIR=/home/zw529/donglab/data/target_ALS/QTL
+PLINK=$QTL_DIR/plink
+SPLICING_RAW=$QTL_DIR/splicing_matrix.txt 
+SPLICING_LOC_SRC=$OUTDIR/tmp_splicing_events_hg38.bed
+
+METADATA_CSV=/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv
+BREAKDOWN_TSV=$QTL_DIR/patient_tissue_breakdown.tsv
+COV_FILE=/home/zw529/donglab/data/target_ALS/QTL/covariates.tsv
+SEX_MISMATCH_FILE=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL/potential_sex_mismatches.txt
+
+### ACTIVE ALL-CHROMOSOME IMPUTED INPUTS ###
+RAW=$PLINK/joint_all_chrs_matrixEQTL.raw
+BIM=$PLINK/joint_all_chrs_filtered_bed.bim
+PCA=$PLINK/joint_pca.eigenvec
+
+echo "============================================"
+echo "  sQTL Prep for $TISSUE"
+echo "============================================"
 
 ##############################################
 # STEP 0: Generate BED from Matrix IDs
@@ -57,7 +40,6 @@ echo "[0] Generating BED file from matrix IDs..."
 python3 << EOF
 import sys
 
-# Read splicing matrix and extract coordinates
 try:
     encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
     opened = False
@@ -71,17 +53,13 @@ try:
                         line = line.strip()
                         if not line:
                             continue
-                        # Parse ID format: chr:start-end
                         parts = line.split('\t')
                         if len(parts) < 1:
                             continue
                         event_id = parts[0]
-                        
-                        # Handle encoding issues by filtering non-ASCII
                         event_id = ''.join(c for c in event_id if ord(c) < 128)
                         
                         try:
-                            # Expected format: chr:start-end
                             if ':' in event_id and '-' in event_id:
                                 chr_part, pos_part = event_id.rsplit(':', 1)
                                 start, end = pos_part.split('-')
@@ -104,567 +82,186 @@ print("STEP 0: BED file generated successfully", file=sys.stderr)
 EOF
 
 ##############################################
-# STEP 1: Build sample mapping
+# STEP 1-6: Load, Filter, and Align Matrix Data
 ##############################################
-echo "[1] Building sample mapping..."
+echo "[1] Processing cohort alignments..."
 python3 << EOF
 import pandas as pd
 import sys
-import os
-
-try:
-    # Try UTF-8 first, fall back to latin1
-    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-    df_cov = None
-    
-    for enc in encodings:
-        try:
-            df_cov = pd.read_csv("$COV", sep='\t', encoding=enc, on_bad_lines='skip')
-            print(f"Successfully read covariates with encoding: {enc}", file=sys.stderr)
-            break
-        except UnicodeDecodeError:
-            continue
-    
-    if df_cov is None:
-        raise ValueError("Could not read covariates file with any encoding")
-    
-    # Filter out bad samples
-    bad_samples = df_cov[df_cov['rin'].isna() & (df_cov['rna_skew'] > 1.0)]['externalsampleid'].tolist()
-    df_cov = df_cov[~df_cov['externalsampleid'].isin(bad_samples)]
-    
-    # Stratify by sex
-    df_cov = df_cov[df_cov['sex'] == "$STRAT_SEX"]
-    
-    # Collapse subject group to binary
-    def collapse(g):
-        g_str = str(g)
-        if 'ALS' in g_str:
-            return 1
-        if 'Non-Neurological' in g_str:
-            return 0
-        return None
-    
-    df_cov['is_als'] = df_cov['subject_group'].apply(collapse)
-    df_cov = df_cov[df_cov['is_als'].notna()]
-    
-    # Save cleaned covariates
-    df_cov.to_csv("$CLEAN_COV", sep='\t', index=False)
-    
-    # Get list of samples to keep
-    keep_samples = df_cov['externalsampleid'].tolist()
-    with open("$OUTDIR/keep_samples.txt", 'w') as f:
-        for s in keep_samples:
-            f.write(str(s).strip() + "\n")
-    
-    print(f"Filtered to {len(keep_samples)} samples for {len(df_cov)} samples after stratification", file=sys.stderr)
-    
-except Exception as e:
-    print(f"ERROR in STEP 1: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-
-# Now read and filter metadata and WGS mapping in Python (avoid bash encoding issues)
-try:
-    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-    df_meta = None
-    df_wgs = None
-    
-    for enc in encodings:
-        try:
-            df_meta = pd.read_csv("$META", encoding=enc, on_bad_lines='skip')
-            print(f"Successfully read metadata with encoding: {enc}", file=sys.stderr)
-            break
-        except UnicodeDecodeError:
-            continue
-    
-    if df_meta is None:
-        raise ValueError("Could not read metadata file with any encoding")
-    
-    for enc in encodings:
-        try:
-            df_wgs = pd.read_csv("$WGS_MAP", encoding=enc, on_bad_lines='skip')
-            print(f"Successfully read WGS map with encoding: {enc}", file=sys.stderr)
-            break
-        except UnicodeDecodeError:
-            continue
-    
-    if df_wgs is None:
-        raise ValueError("Could not read WGS map file with any encoding")
-    
-    # Filter metadata by tissue
-    sample_col = df_meta.columns[0]  # externalsampleid is 1st column
-    subject_col = df_meta.columns[1]  # externalsubjectid is 2nd column
-    tissue_col = df_meta.columns[2]  # tissue is 3rd column
-    
-    df_meta_filt = df_meta[df_meta[tissue_col] == "$TISSUE"]
-    df_meta_filt = df_meta_filt[df_meta_filt[sample_col].isin(keep_samples)]
-    
-    # Write tmp_meta: sample_id,subject_id
-    with open("$TMP_META", 'w') as f:
-        for _, row in df_meta_filt.iterrows():
-            f.write(f"{row[sample_col]},{row[subject_col]}\n")
-    
-    # Write tmp_wgs: external_sample_id,wgs_id
-    wgs_sample_col = df_wgs.columns[0]
-    wgs_id_col = df_wgs.columns[1]
-    with open("$TMP_WGS", 'w') as f:
-        for _, row in df_wgs.iterrows():
-            f.write(f"{row[wgs_sample_col]},{row[wgs_id_col]}\n")
-    
-    print("Metadata and WGS mapping written successfully", file=sys.stderr)
-
-except Exception as e:
-    print(f"ERROR reading metadata/WGS: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-EOF
-
-# Join metadata with WGS mapping using Python (more robust than bash join)
-python3 << EOF
-import pandas as pd
-import sys
-
-try:
-    # Read the temp files
-    meta = pd.read_csv("$TMP_META", header=None, names=['sample_id', 'subject_id'])
-    wgs = pd.read_csv("$TMP_WGS", header=None, names=['subject_id', 'wgs_id'])
-    
-    # Merge on subject_id (WGS file is keyed by subject, not sample)
-    merged = meta.merge(wgs, on='subject_id', how='inner')
-    
-    # Write matched file
-    with open("$TMP_MATCHED", 'w') as f:
-        for _, row in merged.iterrows():
-            f.write(f"{row['subject_id']},{row['sample_id']},{row['wgs_id']}\n")
-    
-    # Write HRA IDs (RNA sample IDs)
-    with open("$TMP_HRA", 'w') as f:
-        for sample_id in merged['sample_id']:
-            f.write(f"{sample_id}\n")
-    
-    # Write HRA underscore version
-    with open("$TMP_HRA_UNDER", 'w') as f:
-        for sample_id in merged['sample_id']:
-            f.write(f"{sample_id.replace('-', '_')}\n")
-    
-    # Write HDA IDs (WGS sample IDs)
-    with open("$TMP_HDA", 'w') as f:
-        for wgs_id in merged['wgs_id']:
-            f.write(f"{wgs_id}\n")
-    
-    print(f"Matched {len(merged)} samples across metadata and WGS", file=sys.stderr)
-    
-except Exception as e:
-    print(f"ERROR joining metadata: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-EOF
-
-##############################################
-# STEP 2: Subset Splicing Matrix
-##############################################
-echo "[2] Processing Splicing Matrix..."
-
-# Write R script to temp file (avoids heredoc variable expansion issues)
-cat > "$OUTDIR/step2.R" << 'REOF'
-library(data.table)
-
-tryCatch({
-    tmp_hra_under <- Sys.getenv("TMP_HRA_UNDER")
-    splicing_raw <- Sys.getenv("SPLICING_RAW")
-    outdir <- Sys.getenv("OUTDIR")
-    tissue_dir <- Sys.getenv("TISSUE_DIR")
-    
-    keep_ids <- fread(tmp_hra_under, header=FALSE)[, V1]
-    
-    print(paste("Reading splicing matrix from:", splicing_raw))
-    full_data <- fread(splicing_raw, header=TRUE, fill=TRUE)
-    
-    print(paste("Found", nrow(full_data), "rows and", ncol(full_data), "columns"))
-    
-    # Get column names and intersect with keep_ids
-    col_names <- names(full_data)
-    cols_to_keep <- c(col_names[1], intersect(col_names[-1], keep_ids))
-    
-    print(paste("Keeping", length(cols_to_keep), "columns"))
-    
-    # Subset columns
-    splicing <- full_data[, ..cols_to_keep]
-    rm(full_data)
-    gc()
-    
-    # Remove low-variance rows
-    data_cols <- cols_to_keep[-1]
-    row_vars <- apply(splicing[, ..data_cols], 1, function(x) var(x, na.rm=TRUE))
-    splicing <- splicing[which(row_vars > 1e-10), ]
-    
-    print(paste("After variance filtering:", nrow(splicing), "rows"))
-    
-    # Write output
-    output_file <- paste0(outdir, "/splicing_", tissue_dir, ".txt")
-    fwrite(splicing, output_file, sep="\t", quote=FALSE)
-    print("Splicing matrix written successfully")
-    
-}, error = function(e) {
-    print(paste("ERROR in STEP 2:", e$message))
-    quit(status=1)
-})
-REOF
-
-# Run with environment variables
-TMP_HRA_UNDER="$TMP_HRA_UNDER" \
-SPLICING_RAW="$SPLICING_RAW" \
-OUTDIR="$OUTDIR" \
-TISSUE_DIR="$TISSUE_DIR" \
-Rscript "$OUTDIR/step2.R"
-
-##############################################
-# STEP 3: Subset + Transpose SNPs
-##############################################
-echo "[3] Subsetting SNPs..."
-python3 << EOF
-import re
 import numpy as np
-import sys
-import io
 
 try:
-    # Read HDA (WGS) sample IDs
-    with open("$TMP_HDA", 'r') as f:
-        keep_ids = set(line.strip() for line in f if line.strip())
-    
-    print(f"Looking for {len(keep_ids)} WGS samples", file=sys.stderr)
-    
-    # Read BIM file to get SNP names and positions
-    chrpos_names = []
-    with open("$BIM", 'r') as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) >= 4:
-                chrpos_names.append(f"chr{parts[0]}:{parts[3]}")
-    
-    print(f"Found {len(chrpos_names)} SNPs in BIM file", file=sys.stderr)
-    
-    # Read RAW file and extract genotypes - use latin1 which accepts all bytes
-    sample_ids = []
-    rows = []
-    
-    with io.open("$RAW", 'r', encoding='utf-8', errors='surrogateescape') as f:
-        header = f.readline().split()
-        n_snps = len(chrpos_names)
-        
-        for line_num, line in enumerate(f, 1):
-            fields = line.split()
-            if len(fields) < 6 + n_snps:
-                continue
-            
-            # Extract individual ID and remove batch suffix if present
-            iid = fields[1]
-            iid = re.sub(r'-b\d+$', '', iid)
-            
-            if iid in keep_ids:
-                sample_ids.append(iid)
-                
-                # Extract genotypes (0, 1, 2, or NA)
-                geno_fields = fields[6:6+n_snps]
-                geno_row = []
-                for v in geno_fields:
-                    try:
-                        geno_row.append(float(v))
-                    except (ValueError, TypeError):
-                        geno_row.append(np.nan)
-                
-                rows.append(geno_row)
-    
-    if not rows:
-        print("ERROR: No matching genomic samples found.", file=sys.stderr)
-        sys.exit(1)
-    
-    print(f"Found genotypes for {len(sample_ids)} samples", file=sys.stderr)
-    
-    # Convert to numpy array
-    geno = np.array(rows, dtype=float)
-    
-    # Calculate allele frequency and MAF
-    af = np.nanmean(geno, axis=0) / 2.0
-    maf = np.minimum(af, 1 - af)
-    keep_idx = np.where(np.nan_to_num(maf) >= 0.05)[0]
-    
-    print(f"Keeping {len(keep_idx)} SNPs with MAF >= 0.05", file=sys.stderr)
-    
-    # Write output
-    with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'w') as out:
-        out.write('snpid\t' + '\t'.join(sample_ids) + '\n')
-        for idx in keep_idx:
-            vals = []
-            for v in geno[:, idx]:
-                if np.isnan(v):
-                    vals.append('NA')
-                else:
-                    vals.append(str(int(v)))
-            out.write(chrpos_names[idx] + '\t' + '\t'.join(vals) + '\n')
-    
-    print("SNP file written successfully", file=sys.stderr)
+    # 1. LOAD DATA
+    breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
+    meta = pd.read_csv("$METADATA_CSV", low_memory=False)
+    pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
-except Exception as e:
-    print(f"ERROR in STEP 3: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-EOF
+    # Load sex mismatch exclusions
+    try:
+        with open("$SEX_MISMATCH_FILE") as f:
+            sex_mismatch_samples = {line.strip() for line in f if line.strip()}
+    except FileNotFoundError:
+        sex_mismatch_samples = set()
 
-##############################################
-# STEP 4: Subset Covariates
-##############################################
-echo "[4] Subsetting Covariates..."
-python3 << EOF
-import pandas as pd
+    print(f"DEBUG: Loaded {len(sex_mismatch_samples)} sex-mismatch samples")
 
-try:
-    # Read HRA (RNA) sample IDs
-    with open("$TMP_HRA", 'r') as f:
-        keep_ids = set(line.strip() for line in f if line.strip())
+    # Remove from metadata immediately
+    meta = meta[~meta['externalsampleid'].isin(sex_mismatch_samples)].copy()
+
+    # 2. DEFINE TISSUE PATTERN
+    patterns = {
+        "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
+        "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
+        "Lumbar_Spinal_Cord": "Lumbar Spinal Cord|Spinal_Cord_Lumbosacral|Lumbosacral_Spinal_Cord|Lumbar_spinal_cord|Lumbar|Lumbosacral",
+        "Thoracic_Spinal_Cord": "Thoracic Spinal Cord|Thoracic",
+        "Frontal_Cortex": "Frontal Cortex|Frontal",
+        "Cerebellum": "Cerebellum"
+    }
+    pattern = patterns.get("$TISSUE", "$TISSUE")
+
+    # 3. FILTERING & BEST REPLICATE SELECTION
+    approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
+    meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
+
+    mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
+    meta_tissue = meta_filt[mask].copy()
+
+    def get_rin(row):
+        try:
+            val1 = float(row.iloc[16]) if pd.notnull(row.iloc[16]) else 0
+            val2 = float(row.iloc[17]) if pd.notnull(row.iloc[17]) else 0
+            return max(val1, val2)
+        except: return 0
+
+    meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
+
+    # FILTER: PMI <= 40 hours & RIN >= 3
+    print(f"DEBUG: Before filtering: {len(meta_tissue)} samples")
+    meta_tissue = meta_tissue[(meta_tissue['post_mortem_interval_in_hours'] <= 40) & (meta_tissue['RIN_score'] >= 3)]
+    print(f"DEBUG: After PMI/RIN filter: {len(meta_tissue)} samples")
+
+    meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
+
+    # 4. TRIPLE INTERSECTION
+    raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
     
-    # Read cleaned covariates
     encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-    df_cov = None
-    
+    splicing_headers = []
     for enc in encodings:
         try:
-            df_cov = pd.read_csv("$CLEAN_COV", sep='\t', encoding=enc, on_bad_lines='skip')
+            splicing_headers = pd.read_csv("$SPLICING_RAW", sep='\t', nrows=0, encoding=enc).columns.tolist()
             break
         except UnicodeDecodeError:
             continue
-    
-    if df_cov is None:
-        raise ValueError("Could not read covariates file")
-    
-    # Filter to keep_ids
-    df_cov = df_cov[df_cov['externalsampleid'].isin(keep_ids)]
-    
-    # Save temporary version
-    df_cov.to_csv("$OUTDIR/covariates_temp.txt", sep='\t', index=False)
-    print(f"Subset covariates to {len(df_cov)} samples", file=sys.stderr)
 
-except Exception as e:
-    print(f"ERROR in STEP 4: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-EOF
+    meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
+    common_subjects = sorted(list(set(meta_unique['externalsubjectid']) & set(raw_df['IID'])))
 
-##############################################
-# STEP 5: ID Translation & Final Alignment
-##############################################
-echo "[5] Final Alignment..."
-python3 << EOF
-import pandas as pd
-import sys
+    sub_to_hra = {}
+    final_aligned_subjects = []
+    for s in common_subjects:
+        hra = meta_unique.loc[meta_unique['externalsubjectid'] == s, 'hra_clean'].values[0]
+        matches = [c for c in splicing_headers if c.startswith(hra)]
+        if matches:
+            final_aligned_subjects.append(s)
+            sub_to_hra[s] = matches[0]
 
-try:
-    # Read mapping file
-    mapping = pd.read_csv("$TMP_MATCHED", header=None, names=['sub', 'hra', 'hda'])
-    hda_to_hra = dict(zip(mapping['hda'], mapping['hra']))
-    
-    # Read SNP file to get sample order
-    with open("$OUTDIR/snp_${TISSUE_DIR}.txt", 'r') as f:
-        snp_header = f.readline().strip().split('\t')
-        snp_hda_samples = snp_header[1:]
-    
-    print(f"SNP file has {len(snp_hda_samples)} samples", file=sys.stderr)
-    
-    # Convert HDA IDs to HRA IDs
-    target_hra_samples = []
-    for hda_id in snp_hda_samples:
-        if hda_id in hda_to_hra:
-            target_hra_samples.append(hda_to_hra[hda_id])
-        else:
-            print(f"WARNING: Could not find mapping for {hda_id}", file=sys.stderr)
-            target_hra_samples.append(hda_id)
-    
-    # Read splicing matrix
-    encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
-    df_splicing = None
-    
+    num_final = len(final_aligned_subjects)
+
+    # 5. ALIGN SPLICING & SNPS
+    splicing_df = None
     for enc in encodings:
         try:
-            df_splicing = pd.read_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', encoding=enc, 
-                                      index_col=0, on_bad_lines='skip')
+            splicing_df = pd.read_csv("$SPLICING_RAW", sep='\t', usecols=['chrom'] + [sub_to_hra[s] for s in final_aligned_subjects], index_col=0, encoding=enc)
             break
         except UnicodeDecodeError:
             continue
-    
-    if df_splicing is None:
-        raise ValueError("Could not read splicing file")
-    
-    # Replace underscores in HRA names to match splicing matrix
-    target_hra_samples_underscore = [s.replace('-', '_') for s in target_hra_samples]
-    
-    # Subset and reorder splicing matrix
-    cols_available = [c for c in target_hra_samples_underscore if c in df_splicing.columns]
-    if not cols_available:
-        print("ERROR: No matching samples found in splicing matrix", file=sys.stderr)
-        sys.exit(1)
-    
-    df_splicing_aligned = df_splicing[cols_available]
-    
-    # Reorder columns to match SNP sample order
-    df_splicing_aligned.columns = snp_hda_samples[:len(cols_available)]
-    df_splicing_aligned.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t')
-    
-    print(f"Aligned splicing matrix to {len(cols_available)} samples", file=sys.stderr)
-    
-    # Align covariates similarly
-    df_cov = pd.read_csv("$OUTDIR/covariates_temp.txt", sep='\t', index_col=0)
-    target_hra_cov = [s.replace('_', '-') for s in cols_available]
-    
-    # Filter covariate rows
-    available_cov = [c for c in target_hra_cov if c in df_cov.index]
-    df_cov_aligned = df_cov.loc[available_cov].T
-    df_cov_aligned.columns = snp_hda_samples[:len(available_cov)]
-    df_cov_aligned.to_csv("$OUTDIR/covariates_${TISSUE_DIR}.txt", sep='\t')
-    
-    print(f"Aligned covariates to {len(available_cov)} samples", file=sys.stderr)
+
+    splicing_final = splicing_df[[sub_to_hra[s] for s in final_aligned_subjects]]
+    splicing_final.columns = final_aligned_subjects
+
+    # Non-Zero Variance Row Filter
+    row_vars = splicing_final.var(axis=1, skipna=True)
+    splicing_final = splicing_final[row_vars > 1e-10]
+
+    # Correct handling of SNP indices to preserve additive encoding (0,1,2)
+    snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID'])
+    snp_matrix = snp_matrix.loc[final_aligned_subjects]
+    snp_final = snp_matrix.T
+
+    def clean_snp_id(full_id):
+        clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
+        parts = str(clean_id).split(':')
+        if len(parts) >= 2:
+            return clean_id if str(parts[0]).startswith('chr') else f"chr{parts[0]}:{parts[1]}"
+        return clean_id
+
+    snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
+    snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
+
+    print(f"DEBUG: SNP matrix shape after dedup: {snp_final.shape}")
+    print(f"DEBUG: Sample order check - first 3 samples: {list(snp_final.columns[:3])}")
+
+    # 6. COVARIATE MERGE
+    cov_full = pd.read_csv("$COV_FILE", sep='\t')
+    cov_cols_to_keep = ['externalsampleid'] + [c for c in cov_full.columns if c not in meta.columns]
+    cov = cov_full[cov_cols_to_keep].drop_duplicates(subset='externalsampleid')
+
+    meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)].copy()
+    cov_merged = pd.merge(meta_aligned, cov, on='externalsampleid', how='inner')
+    cov_merged = pd.merge(cov_merged, pca, left_on='externalsubjectid', right_on='IID', how='inner')
+    cov_merged = cov_merged.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
+
+    cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
+    cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
+
+    cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)
+    cov_final = cov_final[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
+
+    # 7. SAVE
+    splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
+    snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
+    cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
+
+    print(f"SUCCESS: Processed {num_final} unique samples for $TISSUE")
 
 except Exception as e:
-    print(f"ERROR in STEP 5: {e}", file=sys.stderr)
+    print(f"ERROR in processing steps: {e}", file=sys.stderr)
     import traceback
     traceback.print_exc()
     sys.exit(1)
 EOF
 
 ##############################################
-# STEP 6: Encode Covariates
+# STEP 7: Coordinate Mapping Location Files
 ##############################################
-echo "[6] Encoding Covariates..."
-python3 << EOF
-import csv
-import sys
+echo "Generating deduplicated location files for $TISSUE..."
 
-try:
-    DROP = {'externalsampleid', 'externalsubjectid', 'tissue', 'subject_group', 'sex'}
-    NUMERIC = {'age_at_death', 'rin', 'rna_skew', 'is_als'}
-    
-    # Read the covariate file
-    out_rows = []
-    header = None
-    
-    with open("$OUTDIR/covariates_${TISSUE_DIR}.txt", 'r', encoding='latin1', errors='replace') as f:
-        reader = csv.reader(f, delimiter='\t')
-        header_row = next(reader)
-        header = header_row[1:]  # Skip index column
-        
-        for row in reader:
-            if len(row) < 2:
-                continue
-            
-            cov_name = row[0].lower()
-            
-            # Skip dropped covariates
-            if cov_name in DROP:
-                continue
-            
-            # Process numeric covariates
-            if cov_name in NUMERIC:
-                vals = []
-                for v in row[1:]:
-                    try:
-                        if v and v != 'NA' and v != 'nan':
-                            vals.append(str(float(v)))
-                        else:
-                            vals.append('NA')
-                    except (ValueError, TypeError):
-                        vals.append('NA')
-                out_rows.append((row[0], vals))
-    
-    # Write encoded output
-    with open("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", 'w') as f:
-        f.write('covariate\t' + '\t'.join(header) + '\n')
-        for name, vals in out_rows:
-            f.write(name + '\t' + '\t'.join(vals) + '\n')
-    
-    print(f"Encoded {len(out_rows)} covariates", file=sys.stderr)
+# 1. SNP Location file generation
+echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
+awk 'BEGIN{OFS="\t"} {
+    chrom = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    print "chr"$1":"$4, chrom, $4;
+}' $BIM | sed 's/chrchr/chr/g' | sort -u -k1,1 >> $OUTDIR/snp_location.txt
 
-except Exception as e:
-    print(f"ERROR in STEP 6: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-EOF
+# 2. Splicing target coordinate maps
+echo -e "geneid\tchr\tleft\tright" > $OUTDIR/splicing_location.txt
+awk 'BEGIN{OFS="\t"} { print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" | sort -u -k1,1 >> $OUTDIR/splicing_location.txt
+
+# Clean up temporary structural coordinates
+rm -f "$SPLICING_LOC_SRC"
+
+echo "Location files complete for $TISSUE."
 
 ##############################################
-# STEP 7: SNP location
-##############################################
-echo "[7] Generating SNP location file..."
-python3 << EOF
-import sys
-
-try:
-    with open("$OUTDIR/snp_location.txt", 'w') as out:
-        out.write("snpid\tchr\tpos\n")
-        
-        with open("$BIM", 'r') as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 4:
-                    chr_num = parts[0]
-                    pos = parts[3]
-                    snpid = f"chr{chr_num}:{pos}"
-                    out.write(f"{snpid}\tchr{chr_num}\t{pos}\n")
-    
-    print("SNP location file written", file=sys.stderr)
-
-except Exception as e:
-    print(f"ERROR in STEP 7: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
-
-##############################################
-# STEP 8: Splicing location
-##############################################
-echo "[8] Generating splicing location file..."
-python3 << EOF
-import sys
-
-try:
-    with open("$OUTDIR/splicing_location.txt", 'w') as out:
-        out.write("geneid\tchr\tleft\tright\n")
-        
-        with open("$SPLICING_LOC_SRC", 'r', errors='replace') as f:
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) >= 4:
-                    chr_part = parts[0]
-                    left = parts[1]
-                    right = parts[2]
-                    geneid = parts[3]
-                    out.write(f"{geneid}\t{chr_part}\t{left}\t{right}\n")
-    
-    print("Splicing location file written", file=sys.stderr)
-
-except Exception as e:
-    print(f"ERROR in STEP 8: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
-
-##############################################
-# STEP 9: Cleanup temporary files
-##############################################
-echo "[9] Cleaning up temporary files..."
-rm -f "$TMP_META" "$TMP_WGS" "$TMP_MATCHED" "$TMP_HRA" "$TMP_HRA_UNDER" "$TMP_HDA" "$OUTDIR/covariates_temp.txt"
-
-##############################################
-# STEP 10: Final Summary
+# STEP 8: Final Summary Output
 ##############################################
 echo "============================================"
-echo "  sQTL Prep complete for $TISSUE ($STRAT_SEX)"
+echo "  sQTL Prep complete for $TISSUE"
 echo "  Output directory: $OUTDIR"
 echo "  $(date)"
 echo "============================================"
 
-# List output files
+# List output files to mirror initial script diagnostics
 echo "Output files:"
 ls -lh "$OUTDIR"/*.txt 2>/dev/null || echo "No output files found"
