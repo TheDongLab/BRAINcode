@@ -12,35 +12,47 @@
 # on each sample as a SLURM array job.
 #
 # For most experiments: discovers samples from RNAseq/Raw/ subdirectories
-#                       and writes output to RNAseq/Processed/.
-# For target_ALS:       discovers samples from RNAseq/Processed/ subdirectories
-#                       (BAM already present; steps 1-4 are skipped via status
-#                       files, and the BAM is symlinked to the expected name).
+#                        and writes output to RNAseq/Processed/.
+# For target_ALS:        discovers samples from RNAseq/Processed/ subdirectories
+#                        (BAM already present; steps 1-4 are skipped via status
+#                        files, and the BAM is symlinked to the expected name).
 #
 # Lives in: $HOME/donglab/pipelines/scripts/rnaseq/
 #
 # Usage:
-#   bash bulkRNAseq.pipeline.sh            # count samples and self-submit
-#   bash bulkRNAseq.pipeline.sh --dry-run  # preview without submitting
+#   bash bulkRNAseq.pipeline.sh [<username>]             # count samples and self-submit
+#   bash bulkRNAseq.pipeline.sh [<username>] --dry-run   # preview without submitting
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
+# ── Parse Arguments & Dynamic User Resolution ─────────────────────────────────
 DRY_RUN=false
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+TARGET_USER=""
+
+for arg in "${@:-}"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+        DRY_RUN=true
+    elif [[ -n "$arg" ]]; then
+        TARGET_USER="$arg"
+    fi
+done
+
+# Fall back to current system user if no target user was explicitly passed
+TARGET_USER="${TARGET_USER:-$USER}"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIR="/home/zw529/donglab/data"
-PIPELINE_DIR="$HOME/donglab/pipelines/scripts/rnaseq"
+DATA_DIR="/home/${TARGET_USER}/donglab/data"
+PIPELINE_DIR="/home/${TARGET_USER}/donglab/pipelines/scripts/rnaseq"
 SCRIPT="$PIPELINE_DIR/_RNAseq.sh"
 
 # ── Target experiments ────────────────────────────────────────────────────────
-# Format: "EXPERIMENT_NAME|raw"       --> discover from RNAseq/Raw/, output to RNAseq/Processed/
+# Format: "EXPERIMENT_NAME|raw"   --> discover from RNAseq/Raw/, output to RNAseq/Processed/
 #         "EXPERIMENT_NAME|processed" --> discover from RNAseq/Processed/ (BAM already present)
 EXPERIMENTS=(
-    "AMPALS_GSE124439|raw"
-    "AMPALS_GSE219281|raw"
-    "GEO_GSE153960|raw"
+#    "AMPALS_GSE124439|raw"
+#    "AMPALS_GSE219281|raw"
+#    "GEO_GSE153960|raw"
     "target_ALS|processed"
 )
 
@@ -94,6 +106,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 
     echo "=============================="
     echo "Task   : $SLURM_ARRAY_TASK_ID"
+    echo "User   : $TARGET_USER"
     echo "Exp    : $EXP"
     echo "Tissue : $TISSUE"
     echo "Sample : $SAMPLE"
@@ -119,7 +132,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 
         mkdir -p "$OUTDIR"
         cd "$PIPELINE_DIR"
-        bash "$SCRIPT" "$FASTQ1" "$FASTQ2" "$OUTDIR" \
+        bash "$SCRIPT" "$FASTQ1" "$FASTQ2" "$OUTDIR" "$TARGET_USER" \
             > "$OUTDIR/output.out" \
             2> "$OUTDIR/output.err"
 
@@ -159,9 +172,9 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
         done
         echo "Pre-touched status files for steps 1-4 (fastqc, trim, kpal, mapping)."
 
-        # Call _RNAseq.sh with dummy FASTQ args (steps 1-4 will be skipped)
+        # Call _RNAseq.sh with dummy FASTQ args (steps 1-4 will be skipped) and the username argument ($4)
         cd "$PIPELINE_DIR"
-        bash "$SCRIPT" "SKIP" "SKIP" "$OUTDIR" \
+        bash "$SCRIPT" "SKIP" "SKIP" "$OUTDIR" "$TARGET_USER" \
             > "$OUTDIR/output.out" \
             2> "$OUTDIR/output.err"
     fi
@@ -170,7 +183,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 fi
 
 # ── Initial run: count samples and self-submit as array ───────────────────────
-echo "Scanning for samples..."
+echo "Scanning data directory for user: $TARGET_USER"
 build_master
 COUNT=${#MASTER[@]}
 echo "Found $COUNT samples."
@@ -190,5 +203,6 @@ if $DRY_RUN; then
 fi
 
 echo "Submitting array job: 1-${COUNT} (max 50 concurrent)..."
-sbatch --array="1-${COUNT}%50" "$0"
+# Explicitly forward the targeted username argument down to the self-submitted sbatch job
+sbatch --array="1-${COUNT}%50" "$0" "$TARGET_USER"
 echo "Done. Monitor with: squeue -u $USER"
