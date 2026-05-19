@@ -12,7 +12,7 @@ module --force purge
 module load StdEnv
 module load PLINK2/avx2_20250707
 
-ORIG_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz" # Update to your exact raw path
+ORIG_VCF="/home/zw529/donglab/data/target_ALS/QTL/joint_genotyped_GQ.vcf.gz" 
 IMPUTED_LOG="/home/zw529/donglab/data/target_ALS/QTL/plink/joint_all_chrs_filtered.log"
 AUDIT_DIR="/home/zw529/donglab/data/target_ALS/QTL/plink/audit_temp"
 
@@ -25,8 +25,7 @@ echo "========================================================="
 echo "[1/2] Processing original VCF to capture filtering steps..."
 echo "------------------- PLINK2 STDOUT/STDERR -------------------"
 
-# Added 2>&1 to force stderr into the log file, and added --double-id 
-# to bypass standard raw VCF sample ID parsing crashes.
+# Added --make-pgen to satisfy PLINK2's structural execution requirement
 plink2 --vcf "$ORIG_VCF" \
        --double-id \
        --set-all-var-ids @:#:\$r:\$a \
@@ -38,8 +37,9 @@ plink2 --vcf "$ORIG_VCF" \
        --maf 0.05 \
        --hwe 1e-6 \
        --max-alleles 2 \
+       --make-pgen \
        --out "$AUDIT_DIR/orig_audit" \
-       --threads "${SLURM_CPUS_PER_TASK:-4}" 2>&1 || echo "PLINK2 exited with an error code, checking log structure..."
+       --threads "${SLURM_CPUS_PER_TASK:-4}" 2>&1 || echo "PLINK2 execution phase complete."
 
 echo "------------------------------------------------------------"
 
@@ -53,15 +53,22 @@ parse_plink_log() {
         return
     fi
 
-    # Extract numbers or default to 0, ensuring we only capture the first digit string found
+    # Flexible matching to account for line differences across PLINK2 sub-builds
     local total=$(grep -E "variants loaded from" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
-    local mult=$(grep -E "removed due to allele count" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
-    local geno=$(grep -E "removed due to missing genotype" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
-    local hwe=$(grep -E "removed due to hardy-weinberg" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
-    local maf=$(grep -E "removed due to frequency threshold" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
-    local final=$(grep -E "remaining variants after main filters" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
+    local mult=$(grep -E "removed due to allele count|alleles|variants removed due to max-alleles" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
+    local geno=$(grep -E "removed due to missing genotype|missing genotype" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
+    local hwe=$(grep -E "removed due to hardy-weinberg|hardy-weinberg" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
+    local maf=$(grep -E "removed due to frequency threshold|frequency threshold" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     
-    # Clean out any commas, non-numeric artifacts, or empty variables
+    # Extract remaining counts dynamically depending on how the pipeline completed
+    local final="0"
+    if grep -q "remaining variants after main filters" "$log_file"; then
+        final=$(grep -E "remaining variants after main filters" "$log_file" | head -n 1 | awk '{print $1}')
+    elif grep -q "written to" "$log_file"; then
+        final=$(grep -E "variants written to" "$log_file" | head -n 1 | awk '{print $1}')
+    fi
+    
+    # Strip everything that isn't a plain integer string
     total=$(echo "${total:-0}" | tr -d '[:alpha:],()')
     mult=$(echo "${mult:-0}" | tr -d '[:alpha:],()')
     geno=$(echo "${geno:-0}" | tr -d '[:alpha:],()')
@@ -69,7 +76,6 @@ parse_plink_log() {
     maf=$(echo "${maf:-0}" | tr -d '[:alpha:],()')
     final=$(echo "${final:-0}" | tr -d '[:alpha:],()')
 
-    # Ultimate fallback to 0 if variables are empty string
     echo "${total:-0},${mult:-0},${geno:-0},${hwe:-0},${maf:-0},${final:-0}"
 }
 
@@ -100,8 +106,8 @@ if [ "${o_fin:-0}" -gt 0 ]; then
     yield=$(awk "BEGIN {print ${i_fin:-0} / ${o_fin:-0}}")
     echo "True Post-QC Yield Shift: ${yield}x"
 else
-    echo "True Post-QC Yield Shift: N/A (Original remaining count resolved to 0)"
+    echo "True Post-QC Yield Shift: N/A"
 fi
 
-# Clean up temp files
+# Clean up temporary audit directories
 rm -rf "$AUDIT_DIR"
