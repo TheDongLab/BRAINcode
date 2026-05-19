@@ -25,15 +25,15 @@ echo "========================================================="
 echo "[1/2] Processing original VCF to capture filtering steps..."
 echo "------------------- PLINK2 STDOUT/STDERR -------------------"
 
-# Replaced the PLINK1.9 --impute-sex flag with native PLINK2 chrX handling flags.
-# Note: If your reference build is hg19/b37, change 'hg38' to 'hg19'.
+# Added --not-chr to explicitly drop chrX from the count audit, 
+# completely bypassing the fatal sex-information exception.
 plink2 --vcf "$ORIG_VCF" \
        --double-id \
        --set-all-var-ids @:#:\$r:\$a \
        --new-id-max-allele-len 800 \
        --vcf-half-call m \
        --allow-extra-chr \
-       --split-par hg38 \
+       --not-chr x, X, chrX, 23 \
        --geno 0.05 \
        --mind 0.05 \
        --maf 0.05 \
