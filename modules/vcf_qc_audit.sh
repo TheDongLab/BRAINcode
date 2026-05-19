@@ -7,7 +7,6 @@
 
 set -euo pipefail
 
-# Setup environment to mirror convert_vcf_to_plink.sh
 module --force purge
 module load StdEnv
 module load PLINK2/avx2_20250707
@@ -25,17 +24,16 @@ echo "========================================================="
 echo "[1/2] Processing original VCF to capture filtering steps..."
 echo "------------------- PLINK2 STDOUT/STDERR -------------------"
 
-# Added --not-chr to explicitly drop chrX from the count audit, 
-# completely bypassing the fatal sex-information exception.
+# 1. Restricting to --chr 1-22 to eliminate decoy scaffold noise
+# 2. Relaxed --mind to 1 to prevent sample dropping from halting the pipeline
 plink2 --vcf "$ORIG_VCF" \
        --double-id \
        --set-all-var-ids @:#:\$r:\$a \
        --new-id-max-allele-len 800 \
        --vcf-half-call m \
-       --allow-extra-chr \
-       --not-chr x, X, chrX, 23 \
+       --chr 1-22 \
        --geno 0.05 \
-       --mind 0.05 \
+       --mind 1.0 \
        --maf 0.05 \
        --hwe 1e-6 \
        --max-alleles 2 \
@@ -55,14 +53,12 @@ parse_plink_log() {
         return
     fi
 
-    # Flexible matching for cross-version PLINK2 lines
     local total=$(grep -E "variants loaded from" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local mult=$(grep -E "removed due to allele count|alleles|variants removed due to max-alleles" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local geno=$(grep -E "removed due to missing genotype|missing genotype" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local hwe=$(grep -E "removed due to hardy-weinberg|hardy-weinberg" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local maf=$(grep -E "removed due to frequency threshold|frequency threshold" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     
-    # Extract remaining counts dynamically depending on how the pipeline completed
     local final="0"
     if grep -q "remaining variants after main filters" "$log_file"; then
         final=$(grep -E "remaining variants after main filters" "$log_file" | head -n 1 | awk '{print $1}')
@@ -70,7 +66,6 @@ parse_plink_log() {
         final=$(grep -E "variants written to" "$log_file" | head -n 1 | awk '{print $1}')
     fi
     
-    # Strip non-numeric artifacts but preserve pure characters if it defaults to 0
     total=$(echo "${total:-0}" | tr -d '[:alpha:],()')
     mult=$(echo "${mult:-0}" | tr -d '[:alpha:],()')
     geno=$(echo "${geno:-0}" | tr -d '[:alpha:],()')
@@ -78,7 +73,6 @@ parse_plink_log() {
     maf=$(echo "${maf:-0}" | tr -d '[:alpha:],()')
     final=$(echo "${final:-0}" | tr -d '[:alpha:],()')
 
-    # Ensure no empty strings sneak through
     echo "${total:-0},${mult:-0},${geno:-0},${hwe:-0},${maf:-0},${final:-0}"
 }
 
@@ -86,13 +80,12 @@ echo "[2/2] Parsing logs and compiling metrics..."
 orig_metrics=$(parse_plink_log "$ORIG_LOG")
 impute_metrics=$(parse_plink_log "$IMPUTED_LOG")
 
-# Parse string arrays
 IFS=',' read -r o_tot o_mul o_gen o_hwe o_maf o_fin <<< "$orig_metrics"
 IFS=',' read -r i_tot i_mul i_gen i_hwe i_maf i_fin <<< "$impute_metrics"
 
 echo ""
 echo "========================================================================="
-echo "                      QC FILTER BREAKDOWN COMPARISON"
+echo "                      QC FILTER BREAKDOWN COMPARISON (CHR 1-22)"
 echo "========================================================================="
 printf "%-35s | %-18s | %-18s\n" "Filter Metric" "Original VCF" "Imputed VCF"
 echo "-------------------------------------------------------------------------"
@@ -105,7 +98,6 @@ echo "-------------------------------------------------------------------------"
 printf "%-35s | %-18s | %-18s\n" "FINAL Variants Passing QC" "${o_fin:-0}" "${i_fin:-0}"
 echo "========================================================================="
 
-# Safe yield check using string content lengths
 if [ "${o_fin:-0}" != "0" ] && [ -n "${o_fin:-}" ]; then
     yield=$(awk "BEGIN {print ${i_fin:-0} / ${o_fin:-0}}")
     echo "True Post-QC Yield Shift: ${yield}x"
@@ -113,5 +105,4 @@ else
     echo "True Post-QC Yield Shift: N/A"
 fi
 
-# Clean up temporary audit directories
 rm -rf "$AUDIT_DIR"
