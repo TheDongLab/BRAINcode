@@ -7,10 +7,15 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
+set -euo pipefail
+
+# Dynamic user assignment via optional 3rd argument, falling back to current system user
+TARGET_USER="${3:-$USER}"
+
 ###########################################
 # Reference paths
 ###########################################
-GENOME_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38"
+GENOME_BASE="/home/${TARGET_USER}/donglab/references/genome/Homo_sapiens/UCSC/hg38"
 STAR_GENOME="${GENOME_BASE}/Sequence/STAR"
 GENOME_FA="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa"
 GENOME_FAI="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa.fai"
@@ -29,7 +34,7 @@ CPU=${SLURM_CPUS_PER_TASK:-4}
 ###########################################
 # Resolve sample for this array task
 ###########################################
-ALS_ROOT="/home/zw529/donglab/data/target_ALS"
+ALS_ROOT="/home/${TARGET_USER}/donglab/data/target_ALS"
  
 mapfile -t SAMPLE_DIRS < <(find "${ALS_ROOT}" \
     -mindepth 4 -maxdepth 4 \
@@ -47,12 +52,11 @@ samplename=$(basename "${SAMPLE_DIR}")
  
 exec > "${SAMPLE_DIR}/output_remap.out" 2> "${SAMPLE_DIR}/output_remap.err"
  
-echo "[$(date)] Sample     : ${samplename}"
+echo "[$(date)] Sample      : ${samplename}"
 echo "[$(date)] Sample dir : ${SAMPLE_DIR}"
  
 ###########################################
 # Locate the original sorted BAM via the standard symlink — never touch it
-# Using the symlink means the underlying file is never modified regardless of what the original BAM is actually named (e.g. *.sorted.bam, *.final.bam)
 ###########################################
 ORIG_BAM="${SAMPLE_DIR}/STAR.Aligned.sortedByCoord.out.bam"
  
@@ -61,12 +65,11 @@ if [[ ! -L "${ORIG_BAM}" && ! -f "${ORIG_BAM}" ]]; then
     exit 1
 fi
  
-# Resolve the real path just for logging — we never write to it
+# Resolve the real path just for logging
 ORIG_BAM_REAL=$(readlink -f "${ORIG_BAM}")
 echo "[$(date)] Input BAM  : ${ORIG_BAM} -> ${ORIG_BAM_REAL}  (will not be modified)"
  
 # All remap outputs live in a dedicated subdirectory — fully isolated
-# from the original BAM and its index
 REMAP_DIR="${SAMPLE_DIR}/remap_chimeric"
 mkdir -p "${REMAP_DIR}"
  
@@ -90,11 +93,6 @@ fi
  
 ###########################################
 # STEP 2: STAR remap (chimeric)
-#
-# Prefix: remap_chimeric/<samplename>.remap.
-# Key outputs:
-#   <samplename>.remap.Aligned.sortedByCoord.out.bam   <- new BAM, original untouched
-#   <samplename>.remap.Chimeric.out.junction            <- input for CIRCexplorer2
 ###########################################
 STAR_PREFIX="${REMAP_DIR}/${samplename}.remap."
 REMAP_BAM="${STAR_PREFIX}Aligned.sortedByCoord.out.bam"
@@ -128,8 +126,7 @@ else
 fi
  
 ###########################################
-# STEP 3: Symlink key outputs to sample root for easy access (IGV, CIRCexplorer2, etc.)
-# Symlinks are clearly named *remap* so they can never be confused with the original BAM
+# STEP 3: Symlink key outputs to sample root
 ###########################################
 REMAP_BAM_LINK="${SAMPLE_DIR}/${samplename}.remap.sorted.bam"
 if [[ ! -L "${REMAP_BAM_LINK}" ]]; then
@@ -137,7 +134,6 @@ if [[ ! -L "${REMAP_BAM_LINK}" ]]; then
     echo "[STEP 3] Symlink: ${REMAP_BAM_LINK} -> ${REMAP_BAM}"
 fi
  
-# Named STAR.Chimeric.out.junction so CIRCexplorer2 parse can be called from SAMPLE_DIR without specifying the full path into remap_chimeric/
 CHIM_JXN_LINK="${SAMPLE_DIR}/STAR.Chimeric.out.junction"
 if [[ ! -L "${CHIM_JXN_LINK}" ]]; then
     ln -s "${CHIM_JXN}" "${CHIM_JXN_LINK}"
@@ -147,10 +143,9 @@ fi
 ###########################################
 # STEP 4: circRNA calling with CIRCexplorer2
 ###########################################
-    echo "[STEP 4] circRNA calling starting..."
+echo "[STEP 4] circRNA calling starting..."
 if true; then
  
-    # Check file exists (may be 0 lines if no chimeric reads — still valid to proceed)
     NJXN=0
     if [[ -f "${CHIM_JXN}" ]]; then
         NJXN=$(wc -l < "${CHIM_JXN}")
@@ -186,7 +181,8 @@ if true; then
  
             [ -f "${REMAP_BAM}.bai" ] || samtools index "${REMAP_BAM}"
  
-            python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+            # Updated to dynamic path context
+            python3 "/home/${TARGET_USER}/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py" \
                 "${SAMPLE_DIR}/circularRNA_known.txt"
  
             HEADER="chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"
@@ -227,19 +223,15 @@ LOWCONF_CIRC="${SAMPLE_DIR}/low_conf_circularRNA_known.txt"
 if ${CLEAN_OK}; then
     echo "[STEP 5] All expected outputs detected — performing full cleanup"
 
-    # remove FASTQ
     [ -f "${UNMAPPED_FQ}" ] && rm -f "${UNMAPPED_FQ}"
 
-    # remove circ intermediate + final files
     rm -f "${SAMPLE_DIR}/back_spliced_junction.bed"
     rm -f "${SAMPLE_DIR}/back_spliced_junction.txt"
     rm -f "${SAMPLE_DIR}/circularRNA_known.txt"
 
-    # clean remap_chimeric directory (keep only chimeric junction file)
     find "${REMAP_DIR}" -type f ! -name "*.remap.Chimeric.out.junction" -delete
 
     echo "[STEP 5] REMAP_DIR cleaned (only Chimeric.out.junction retained)"
-
 else
     echo "[STEP 5] WARNING: Missing expected outputs — skipping destructive cleanup" >&2
 fi
