@@ -172,7 +172,9 @@ try:
     splicing_df = None
     for enc in encodings:
         try:
-            splicing_df = pd.read_csv("$SPLICING_RAW", sep='\t', usecols=['chrom'] + [sub_to_hra[s] for s in final_aligned_subjects], index_col=0, encoding=enc)
+            # FIX INTEGRATED: Added 'junction_id' explicitly to usecols alongside target samples
+            target_cols = ['junction_id'] + [sub_to_hra[s] for s in final_aligned_subjects]
+            splicing_df = pd.read_csv("$SPLICING_RAW", sep='\t', usecols=target_cols, index_col=0, encoding=enc)
             break
         except UnicodeDecodeError:
             continue
