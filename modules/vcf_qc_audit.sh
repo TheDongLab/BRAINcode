@@ -25,13 +25,15 @@ echo "========================================================="
 echo "[1/2] Processing original VCF to capture filtering steps..."
 echo "------------------- PLINK2 STDOUT/STDERR -------------------"
 
-# Added --make-pgen to satisfy PLINK2's structural execution requirement
+# Replaced the PLINK1.9 --impute-sex flag with native PLINK2 chrX handling flags.
+# Note: If your reference build is hg19/b37, change 'hg38' to 'hg19'.
 plink2 --vcf "$ORIG_VCF" \
        --double-id \
        --set-all-var-ids @:#:\$r:\$a \
        --new-id-max-allele-len 800 \
        --vcf-half-call m \
        --allow-extra-chr \
+       --split-par hg38 \
        --geno 0.05 \
        --mind 0.05 \
        --maf 0.05 \
@@ -53,7 +55,7 @@ parse_plink_log() {
         return
     fi
 
-    # Flexible matching to account for line differences across PLINK2 sub-builds
+    # Flexible matching for cross-version PLINK2 lines
     local total=$(grep -E "variants loaded from" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local mult=$(grep -E "removed due to allele count|alleles|variants removed due to max-alleles" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
     local geno=$(grep -E "removed due to missing genotype|missing genotype" "$log_file" | head -n 1 | awk '{print $1}' || echo "0")
@@ -68,7 +70,7 @@ parse_plink_log() {
         final=$(grep -E "variants written to" "$log_file" | head -n 1 | awk '{print $1}')
     fi
     
-    # Strip everything that isn't a plain integer string
+    # Strip non-numeric artifacts but preserve pure characters if it defaults to 0
     total=$(echo "${total:-0}" | tr -d '[:alpha:],()')
     mult=$(echo "${mult:-0}" | tr -d '[:alpha:],()')
     geno=$(echo "${geno:-0}" | tr -d '[:alpha:],()')
@@ -76,6 +78,7 @@ parse_plink_log() {
     maf=$(echo "${maf:-0}" | tr -d '[:alpha:],()')
     final=$(echo "${final:-0}" | tr -d '[:alpha:],()')
 
+    # Ensure no empty strings sneak through
     echo "${total:-0},${mult:-0},${geno:-0},${hwe:-0},${maf:-0},${final:-0}"
 }
 
@@ -93,16 +96,17 @@ echo "                      QC FILTER BREAKDOWN COMPARISON"
 echo "========================================================================="
 printf "%-35s | %-18s | %-18s\n" "Filter Metric" "Original VCF" "Imputed VCF"
 echo "-------------------------------------------------------------------------"
-printf "%-35s | %-18d | %-18d\n" "Total Raw Variants Loaded" "${o_tot:-0}" "${i_tot:-0}"
-printf "%-35s | %-18d | %-18d\n" "Removed by --max-alleles 2" "${o_mul:-0}" "${i_mul:-0}"
-printf "%-35s | %-18d | %-18d\n" "Removed by --geno 0.05" "${o_gen:-0}" "${i_gen:-0}"
-printf "%-35s | %-18d | %-18d\n" "Removed by --hwe 1e-6" "${o_hwe:-0}" "${i_hwe:-0}"
-printf "%-35s | %-18d | %-18d\n" "Removed by --maf 0.05" "${o_maf:-0}" "${i_maf:-0}"
+printf "%-35s | %-18s | %-18s\n" "Total Raw Variants Loaded" "${o_tot:-0}" "${i_tot:-0}"
+printf "%-35s | %-18s | %-18s\n" "Removed by --max-alleles 2" "${o_mul:-0}" "${i_mul:-0}"
+printf "%-35s | %-18s | %-18s\n" "Removed by --geno 0.05" "${o_gen:-0}" "${i_gen:-0}"
+printf "%-35s | %-18s | %-18s\n" "Removed by --hwe 1e-6" "${o_hwe:-0}" "${i_hwe:-0}"
+printf "%-35s | %-18s | %-18s\n" "Removed by --maf 0.05" "${o_maf:-0}" "${i_maf:-0}"
 echo "-------------------------------------------------------------------------"
-printf "%-35s | %-18d | %-18d\n" "FINAL Variants Passing QC" "${o_fin:-0}" "${i_fin:-0}"
+printf "%-35s | %-18s | %-18s\n" "FINAL Variants Passing QC" "${o_fin:-0}" "${i_fin:-0}"
 echo "========================================================================="
 
-if [ "${o_fin:-0}" -gt 0 ]; then
+# Safe yield check using string content lengths
+if [ "${o_fin:-0}" != "0" ] && [ -n "${o_fin:-}" ]; then
     yield=$(awk "BEGIN {print ${i_fin:-0} / ${o_fin:-0}}")
     echo "True Post-QC Yield Shift: ${yield}x"
 else
