@@ -3,7 +3,7 @@
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
 # Date: 3/19/2026
-# Version: 5.3 (Step 11: CRAM conversion for STAR-created BAMs, STAR log archiving, removal of redundant circularRNA_known.txt and htseqcount.tab. Dynamic BAM resolution rearranged: pre-existing BAMs are detected and symlinked upfront, bypassing Steps 1-4. Raw samples run Steps 1-4 as normal and BAM is resolved after STAR completes.)
+# Version: 5.4 (Dynamic user home paths via $4 or default $USER fallback)
 ###########################################
 
 set -euo pipefail
@@ -13,44 +13,46 @@ export CONDA_BACKUP_CXX="${CONDA_BACKUP_CXX:-}"
 export CONDA_BACKUP_GXX="${CONDA_BACKUP_GXX:-}"
  
 ###########################################
-# Conda activation
+# Inputs & Target User Resolution
+###########################################
+R1="$1"
+R2="$2"
+outputdir="$3"
+# If a 4th argument is provided, use it. Otherwise, default to the current system user.
+TARGET_USER="${4:-$USER}"
+
+mkdir -p "$outputdir"
+ 
+CPU=${CPU:-4}
+samplename=$(basename "$outputdir")
+SAMPLE_DIR="$outputdir"
+
+###########################################
+# Conda activation (using target user's home)
 ###########################################
 set +u
-source ~/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh
-conda activate bulkRNAseq
+source "/home/${TARGET_USER}/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh"
+conda activate RNAseq
 set -u
  
 ###########################################
 # Clean PATH & Kent_tools
 ###########################################
-export PATH="$HOME/.conda/envs/RNAseq/bin:/apps/software/2022b/software/Kent_tools/468-GCC-13.3.0/bin:/opt/slurm/current/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
+export PATH="/home/${TARGET_USER}/.conda/envs/bulkRNAseq/bin:/apps/software/2022b/software/Kent_tools/468-GCC-13.3.0/bin:/opt/slurm/current/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
  
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "$SCRIPT_DIR/bam2bigwig.sh" "$SCRIPT_DIR/_bam2annotation.r" "$SCRIPT_DIR/normalize_counts.py"
  
 ###########################################
-# Reference paths
+# Reference paths (using target user's home)
 ###########################################
-GENOME_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38"
+GENOME_BASE="/home/${TARGET_USER}/donglab/references/genome/Homo_sapiens/UCSC/hg38"
 STAR_GENOME="${GENOME_BASE}/Sequence/STAR"
 GENOME_FA="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa"
 GENOME_FAI="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa.fai"
 GTF="${GENOME_BASE}/Annotation/gencode/gencode.v49.annotation.gtf"
 REFFLAT="${GENOME_BASE}/Annotation/gencode/refFlat_cIRS7.txt"
 ANNOT_BEDS="${STAR_GENOME}"
- 
-###########################################
-# Inputs
-###########################################
-R1="$1"
-R2="$2"
-outputdir="$3"
- 
-mkdir -p "$outputdir"
- 
-CPU=${CPU:-4}
-samplename=$(basename "$outputdir")
-SAMPLE_DIR="$outputdir"
  
 ###########################################
 # Dynamic BAM resolution
@@ -108,7 +110,7 @@ else
         mkdir -p "$KPAL_DIR" && \
         gunzip -c "$R1" > "$KPAL_DIR/temp_R1.fastq" && \
         gunzip -c "$R2" > "$KPAL_DIR/temp_R2.fastq" && \
-        "$HOME/.conda/envs/RNAseq/bin/kpal" count \
+        "/home/${TARGET_USER}/.conda/envs/RNAseq/bin/kpal" count \
             "$KPAL_DIR/temp_R1.fastq" \
             "$KPAL_DIR/temp_R2.fastq" \
             "$KPAL_OUT" && \
@@ -181,7 +183,7 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
  
             [ -f "${BAM}.bai" ] || samtools index "$BAM"
  
-            python3 ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py \
+            python3 "/home/${TARGET_USER}/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py" \
                 "$SAMPLE_DIR/circularRNA_known.txt" && \
  
             { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
@@ -274,7 +276,7 @@ fi
 ###########################################
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]; then
     echo "[STEP 9] LeafCutter junction quantification starting..."
-    LEAFCUTTER_BASE="/home/zw529/donglab/pipelines/modules/rnaseq/bin/leafcutter"
+    LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
     LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
     JUNC_DIR="$LEAFCUTTER_OUT/juncs"
     CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
@@ -362,4 +364,3 @@ if [ -f "$SAMPLE_DIR/.status.RNAseq.bigwig" ]; then
 fi
  
 echo "[$(date)] RNAseq pipeline finished successfully and cleanup completed."
- 
