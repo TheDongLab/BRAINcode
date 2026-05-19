@@ -8,7 +8,10 @@ set -euo pipefail
 
 BAM_FILE=$1
 OUT_PREFIX=$2
-GENOME_DIR=/home/zw529/donglab/pipelines/genome/annotation_safe
+# If a 3rd argument is provided, use it. Otherwise, default to the current system user.
+TARGET_USER="${3:-$USER}"
+
+GENOME_DIR="/home/${TARGET_USER}/donglab/pipelines/genome/annotation_safe"
 CHROMSIZES="$GENOME_DIR/chromsizes.safe.txt"
 
 BED_DIR="${OUT_PREFIX}_beds"
@@ -37,4 +40,4 @@ SUMMARY="${OUT_PREFIX}.summary.txt"
   done
 } > "$SUMMARY"
 
-echo "[`date`] Annotation summary written to $SUMMARY"
+echo "[$(date)] Annotation summary written to $SUMMARY"
