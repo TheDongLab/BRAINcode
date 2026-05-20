@@ -8,6 +8,7 @@
 # Date: 2026-05-20
 ###########################################
 
+.libPaths(c("~/R/libs", .libPaths()))
 library('MatrixEQTL')
 
 args <- commandArgs(TRUE)
