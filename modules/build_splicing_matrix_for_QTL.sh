@@ -20,7 +20,6 @@ module load Python-bundle-PyPI/2024.06-GCCcore-13.3.0
 python3 - <<'EOF'
 import pandas as pd
 import numpy as np
-from scipy.stats import norm as scipy_norm
 from pathlib import Path
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -79,29 +78,32 @@ for _, row in rna_found.iterrows():
 expr = expr.fillna(0).infer_objects(copy=False)
 print(f"Raw splicing matrix shape: {expr.shape}")
 
-# 4. Rank-Based Inverse Normal Transformation (INT)
-def inverse_normal_transform(series):
-    n = len(series)
-    # Rank data, map to (0, 1) probability space
-    ranks = series.rank(method='average')
-    prob = (ranks - 0.5) / n
-    # Map to standard normal distribution
-    return scipy_norm.ppf(prob)
-
-print("Applying Rank-Based Inverse Normal Transformation to PSI values...")
+# 4. Variance-Based Filtering (Strategy 1: Direct Raw Values)
+print("Filtering out zero-variance and low-variance junctions...")
 junction_ids = expr['junction_id']
 numeric_data = expr.drop('junction_id', axis=1)
-sample_names = numeric_data.columns
 
-transformed = numeric_data.apply(
-    lambda x: inverse_normal_transform(x) if x.std() > 1e-9 else np.zeros(len(x)), 
-    axis=1, 
-    result_type='expand'
-)
+# Calculate standard deviation across samples for each junction (row-wise)
+row_sds = numeric_data.std(axis=1)
 
-transformed.columns = sample_names
+# Keep junctions with standard deviation greater than 0.005
+# This natively drops junctions that are uniformly unmapped (0.0) or fully spliced (1.0)
+min_sd_threshold = 0.005
+variant_mask = row_sds > min_sd_threshold
 
-expr_final = pd.concat([junction_ids, transformed], axis=1)
+filtered_numeric = numeric_data[variant_mask].copy()
+filtered_junction_ids = junction_ids[variant_mask]
+
+original_count = len(numeric_data)
+filtered_count = len(filtered_numeric)
+dropped_count = original_count - filtered_count
+
+print(f"Original features: {original_count}")
+print(f"Features remaining after SD > {min_sd_threshold} filter: {filtered_count}")
+print(f"Dropped flat/invariant lines: {dropped_count} ({dropped_count / original_count * 100:.2f}%)")
+
+# Recombine preserving the matrix format
+expr_final = pd.concat([filtered_junction_ids.reset_index(drop=True), filtered_numeric.reset_index(drop=True)], axis=1)
 
 # 5. Output
 expr_final.to_csv(OUT / "splicing_matrix.txt", sep="\t", index=False)
@@ -110,5 +112,5 @@ rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
     OUT / "splicing_sample_metadata.csv", index=False
 )
 
-print(f"Saved normalized splicing matrix to: {OUT}")
+print(f"Saved filtered raw splicing matrix to: {OUT}")
 EOF
