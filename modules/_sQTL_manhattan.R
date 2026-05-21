@@ -103,7 +103,7 @@ print(snp_plot[, .N, by=color_cat][order(color_cat)])
 message("## Color Category Breakdown (Lead SNPs):")
 print(lead_plot[, .N, by=color_cat][order(color_cat)])
 
-snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
+# snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
 extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 
 message("## Creating Plot...")
