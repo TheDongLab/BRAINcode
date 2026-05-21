@@ -68,8 +68,8 @@ if [ ! -f "$SPLICING_LOC_BAK" ]; then
     cp "$SPLICING_LOC" "$SPLICING_LOC_BAK"
 fi
 
-# Clean column 2 while preserving tab structure safely
-sed -E 's/(chr[0-9XY]+):[\+\-]/\1/g' "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
+# Clean ONLY column 2 by targeting the tab boundary, leaving column 1 untouched
+sed -E 's/\t(chr[0-9XY]+):[\+\-]\t/\t\1\t/g' "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
 echo "      -> Chromosome strings cleaned in $SPLICING_LOC"
 
 # Alignment Guard
