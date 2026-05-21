@@ -48,7 +48,7 @@ CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
 TOP_N=1000000
 
-# ── Step 0: Pre-flight ────────────────────────────────────────────────
+# ── Step 0: Pre-flight & Location Harmonization ──────────────────────
 echo "[0] Verifying file existence and alignment..."
 for f in "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SPLICING_LOC" "$SNP_LOC"; do
     if [ ! -f "$f" ]; then
@@ -56,6 +56,21 @@ for f in "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SPLICING_LOC" "$SNP_LOC"; do
         exit 1
     fi
 done
+
+# Harmonization Guard: Clean chromosome suffixes from splicing locations
+# This strips trailing strandedness signs (e.g., 'chr10:+' or 'chr10:-' -> 'chr10')
+# so the chromosomes perfectly align with the structural map in snp_location.txt
+echo "[0.1] Standardizing chromosome labels in splicing location file..."
+SPLICING_LOC_BAK="${SPLICING_LOC}.bak"
+
+# Only make a fresh backup if it doesn't already exist to preserve the pristine original raw files
+if [ ! -f "$SPLICING_LOC_BAK" ]; then
+    cp "$SPLICING_LOC" "$SPLICING_LOC_BAK"
+fi
+
+# Clean column 2 while preserving tab structure safely
+sed -E 's/(chr[0-9XY]+):[\+\-]/\1/g' "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
+echo "      -> Chromosome strings cleaned in $SPLICING_LOC"
 
 # Alignment Guard
 S_N=$(head -n 1 "$SNP_FILE" | awk -F'\t' '{print NF-1}')
