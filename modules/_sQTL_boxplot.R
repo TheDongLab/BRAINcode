@@ -34,11 +34,7 @@ message("# Loading genomic matrices...")
 # pairs <- fread(GSfile, header=FALSE, col.names=c("junction_id","snpid"))
 
 # CHANGED TO: Stream top 1000 rows with raw header recognition
-pairs <- fread(GSfile, header=TRUE, nrows=1000)
-
-# CHANGED: Flexible column standardization mapping to match loop anchors below
-if ("gene" %in% names(pairs)) setnames(pairs, "gene", "junction_id")
-if ("snps" %in% names(pairs)) setnames(pairs, "snps", "snpid")
+pairs <- fread(GSfile, header=FALSE, col.names=c("junction_id","snpid"), nrows=1000)
 
 snp_mat  <- fread(snp_file, header=TRUE)
 psi_mat  <- fread(psi_file, header=TRUE)
