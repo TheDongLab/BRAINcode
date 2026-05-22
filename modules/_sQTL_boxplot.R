@@ -21,11 +21,25 @@ snp_loc   <- args[5]
 out_dir   <- args[6]
 tissue    <- args[7]
 
-out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots.pdf"))
-out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots_colored.pdf"))
+# Un-hash these rows to generate boxplots for ALL significant SNPs:
+# out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots.pdf"))
+# out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots_colored.pdf"))
+
+# Tagging filenames for boxplots generated from the top 1000 subset:
+out_file_std <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots.pdf"))
+out_file_col <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots_colored.pdf"))
 
 message("# Loading genomic matrices...")
-pairs    <- fread(GSfile, header=FALSE, col.names=c("junction_id","snpid"))
+# HASHED OUT ORIGINAL:
+# pairs <- fread(GSfile, header=FALSE, col.names=c("junction_id","snpid"))
+
+# CHANGED TO: Stream top 1000 rows with raw header recognition
+pairs <- fread(GSfile, header=TRUE, nrows=1000)
+
+# CHANGED: Flexible column standardization mapping to match loop anchors below
+if ("gene" %in% names(pairs)) setnames(pairs, "gene", "junction_id")
+if ("snps" %in% names(pairs)) setnames(pairs, "snps", "snpid")
+
 snp_mat  <- fread(snp_file, header=TRUE)
 psi_mat  <- fread(psi_file, header=TRUE)
 cov_mat  <- fread(cov_file, header=TRUE)
@@ -189,6 +203,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     message(sprintf("# Plots made: %d, pairs skipped: %d", plots_made, pairs_skipped))
 }
 
+# --- EXECUTION BLOCK ---
 message(paste("# Processing", nrow(pairs), "junction-SNP pairs..."))
 run_plotting(out_file_std, FALSE)
 run_plotting(out_file_col, TRUE)
