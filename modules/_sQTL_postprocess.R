@@ -52,20 +52,16 @@ message(sprintf("## Filtering for significant hits (FDR < %s)...", fdr_thresh))
 message(sprintf("## Total significant pairs: %d", nrow(sqtl_fdr)))
 message(sprintf("## Selecting ALL significant pairs for boxplots (FDR < %s)...", fdr_thresh))
 
-# Take all significant pairs, ordered by p-value (most to least significant)
+# Subsetting and ordering
 sqtl_top <- sqtl_fdr[order(`p-value`), .(junction_id, snpid)]
-
+sqtl_fdr_compact <- sqtl_fdr[, .(junction_id, snpid, beta, `t-stat`, `p-value`, FDR)]
 message(sprintf("## Total pairs to plot: %d", nrow(sqtl_top)))
 
-# Save standard output files
+# Save output files
 fwrite(sqtl, file=paste0(out_prefix, ".full_annotated.txt"), sep="\t", quote=FALSE)
-fwrite(sqtl_fdr, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
+fwrite(sqtl_fdr_compact, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
 fwrite(sqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
-
-# Boxplot driver map file (contains all significant pairs ordered by p-value, no header)
-fwrite(sqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), 
-       sep="\t", quote=FALSE, col.names=FALSE)
-
+fwrite(sqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
 message(sprintf("## Boxplot input file written with %d pairs (ordered by p-value)", nrow(sqtl_top)))
 
 ########################################################################
