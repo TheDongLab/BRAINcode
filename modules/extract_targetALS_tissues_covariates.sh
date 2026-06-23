@@ -22,6 +22,7 @@ mkdir -p "$RNAQC_DIR"
 
 METADATA="$DATA_DIR/targetALS_rnaseq_metadata.csv"
 WGS_META="$DATA_DIR/targetALS_wgs_metadata.csv"
+TDP43_DATA="$DATA_DIR/collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv"
 ORIG_BED="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 
 # Output Files
@@ -116,6 +117,21 @@ wgs_meta = pd.read_csv("$WGS_META")
 sk = pd.read_csv("$SKEW_DATA", sep="\t").drop_duplicates('externalsampleid')
 df = df.merge(sk, on='externalsampleid', how='left')
 
+# Load and process TDP-43 data logic
+tdp_df = pd.read_csv("$TDP43_DATA")
+tdp_df.columns = tdp_df.columns.str.strip()
+tdp_df = tdp_df.map(lambda x: x.strip() if isinstance(x, str) else x)
+
+tdp_map = {
+    'Absent': 0,
+    'Sparse': 1,
+    'Sparse Residual MN (with pTDP-43 Cytoplasmic Inclusions)': 1,
+    'Moderate': 2,
+    'Frequent': 3
+}
+tdp_df['tdp43_neuronal_score'] = tdp_df['P Tdp 43 Inclusions Neuronal'].map(tdp_map)
+tdp_df = tdp_df.dropna(subset=['tdp43_neuronal_score'])
+
 anc_cols = ["pct_african", "pct_south_asian", "pct_east_asian", "pct_european", "pct_americas"]
 
 # 2. HELPER FUNCTIONS
@@ -149,6 +165,18 @@ TISSUE_REMAP = {
     'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 'Cervical_spinal_cord': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord', 'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord',
     'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord', 'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
+
+# Apply tissue mapping uniform structures to both datasets before merging
+df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
+tdp_df['mapped_tissue'] = tdp_df['Tissue Source'].map(TISSUE_REMAP)
+
+# Composite join on mapping keys
+df = df.merge(
+    tdp_df[['Subject ID', 'mapped_tissue', 'tdp43_neuronal_score']],
+    left_on=['externalsubjectid', 'tissue'],
+    right_on=['Subject ID', 'mapped_tissue'],
+    how='left'
+).drop(columns=['Subject ID', 'mapped_tissue'])
 
 SUBJECT_GROUP_REMAP = {
     'Other MND': 'Other Neurological Disorders',
@@ -200,7 +228,6 @@ df['ftd_ftld_status'] = df['subject_group'].map(lambda x: FTD_REMAP.get(str(x), 
 df.loc[df['subject_group'].isna(), 'ftd_ftld_status'] = 'Not Applicable/NaN'
 
 df['sex'] = df['sex'].replace({'male': 'Male', 'female': 'Female', 'ND': 'Unknown'})
-df['tissue'] = df['tissue'].map(lambda x: TISSUE_REMAP.get(str(x), str(x).replace(' ', '_')))
 df['subject_group'] = df['subject_group'].map(lambda x: SUBJECT_GROUP_REMAP.get(str(x), str(x)))
 df['site_of_motor_onset'] = df['site_of_motor_onset'].map(lambda x: ONSET_REMAP.get(str(x), str(x)))
 df['c9orf72_repeat_expansion'] = df['c9orf72_repeat_expansion'].map(lambda x: C9_REMAP.get(str(x), str(x)))
@@ -220,7 +247,7 @@ wgs_subs = set(wgs_meta["Externalsubjectid"].dropna())
 shared_df = df[df['externalsubjectid'].isin(wgs_subs)].copy()
 
 # 5. PLOTTING (Collinearity Check)
-num_plot_cols = ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours', 'rna_skew'] + anc_cols
+num_plot_cols = ['age_at_death', 'rin', 'disease_duration_in_months', 'post_mortem_interval_in_hours', 'rna_skew', 'tdp43_neuronal_score'] + anc_cols
 plot_df = df[num_plot_cols].apply(pd.to_numeric, errors='coerce')
 
 # --- Histograms with Rotated Labels ---
@@ -228,10 +255,8 @@ plt.figure(figsize=(20, 15))
 sns.set_style("whitegrid")
 for i, col in enumerate(plot_df.columns):
     plt.subplot(4, 3, i + 1)
-    # Using histplot to show distributions
     sns.histplot(plot_df[col].dropna(), kde=True, color='teal')
     plt.title(f'Distribution: {col}')
-    # Rotate the x-axis labels for readability
     plt.xticks(rotation=45) 
 
 plt.tight_layout()
@@ -239,12 +264,9 @@ plt.savefig("$OUTDIR/covariate_distributions.png")
 
 # --- Correlation Heatmap with White Anchor ---
 plt.figure(figsize=(12, 10))
-# The 'seismic' colormap anchors the center (0.0) to white.
 sns.heatmap(plot_df.corr(), annot=True, cmap='seismic', center=0, fmt=".2f")
 plt.title("Covariate Correlation Matrix (Checking for Collinearity)")
-
-# Specifically rotate the heatmap x-axis labels
-plt.xticks(rotation=45, ha='right') # 'ha' ensures labels align correctly
+plt.xticks(rotation=45, ha='right') 
 
 plt.tight_layout()
 plt.savefig("$OUTDIR/covariate_correlation_heatmap.png")
@@ -293,7 +315,8 @@ with open("$COVARIATE_SUMMARY", "w") as f:
         'age_at_death': 'age_at_death', 
         'rin': 'rin', 
         'disease_duration_in_months': 'disease_duration_in_months', 
-        'post_mortem_interval_in_hours': 'post_mortem_interval_in_hours'
+        'post_mortem_interval_in_hours': 'post_mortem_interval_in_hours',
+        'tdp43_neuronal_score': 'tdp43_neuronal_score'
     }
     for label, col in num_metrics.items():
         if col in df.columns:
