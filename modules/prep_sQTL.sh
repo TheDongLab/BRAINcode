@@ -27,7 +27,9 @@ RAW=$PLINK/joint_all_chrs_matrixEQTL.raw
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 PCA=$PLINK/joint_pca.eigenvec
 
-echo "============================================\n  sQTL Prep for $TISSUE\n============================================"
+echo "============================================"
+echo "  sQTL Prep for $TISSUE"
+echo "============================================"
 
 ##############################################
 # STEP 0: Generate BED from Matrix IDs
@@ -111,15 +113,14 @@ try:
 
     sub_to_hra, sub_to_raw_sample, final_aligned_subjects = {}, {}, []
     junc_counts = Counter()
-    rep_dir_base = f"/home/zw529/donglab/data/target_ALS/{'$TISSUE_DIR'}/RNAseq/Processed"
+    rep_dir_base = "/home/zw529/donglab/data/target_ALS/" + "$TISSUE_DIR" + "/RNAseq/Processed"
 
     for s in common_subjects:
         row = meta_unique[meta_unique['externalsubjectid'] == s]
         hra = row['hra_clean'].values[0]
-        raw_sample = row['externalsampleid'].values[0]
+        raw_sample = row['externalsampleid'].values[0] 
         matches = [c for c in splicing_headers if c.startswith(hra)]
         if matches:
-            # Active path checking to drop structural dropouts early
             tsv_path = os.path.join(rep_dir_base, raw_sample, "leafcutter", "psi", f"{raw_sample}.leafcutter.PSI.tsv")
             if os.path.exists(tsv_path):
                 final_aligned_subjects.append(s)
@@ -130,10 +131,13 @@ try:
                     junc_counts.update(df_rep.loc[df_rep['reads'] >= 5, 'j_id'].unique())
                 except: pass
 
+    if len(final_aligned_subjects) == 0:
+        raise ValueError(f"CRITICAL ERROR: Zero sample files matched! Checked base: {rep_dir_base}")
+
     # Retain junctions with >=5 reads in >=10% of successfully mapped samples
     min_pass = max(1, int(len(final_aligned_subjects) * 0.10))
     valid_junctions = {j for j, c in junc_counts.items() if c >= min_pass}
-    print(f"DEBUG: Retaining {len(valid_junctions)} junctions passing global expression criteria.")
+    print(f"DEBUG: Mapped {len(final_aligned_subjects)} samples. Retained {len(valid_junctions)} junctions matching expression filters.")
 
     # 5. ALIGN SPLICING & SNPS
     splicing_df = None
@@ -171,7 +175,7 @@ try:
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
     snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
     cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Aligned {len(final_aligned_subjects)} samples for $TISSUE")
+    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples.")
 except Exception as e:
     import traceback; traceback.print_exc(); sys.exit(1)
 EOF
@@ -180,19 +184,11 @@ EOF
 # STEP 7: Coordinate Mapping Location Files
 ##############################################
 echo "Generating deduplicated location files for $TISSUE..."
-
-# 1. SNP Location file generation
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
-awk 'BEGIN{OFS="\t"} {
-    chrom = ($1 ~ /^chr/) ? $1 : "chr"$1;
-    print "chr"$1":"$4, chrom, $4;
-}' "$BIM" | sed 's/chrchr/chr/g' | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
+awk 'BEGIN{OFS="\t"} {chrom = ($1 ~ /^chr/) ? $1 : "chr"$1; print "chr"$1":"$4, chrom, $4;}' "$BIM" | sed 's/chrchr/chr/g' | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
 
-# 2. Splicing target coordinate maps
 echo -e "geneid\tchr\tleft\tright" > "$OUTDIR/splicing_location.txt"
 awk 'BEGIN{OFS="\t"} { print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" | sort -u -k1,1 >> "$OUTDIR/splicing_location.txt"
-
-# Clean up temporary structural coordinates
 rm -f "$SPLICING_LOC_SRC"
 
 echo "Location files complete for $TISSUE."
