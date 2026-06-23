@@ -40,12 +40,13 @@ if ("FDR" %in% names(lead_plot)) {
 
 sig_thresh_fdr <- fdr_cutoff
 
-message("## Processing SNP coordinates (1-22 + X)...")
+message("## Processing SNP coordinates (Autosomes 1-22 only)...")
 prepare_coords <- function(df) {
     df[, chr_name := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
-    df[chr_name == "X" | chr_name == "x", chr_name := "23"]
+    # Filter out Chromosome X or 23 explicitly
+    df <- df[!(chr_name %in% c("X", "x", "23"))]
     df[, chr_num := as.integer(chr_name)]
-    return(df[!is.na(chr_num)])
+    return(df[!is.na(chr_num)]) # Drops non-autosomes, Y, M, or parsing errors
 }
 
 snp_plot  <- prepare_coords(snp_plot)
@@ -96,19 +97,20 @@ print(p1)
 dev.off()
 
 # ========================================================================
-# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE GENE ID
+# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE GENE ID (FIXED)
 # ========================================================================
 message("## Setting up Gene ID diagnostic colors...")
 
-# Isolate significant versus background data frames to cleanly map colors
+# Isolate significant versus background data frames to prevent scale conflicts
 snp_sig  <- snp_plot[fdr_val <= sig_thresh_fdr]
 snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
 lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
 
 message("## Creating Gene ID Diagnostic Plot...")
-p2 <- ggplot() +
-    # 1. Background non-significant points (Zebra style grey/black)
-    geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, colour=as.character(chr_num %% 2)), size=0.6, alpha=0.3) +
+p2 := ggplot() +
+    # 1. Background non-significant points (Zebra style using shape 21 allows independent 'fill')
+    geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
+               shape=21, stroke=0, size=0.6, alpha=0.3) +
     
     # 2. Significant points colored dynamically by their distinct Gene ID string
     geom_point(data=snp_sig, aes(x=cum_pos, y=log10p, colour=geneid), size=0.6, alpha=0.7) +
@@ -117,10 +119,11 @@ p2 <- ggplot() +
     geom_point(data=lead_sig, aes(x=cum_pos, y=log10p, colour=geneid), shape=18, size=2.2) +
     
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
-    geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=geneid), size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
+    geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=geneid), 
+                    size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
     
-    # Force manual values for '0' and '1' background layers; let ggplot scale color palette dynamically for the genes
-    scale_colour_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5"), breaks=c("0", "1"), guide="none") +
+    # Control the background layers using fill, leaving scale_colour to handle genes dynamically
+    scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5"), guide="none") +
     
     scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), breaks=snp_axis$centre, expand=c(0.01, 0.01)) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
@@ -130,7 +133,7 @@ p2 <- ggplot() +
          x="Chromosome", y=expression(-log[10](p))) +
     
     theme_bw() + 
-    theme(legend.position="none", # Hide legend since thousands of genes would blow up the plot margins
+    theme(legend.position="none", 
           panel.grid.major.x = element_blank(),
           panel.grid.minor = element_blank())
 
