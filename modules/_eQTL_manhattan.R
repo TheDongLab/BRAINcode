@@ -107,7 +107,7 @@ snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
 lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
 
 message("## Creating Gene ID Diagnostic Plot...")
-p2 := ggplot() +
+p2 <- ggplot() +
     # 1. Background non-significant points (Zebra style using shape 21 allows independent 'fill')
     geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
                shape=21, stroke=0, size=0.6, alpha=0.3) +
