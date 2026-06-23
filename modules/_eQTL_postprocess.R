@@ -46,23 +46,18 @@ eqtl_lead <- eqtl_lead[!duplicated(geneid)]
 ########################################################################
 message(sprintf("## Filtering for significant hits (FDR < %s)...", fdr_thresh))
 message(sprintf("## Total significant pairs: %d", nrow(eqtl_fdr)))
-
 message(sprintf("## Selecting ALL significant pairs for boxplots (FDR < %s)...", fdr_thresh))
 
-# Take all significant pairs, ordered by p-value (most to least significant)
+# Subsetting and ordering
 eqtl_top <- eqtl_fdr[order(`p-value`), .(geneid, snpid)]
-
+eqtl_fdr_compact <- eqtl_fdr[, .(geneid, snpid, beta, `t-stat`, `p-value`, FDR)]
 message(sprintf("## Total pairs to plot: %d", nrow(eqtl_top)))
 
-# Save standard output files
+# Save output files
 fwrite(eqtl, file=paste0(out_prefix, ".full_annotated.txt"), sep="\t", quote=FALSE)
-fwrite(eqtl_fdr, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
+fwrite(eqtl_fdr_compact, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
-
-# This file contains all significant pairs ordered by p-value, no header
-fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), 
-       sep="\t", quote=FALSE, col.names=FALSE)
-
+fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
 message(sprintf("## Boxplot input file written with %d pairs (ordered by p-value)", nrow(eqtl_top)))
 
 ########################################################################
