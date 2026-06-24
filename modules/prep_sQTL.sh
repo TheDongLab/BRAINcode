@@ -111,7 +111,7 @@ try:
     meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
     common_subjects = sorted(list(set(meta_unique['externalsubjectid']) & set(raw_df['IID'])))
 
-    sub_to_hra, sub_to_raw_sample, final_aligned_subjects = {}, {}, []
+    sub_to_hra, final_aligned_subjects = {}, []
     junc_counts = Counter()
     rep_dir_base = "/home/zw529/donglab/data/target_ALS/" + "$TISSUE_DIR" + "/RNAseq/Processed"
 
@@ -119,9 +119,13 @@ try:
         row = meta_unique[meta_unique['externalsubjectid'] == s]
         hra = row['hra_clean'].values[0]
         raw_sample = row['externalsampleid'].values[0] 
+        
+        # Convert dashes to underscores to match the filesystem path structure
+        raw_sample_clean = raw_sample.replace('-', '_')
+        
         matches = [c for c in splicing_headers if c.startswith(hra)]
         if matches:
-            tsv_path = os.path.join(rep_dir_base, raw_sample, "leafcutter", "psi", f"{raw_sample}.leafcutter.PSI.tsv")
+            tsv_path = os.path.join(rep_dir_base, raw_sample_clean, "leafcutter", "psi", f"{raw_sample_clean}.leafcutter.PSI.tsv")
             if os.path.exists(tsv_path):
                 final_aligned_subjects.append(s)
                 sub_to_hra[s] = matches[0]
