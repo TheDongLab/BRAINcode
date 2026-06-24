@@ -4,9 +4,11 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.err
 #SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=699G
+#SBATCH --mem=649G
 
 set -euo pipefail
+
+module load BCFtools
 
 TISSUE="$1" 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
@@ -23,17 +25,43 @@ BREAKDOWN_TSV=$QTL_DIR/patient_tissue_breakdown.tsv
 COV_FILE=/home/zw529/donglab/data/target_ALS/QTL/covariates.tsv
 SEX_MISMATCH_FILE=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL/potential_sex_mismatches.txt
 
+# --- GENOTYPE INPUTS ---
 RAW=$PLINK/joint_all_chrs_matrixEQTL.raw
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 PCA=$PLINK/joint_pca.eigenvec
+
+# --- REFERENCE FILES ---
+MAP_FILE=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/ncbi_to_ucsc.txt
+DBSNP_VCF=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/GCF_000001405.40.gz
 
 echo "============================================"
 echo "  sQTL Prep for $TISSUE"
 echo "============================================"
 
-##############################################
+# ─────────────────────────────────────────────────────────────────
+# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS
+# ─────────────────────────────────────────────────────────────────
+echo "Streaming dbSNP variant IDs matching your dataset..."
+TMP_REGIONS=$OUTDIR/tmp_regions_ncbi.bed
+awk -v map_file="$MAP_FILE" '
+BEGIN {
+    while ((getline < map_file) > 0) { map[$2] = $1 }
+    close(map_file)
+}
+{
+    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ncbi = (ucsc in map) ? map[ucsc] : ucsc;
+    print ncbi"\t"$4"\t"$4
+}' $BIM > $TMP_REGIONS
+
+TMP_RSID_MAP=$OUTDIR/tmp_coord_to_rsid.txt
+bcftools query -R $TMP_REGIONS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
+rm -f $TMP_REGIONS
+echo "dbSNP query complete. Extracted subset mapping file."
+
+# ─────────────────────────────────────────────────────────────────
 # STEP 0: Generate BED from Matrix IDs
-##############################################
+# ─────────────────────────────────────────────────────────────────
 echo "[0] Generating BED file from matrix IDs..."
 python3 << EOF
 import sys
@@ -48,7 +76,7 @@ try:
                     if ':' in event_id and '-' in event_id:
                         chr_part, pos_part = event_id.rsplit(':', 1)
                         start, end = pos_part.split('-')
-                        out.write(f"{chr_part}\t{start}\t{end}\t{event_id}\n")
+                        out.write(f"{chr_part.split(':')[0]}\t{start}\t{end}\t{event_id}\n")
             print(f"STEP 0: Complete using encoding: {enc}", file=sys.stderr)
             break
         except UnicodeDecodeError: continue
@@ -56,9 +84,9 @@ except Exception as e:
     print(f"ERROR in STEP 0: {e}", file=sys.stderr); sys.exit(1)
 EOF
 
-##############################################
+# ─────────────────────────────────────────────────────────────────
 # STEP 1-6: Load, Filter, and Align Matrix Data
-##############################################
+# ─────────────────────────────────────────────────────────────────
 echo "[1] Processing cohort alignments with on-the-fly read filtering..."
 python3 << EOF
 import pandas as pd
@@ -71,6 +99,21 @@ try:
     breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
     meta = pd.read_csv("$METADATA_CSV", low_memory=False)
     pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
+
+    ucsc_to_ncbi = {}
+    with open("$MAP_FILE", 'r') as f:
+        for line in f:
+            if line.strip():
+                ncbi, ucsc = line.strip().split('\t')
+                ucsc_to_ncbi[ucsc] = ncbi
+
+    coord_to_rsid = {}
+    with open("$TMP_RSID_MAP", 'r') as f:
+        for line in f:
+            if line.strip():
+                coord, rsid = line.strip().split('\t')
+                if rsid and rsid != '.':
+                    coord_to_rsid[coord] = rsid
 
     try:
         with open("$SEX_MISMATCH_FILE") as f: sex_mismatch = {l.strip() for l in f if l.strip()}
@@ -119,8 +162,6 @@ try:
         row = meta_unique[meta_unique['externalsubjectid'] == s]
         hra = row['hra_clean'].values[0]
         raw_sample = row['externalsampleid'].values[0] 
-        
-        # Convert dashes to underscores to match the filesystem path structure
         raw_sample_clean = raw_sample.replace('-', '_')
         
         matches = [c for c in splicing_headers if c.startswith(hra)]
@@ -130,15 +171,14 @@ try:
                 final_aligned_subjects.append(s)
                 sub_to_hra[s] = matches[0]
                 try:
-                    df_rep = pd.read_csv(tsv_path, sep=r'\s+', usecols=['chrom', 'start', 'end', 'reads'])
-                    df_rep['j_id'] = df_rep['chrom'].astype(str) + ':' + df_rep['start'].astype(str) + '-' + df_rep['end'].astype(str)
+                    df_rep = pd.read_csv(tsv_path, sep=r'\s+', usecols=['chrom', 'strand', 'start', 'end', 'reads'])
+                    df_rep['j_id'] = df_rep['chrom'].astype(str) + ':' + df_rep['strand'].astype(str) + ':' + df_rep['start'].astype(str) + '-' + df_rep['end'].astype(str)
                     junc_counts.update(df_rep.loc[df_rep['reads'] >= 5, 'j_id'].unique())
                 except: pass
 
     if len(final_aligned_subjects) == 0:
         raise ValueError(f"CRITICAL ERROR: Zero sample files matched! Checked base: {rep_dir_base}")
 
-    # Retain junctions with >=5 reads in >=10% of successfully mapped samples
     min_pass = max(1, int(len(final_aligned_subjects) * 0.10))
     valid_junctions = {j for j, c in junc_counts.items() if c >= min_pass}
     print(f"DEBUG: Mapped {len(final_aligned_subjects)} samples. Retained {len(valid_junctions)} junctions matching expression filters.")
@@ -159,10 +199,20 @@ try:
 
     snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
     snp_final = snp_matrix.T
-    def clean_snp_id(fid):
-        cid = fid.rsplit('_', 1)[0] if '_' in fid else fid
-        return cid if str(cid).startswith('chr') else f"chr{cid.split(':')[0]}:{cid.split(':')[1]}" if ':' in str(cid) else cid
-    snp_final.index = [clean_snp_id(idx) for idx in snp_final.index]
+
+    # Map SNP coordinate IDs dynamically to rsIDs
+    def convert_to_rsid(full_id):
+        clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
+        parts = str(clean_id).split(':')
+        if len(parts) >= 2:
+            chrom, pos = parts[0], parts[1]
+            ucsc_chrom = chrom if chrom.startswith('chr') else f"chr{chrom}"
+            ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom, ucsc_chrom)
+            coord_key = f"{ncbi_chrom}:{pos}"
+            return coord_to_rsid.get(coord_key, clean_id)
+        return clean_id
+
+    snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
     snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
 
     # 6. COVARIATE MERGE
@@ -184,28 +234,45 @@ except Exception as e:
     import traceback; traceback.print_exc(); sys.exit(1)
 EOF
 
-##############################################
+# ─────────────────────────────────────────────────────────────────
 # STEP 7: Coordinate Mapping Location Files
-##############################################
+# ─────────────────────────────────────────────────────────────────
 echo "Generating deduplicated location files for $TISSUE..."
-echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
-awk 'BEGIN{OFS="\t"} {chrom = ($1 ~ /^chr/) ? $1 : "chr"$1; print "chr"$1":"$4, chrom, $4;}' "$BIM" | sed 's/chrchr/chr/g' | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
 
+# Generate SNP Location file tracking back to the dynamic rsIDs while outputting standard UCSC chr structure
+echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
+awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
+BEGIN {
+    OFS="\t"
+    while ((getline < ncbi_map) > 0) { n_map[$2] = $1 }
+    close(ncbi_map)
+    while ((getline < rsid_map) > 0) { r_map[$1] = $2 }
+    close(rsid_map)
+}
+{
+    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
+    coord_key = ncbi":"$4;
+    final_id = (coord_key in r_map) ? r_map[coord_key] : "chr"$1":"$4;
+    
+    print final_id, ucsc, $4;
+}' "$BIM" | sed 's/chrchr/chr/g' | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
+
+# Splicing target location map (Tracks structural leafcutter BED data)
 echo -e "geneid\tchr\tleft\tright" > "$OUTDIR/splicing_location.txt"
 awk 'BEGIN{OFS="\t"} { print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" | sort -u -k1,1 >> "$OUTDIR/splicing_location.txt"
-rm -f "$SPLICING_LOC_SRC"
 
+rm -f "$SPLICING_LOC_SRC" "$TMP_RSID_MAP"
 echo "Location files complete for $TISSUE."
 
-##############################################
+# ─────────────────────────────────────────────────────────────────
 # STEP 8: Final Summary Output
-##############################################
+# ─────────────────────────────────────────────────────────────────
 echo "============================================"
 echo "  sQTL Prep complete for $TISSUE"
 echo "  Output directory: $OUTDIR"
 echo "  $(date)"
 echo "============================================"
 
-# List output files for initial script diagnostics
 echo "Output files:"
 ls -lh "$OUTDIR"/*.txt 2>/dev/null || echo "No output files found"
