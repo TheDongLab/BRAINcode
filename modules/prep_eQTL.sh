@@ -188,31 +188,43 @@ print(f"SUCCESS: Processed {num_final} unique samples for $TISSUE")
 EOF
 
 # ─────────────────────────────────────────────────────────────────
-# STEP C: GENERATE ALIGNED LOCATION FILES
+# STEP C: GENERATE ALIGNED LOCATION FILES (PARSING & ORDER FIX)
 # ─────────────────────────────────────────────────────────────────
-echo "Generating deduplicated location files for $TISSUE..."
+echo "Generating order-preserved location files for $TISSUE..."
 
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
     OFS="\t"
+    # Load chromosome mappings (standardizing keys to uppercase)
     while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1) }
     close(ncbi_map)
+    # Load dbSNP coordinate to rsID map
     while ((getline < rsid_map) > 0) { r_map[toupper($1)] = $2 }
     close(rsid_map)
 }
 {
-    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
-    ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
+    # 1. Parse the variant string from column 2 (e.g., 1:228489569:T:A)
+    split($2, parts, ":")
+    chrom = parts[1]
+    pos   = parts[2]
     
-    coord_key = ncbi":"$4;
-    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key;
+    # 2. Standardize chromosome naming to find the NCBI equivalent
+    ucsc = (chrom ~ /^[Cc][Hh][Rr]/) ? toupper(chrom) : "CHR"toupper(chrom)
+    ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc
     
-    print final_id, ncbi, $4;
-}' $BIM | sort -u -k1,1 >> $OUTDIR/snp_location.txt
+    # 3. Look up the coordinate key in the dbSNP map
+    coord_key = ncbi":"pos
+    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key
+    
+    # 4. Print directly while eliminating duplicate lines to maintain matrix order
+    if (!seen[final_id]++) {
+        print final_id, ncbi, pos
+    }
+}' $BIM >> $OUTDIR/snp_location.txt
 
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
-awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 | sort -u -k1,1 >> $OUTDIR/gene_location.txt
+awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); if (!seen[gene]++) print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
 
 rm -f $TMP_RSID_MAP
 echo "Location files complete for $TISSUE."
