@@ -4,7 +4,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=699G
+#SBATCH --mem=649G
 
 set -euo pipefail
 
@@ -37,33 +37,27 @@ echo "  eQTL Prep for $TISSUE"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
-# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T (Path B)
+# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T
 # ─────────────────────────────────────────────────────────────────
 echo "Generating target position filter list..."
 TMP_TARGETS=$OUTDIR/tmp_targets_ncbi.txt
 
-# 1. Convert BIM positions into a clean, 3-column tab-delimited filter target file
 awk -v map_file="$MAP_FILE" '
 BEGIN {
     OFS="\t"
-    while ((getline < map_file) > 0) { map[$2] = $1 }
+    while ((getline < map_file) > 0) { map[toupper($2)] = toupper($1) }
     close(map_file)
 }
 {
-    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
     ncbi = (ucsc in map) ? map[ucsc] : ucsc;
     print ncbi, $4, $4
 }' $BIM > $TMP_TARGETS
 
-echo "Streaming dbSNP variant IDs matching your dataset via row filtering..."
+echo "Streaming dbSNP variant IDs matching your dataset..."
 TMP_RSID_MAP=$OUTDIR/tmp_coord_to_rsid.txt
-
-# 2. Extract matching variants from dbSNP using the non-hanging sequential text filter (-T)
 bcftools query -T $TMP_TARGETS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
-
-# Clean up the intermediate targets file
 rm -f $TMP_TARGETS
-echo "dbSNP query complete. Extracted subset mapping file successfully."
 
 # ─────────────────────────────────────────────────────────────────
 # STEP B: PANDAS INTERSECTION & MATRIX GENERATION
@@ -78,39 +72,28 @@ breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 meta = pd.read_csv("$METADATA_CSV", low_memory=False)
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
-# Load the reference dictionary to map UCSC 'chr' naming conventions to RefSeq 'NC_' tags
 ucsc_to_ncbi = {}
 with open("$MAP_FILE", 'r') as f:
     for line in f:
         if line.strip():
             ncbi, ucsc = line.strip().split('\t')
-            ucsc_to_ncbi[ucsc] = ncbi
+            ucsc_to_ncbi[ucsc.upper()] = ncbi.upper()
 
-# Load the coordinate-to-rsID extracted mapping subset (Path B)
 coord_to_rsid = {}
 with open("$TMP_RSID_MAP", 'r') as f:
     for line in f:
         if line.strip():
             coord, rsid = line.strip().split('\t')
-            # Only map if dbSNP actually returned a valid rsID string
             if rsid and rsid != '.':
-                coord_to_rsid[coord] = rsid
+                coord_to_rsid[coord.upper().strip()] = rsid.strip()
 
-# Load sex mismatch exclusions
 try:
     with open("$SEX_MISMATCH_FILE") as f:
-        sex_mismatch_samples = {
-            line.strip() for line in f if line.strip()
-        }
+        sex_mismatch_samples = {line.strip() for line in f if line.strip()}
 except FileNotFoundError:
     sex_mismatch_samples = set()
 
-print(f"DEBUG: Loaded {len(sex_mismatch_samples)} sex-mismatch samples")
-
-# Remove from metadata immediately
-meta = meta[
-    ~meta['externalsampleid'].isin(sex_mismatch_samples)
-].copy()
+meta = meta[~meta['externalsampleid'].isin(sex_mismatch_samples)].copy()
 
 # 2. DEFINE TISSUE PATTERN
 patterns = {
@@ -126,7 +109,6 @@ pattern = patterns.get("$TISSUE", "$TISSUE")
 # 3. FILTERING & BEST REPLICATE SELECTION
 approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
 meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
-
 mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
 meta_tissue = meta_filt[mask].copy()
 
@@ -138,12 +120,7 @@ def get_rin(row):
     except: return 0
 
 meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
-
-# FILTER: PMI <= 40 hours & RIN >= 3
-print(f"DEBUG: Before filtering: {len(meta_tissue)} samples")
 meta_tissue = meta_tissue[(meta_tissue['post_mortem_interval_in_hours'] <= 40) & (meta_tissue['RIN_score'] >= 3)]
-print(f"DEBUG: After PMI/RIN filter: {len(meta_tissue)} samples")
-
 meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
 
 # 4. TRIPLE INTERSECTION
@@ -169,31 +146,22 @@ expr = pd.read_csv("$EXPR", sep='\t', usecols=['gene_id'] + [sub_to_hra[s] for s
 expr_final = expr[[sub_to_hra[s] for s in final_aligned_subjects]]
 expr_final.columns = final_aligned_subjects
 
-# Correct handling of SNP indices to preserve additive encoding (0,1,2)
-snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID'])
-snp_matrix = snp_matrix.loc[final_aligned_subjects]
+snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
 snp_final = snp_matrix.T
 
 def convert_to_rsid(full_id):
-    # Strip recode suffix (_A, _G)
     clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
     parts = str(clean_id).split(':')
     if len(parts) >= 2:
         chrom, pos = parts[0], parts[1]
-        ucsc_chrom = chrom if chrom.startswith('chr') else f"chr{chrom}"
-        ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom, ucsc_chrom)
-        
-        # Look up coordinate string in our dynamic dbSNP dictionary
-        coord_key = f"{ncbi_chrom}:{pos}"
-        return coord_to_rsid.get(coord_key, coord_key) # Fallback to coordinate if variant isn't in dbSNP
+        ucsc_chrom = chrom if chrom.upper().startswith('CHR') else f"chr{chrom}"
+        ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom.upper(), ucsc_chrom.upper())
+        coord_key = f"{ncbi_chrom}:{pos}".upper().strip()
+        return coord_to_rsid.get(coord_key, clean_id)
     return clean_id
 
 snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
-
-# CRITICAL FIX: Remove duplicate SNP IDs (keep first occurrence only)
 snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
-
-print(f"DEBUG: SNP matrix shape after rsID conversion: {snp_final.shape}")
 
 # 6. COVARIATE MERGE
 cov_full = pd.read_csv("$COV_FILE", sep='\t')
@@ -224,32 +192,27 @@ EOF
 # ─────────────────────────────────────────────────────────────────
 echo "Generating deduplicated location files for $TISSUE..."
 
-# 1. SNP Location: Converts chromosome format AND uses rsIDs matching snp_${TISSUE_DIR}.txt
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
     OFS="\t"
-    # Load UCSC to NCBI map
-    while ((getline < ncbi_map) > 0) { n_map[$2] = $1 }
+    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1) }
     close(ncbi_map)
-    # Load NCBI:POS to rsID map
-    while ((getline < rsid_map) > 0) { r_map[$1] = $2 }
+    while ((getline < rsid_map) > 0) { r_map[toupper($1)] = $2 }
     close(rsid_map)
 }
 {
-    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
     
     coord_key = ncbi":"$4;
-    final_id = (coord_key in r_map) ? r_map[coord_key] : coord_key;
+    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key;
     
     print final_id, ncbi, $4;
 }' $BIM | sort -u -k1,1 >> $OUTDIR/snp_location.txt
 
-# 2. Gene Location: Extract from GTF, then force unique IDs based on column 1
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 | sort -u -k1,1 >> $OUTDIR/gene_location.txt
 
-# Clean up temporary lookup file from the current tissue run directory
 rm -f $TMP_RSID_MAP
 echo "Location files complete for $TISSUE."
