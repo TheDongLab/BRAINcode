@@ -39,33 +39,27 @@ echo "  sQTL Prep for $TISSUE"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
-# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T (Path B)
+# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T
 # ─────────────────────────────────────────────────────────────────
 echo "Generating target position filter list..."
 TMP_TARGETS=$OUTDIR/tmp_targets_ncbi.txt
 
-# 1. Convert BIM positions into a clean, 3-column tab-delimited filter target file
 awk -v map_file="$MAP_FILE" '
 BEGIN {
     OFS="\t"
-    while ((getline < map_file) > 0) { map[$2] = $1 }
+    while ((getline < map_file) > 0) { map[toupper($2)] = toupper($1) }
     close(map_file)
 }
 {
-    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
     ncbi = (ucsc in map) ? map[ucsc] : ucsc;
     print ncbi, $4, $4
 }' $BIM > $TMP_TARGETS
 
-echo "Streaming dbSNP variant IDs matching your dataset via row filtering..."
+echo "Streaming dbSNP variant IDs matching your dataset..."
 TMP_RSID_MAP=$OUTDIR/tmp_coord_to_rsid.txt
-
-# 2. Extract matching variants from dbSNP using the non-hanging sequential text filter (-T)
 bcftools query -T $TMP_TARGETS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
-
-# Clean up the intermediate targets file
 rm -f $TMP_TARGETS
-echo "dbSNP query complete. Extracted subset mapping file successfully."
 
 # ─────────────────────────────────────────────────────────────────
 # STEP 0: Generate BED from Matrix IDs
@@ -113,7 +107,7 @@ try:
         for line in f:
             if line.strip():
                 ncbi, ucsc = line.strip().split('\t')
-                ucsc_to_ncbi[ucsc] = ncbi
+                ucsc_to_ncbi[ucsc.upper()] = ncbi.upper()
 
     coord_to_rsid = {}
     with open("$TMP_RSID_MAP", 'r') as f:
@@ -121,7 +115,7 @@ try:
             if line.strip():
                 coord, rsid = line.strip().split('\t')
                 if rsid and rsid != '.':
-                    coord_to_rsid[coord] = rsid
+                    coord_to_rsid[coord.upper().strip()] = rsid.strip()
 
     try:
         with open("$SEX_MISMATCH_FILE") as f: sex_mismatch = {l.strip() for l in f if l.strip()}
@@ -208,17 +202,15 @@ try:
     snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
     snp_final = snp_matrix.T
 
-    # Map SNP coordinate IDs dynamically to rsIDs
     def convert_to_rsid(full_id):
         clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
         parts = str(clean_id).split(':')
         if len(parts) >= 2:
             chrom, pos = parts[0], parts[1]
-            ucsc_chrom = chrom if chrom.startswith('chr') else f"chr{chrom}"
-            ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom, ucsc_chrom)
-            
-            coord_key = f"{ncbi_chrom}:{pos}"
-            return coord_to_rsid.get(coord_key, coord_key) # Fallback to coordinate identifier if variant isn't inside dbSNP
+            ucsc_chrom = chrom if chrom.upper().startswith('CHR') else f"chr{chrom}"
+            ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom.upper(), ucsc_chrom.upper())
+            coord_key = f"{ncbi_chrom}:{pos}".upper().strip()
+            return coord_to_rsid.get(coord_key, clean_id)
         return clean_id
 
     snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
@@ -232,6 +224,7 @@ try:
     cov_merged = cov_merged.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
+    
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
 
     # 7. SAVE OUTPUTS
@@ -248,41 +241,27 @@ EOF
 # ─────────────────────────────────────────────────────────────────
 echo "Generating deduplicated location files for $TISSUE..."
 
-# Generate SNP Location file tracking back to the dynamic rsIDs while outputting standard RefSeq NC_ structure
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
     OFS="\t"
-    while ((getline < ncbi_map) > 0) { n_map[$2] = $1 }
+    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1) }
     close(ncbi_map)
-    while ((getline < rsid_map) > 0) { r_map[$1] = $2 }
+    while ((getline < rsid_map) > 0) { r_map[toupper($1)] = $2 }
     close(rsid_map)
 }
 {
-    ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
+    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
     
     coord_key = ncbi":"$4;
-    final_id = (coord_key in r_map) ? r_map[coord_key] : coord_key;
+    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key;
     
     print final_id, ncbi, $4;
 }' "$BIM" | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
 
-# Splicing target location map (Tracks structural leafcutter BED data)
 echo -e "geneid\tchr\tleft\tright" > "$OUTDIR/splicing_location.txt"
 awk 'BEGIN{OFS="\t"} { print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" | sort -u -k1,1 >> "$OUTDIR/splicing_location.txt"
 
 rm -f "$SPLICING_LOC_SRC" "$TMP_RSID_MAP"
 echo "Location files complete for $TISSUE."
-
-# ─────────────────────────────────────────────────────────────────
-# STEP 8: Final Summary Output
-# ─────────────────────────────────────────────────────────────────
-echo "============================================"
-echo "  sQTL Prep complete for $TISSUE"
-echo "  Output directory: $OUTDIR"
-echo "  $(date)"
-echo "============================================"
-
-echo "Output files:"
-ls -lh "$OUTDIR"/*.txt 2>/dev/null || echo "No output files found"
