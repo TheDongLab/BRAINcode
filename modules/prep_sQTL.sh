@@ -39,25 +39,33 @@ echo "  sQTL Prep for $TISSUE"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
-# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS
+# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T (Path B)
 # ─────────────────────────────────────────────────────────────────
-echo "Streaming dbSNP variant IDs matching your dataset..."
-TMP_REGIONS=$OUTDIR/tmp_regions_ncbi.bed
+echo "Generating target position filter list..."
+TMP_TARGETS=$OUTDIR/tmp_targets_ncbi.txt
+
+# 1. Convert BIM positions into a clean, 3-column tab-delimited filter target file
 awk -v map_file="$MAP_FILE" '
 BEGIN {
+    OFS="\t"
     while ((getline < map_file) > 0) { map[$2] = $1 }
     close(map_file)
 }
 {
     ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
     ncbi = (ucsc in map) ? map[ucsc] : ucsc;
-    print ncbi"\t"$4"\t"$4
-}' $BIM > $TMP_REGIONS
+    print ncbi, $4, $4
+}' $BIM > $TMP_TARGETS
 
+echo "Streaming dbSNP variant IDs matching your dataset via row filtering..."
 TMP_RSID_MAP=$OUTDIR/tmp_coord_to_rsid.txt
-bcftools query -R $TMP_REGIONS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
-rm -f $TMP_REGIONS
-echo "dbSNP query complete. Extracted subset mapping file."
+
+# 2. Extract matching variants from dbSNP using the non-hanging sequential text filter (-T)
+bcftools query -T $TMP_TARGETS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
+
+# Clean up the intermediate targets file
+rm -f $TMP_TARGETS
+echo "dbSNP query complete. Extracted subset mapping file successfully."
 
 # ─────────────────────────────────────────────────────────────────
 # STEP 0: Generate BED from Matrix IDs
@@ -208,8 +216,9 @@ try:
             chrom, pos = parts[0], parts[1]
             ucsc_chrom = chrom if chrom.startswith('chr') else f"chr{chrom}"
             ncbi_chrom = ucsc_to_ncbi.get(ucsc_chrom, ucsc_chrom)
+            
             coord_key = f"{ncbi_chrom}:{pos}"
-            return coord_to_rsid.get(coord_key, clean_id)
+            return coord_to_rsid.get(coord_key, coord_key) # Fallback to coordinate identifier if variant isn't inside dbSNP
         return clean_id
 
     snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
@@ -239,7 +248,7 @@ EOF
 # ─────────────────────────────────────────────────────────────────
 echo "Generating deduplicated location files for $TISSUE..."
 
-# Generate SNP Location file tracking back to the dynamic rsIDs while outputting standard UCSC chr structure
+# Generate SNP Location file tracking back to the dynamic rsIDs while outputting standard RefSeq NC_ structure
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
@@ -252,11 +261,12 @@ BEGIN {
 {
     ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
-    coord_key = ncbi":"$4;
-    final_id = (coord_key in r_map) ? r_map[coord_key] : "chr"$1":"$4;
     
-    print final_id, ucsc, $4;
-}' "$BIM" | sed 's/chrchr/chr/g' | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
+    coord_key = ncbi":"$4;
+    final_id = (coord_key in r_map) ? r_map[coord_key] : coord_key;
+    
+    print final_id, ncbi, $4;
+}' "$BIM" | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
 
 # Splicing target location map (Tracks structural leafcutter BED data)
 echo -e "geneid\tchr\tleft\tright" > "$OUTDIR/splicing_location.txt"
