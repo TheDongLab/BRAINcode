@@ -4,11 +4,9 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/%x_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=649G
+#SBATCH --mem=699G
 
 set -euo pipefail
-
-module load BCFtools
 
 TISSUE="$1" 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
@@ -39,28 +37,33 @@ echo "  eQTL Prep for $TISSUE"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
-# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS (Path B)
+# STEP A: HIGH-PERFORMANCE RSID EXTRACTION VIA BCFTOOLS -T (Path B)
 # ─────────────────────────────────────────────────────────────────
-echo "Streaming dbSNP variant IDs matching your dataset..."
-# 1. Convert BIM coordinates to an internal 1-based region query file using the NC_ map
-TMP_REGIONS=$OUTDIR/tmp_regions_ncbi.bed
+echo "Generating target position filter list..."
+TMP_TARGETS=$OUTDIR/tmp_targets_ncbi.txt
+
+# 1. Convert BIM positions into a clean, 3-column tab-delimited filter target file
 awk -v map_file="$MAP_FILE" '
 BEGIN {
+    OFS="\t"
     while ((getline < map_file) > 0) { map[$2] = $1 }
     close(map_file)
 }
 {
     ucsc = ($1 ~ /^chr/) ? $1 : "chr"$1;
     ncbi = (ucsc in map) ? map[ucsc] : ucsc;
-    print ncbi"\t"$4"\t"$4
-}' $BIM > $TMP_REGIONS
+    print ncbi, $4, $4
+}' $BIM > $TMP_TARGETS
 
-# 2. Extract matching variants from dbSNP using the Tabix index (instant, 0 RAM footprint)
+echo "Streaming dbSNP variant IDs matching your dataset via row filtering..."
 TMP_RSID_MAP=$OUTDIR/tmp_coord_to_rsid.txt
-bcftools query -R $TMP_REGIONS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
 
-rm -f $TMP_REGIONS
-echo "dbSNP query complete. Extracted subset mapping file."
+# 2. Extract matching variants from dbSNP using the non-hanging sequential text filter (-T)
+bcftools query -T $TMP_TARGETS -f '%CHROM:%POS\t%ID\n' $DBSNP_VCF > $TMP_RSID_MAP
+
+# Clean up the intermediate targets file
+rm -f $TMP_TARGETS
+echo "dbSNP query complete. Extracted subset mapping file successfully."
 
 # ─────────────────────────────────────────────────────────────────
 # STEP B: PANDAS INTERSECTION & MATRIX GENERATION
@@ -247,6 +250,6 @@ BEGIN {
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); print gene, $1, $2, $3}' $GTF_BED6 | sort -u -k1,1 >> $OUTDIR/gene_location.txt
 
-# Post-execution cleanup of local session mapping file
+# Clean up temporary lookup file from the current tissue run directory
 rm -f $TMP_RSID_MAP
 echo "Location files complete for $TISSUE."
