@@ -237,9 +237,9 @@ except Exception as e:
 EOF
 
 # ─────────────────────────────────────────────────────────────────
-# STEP 7: Coordinate Mapping Location Files
+# STEP 7: Coordinate Mapping Location Files (PARSING & ORDER FIX)
 # ─────────────────────────────────────────────────────────────────
-echo "Generating deduplicated location files for $TISSUE..."
+echo "Generating order-preserved location files for $TISSUE..."
 
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
@@ -251,17 +251,23 @@ BEGIN {
     close(rsid_map)
 }
 {
-    ucsc = ($1 ~ /^[Cc][Hh][Rr]/) ? toupper($1) : "CHR"toupper($1);
-    ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc;
+    split($2, parts, ":")
+    chrom = parts[1]
+    pos   = parts[2]
     
-    coord_key = ncbi":"$4;
-    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key;
+    ucsc = (chrom ~ /^[Cc][Hh][Rr]/) ? toupper(chrom) : "CHR"toupper(chrom)
+    ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc
     
-    print final_id, ncbi, $4;
-}' "$BIM" | sort -u -k1,1 >> "$OUTDIR/snp_location.txt"
+    coord_key = ncbi":"pos
+    final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key
+    
+    if (!seen[final_id]++) {
+        print final_id, ncbi, pos
+    }
+}' "$BIM" >> "$OUTDIR/snp_location.txt"
 
 echo -e "geneid\tchr\tleft\tright" > "$OUTDIR/splicing_location.txt"
-awk 'BEGIN{OFS="\t"} { print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" | sort -u -k1,1 >> "$OUTDIR/splicing_location.txt"
+awk 'BEGIN{OFS="\t"} { if (!seen[$4]++) print $4, $1, $2, $3 }' "$SPLICING_LOC_SRC" >> "$OUTDIR/splicing_location.txt"
 
 rm -f "$SPLICING_LOC_SRC" "$TMP_RSID_MAP"
 echo "Location files complete for $TISSUE."
