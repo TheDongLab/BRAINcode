@@ -22,12 +22,12 @@ out_dir   <- args[6]
 tissue    <- args[7]
 
 # Un-hash these rows to generate boxplots for ALL significant SNPs:
-# out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots.pdf"))
-# out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots_colored.pdf"))
+out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots.pdf"))
+out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_sQTL_boxplots_colored.pdf"))
 
-# Tagging filenames for boxplots generated from the top 1000 subset:
-out_file_std <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots.pdf"))
-out_file_col <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots_colored.pdf"))
+# Un-hash these rows to generate boxplots for the top 1000 subset:
+# out_file_std <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots.pdf"))
+# out_file_col <- file.path(out_dir, paste0(tissue, "_top1000_sig_sQTL_boxplots_colored.pdf"))
 
 message("# Loading genomic matrices...")
 # HASHED OUT ORIGINAL:
