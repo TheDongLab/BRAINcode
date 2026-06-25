@@ -193,33 +193,32 @@ EOF
 echo "Generating order-preserved location files for $TISSUE..."
 
 echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
+echo -e "snpid\tchr\tpos" > $OUTDIR/snp_location.txt
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
     OFS="\t"
-    # Load chromosome mappings (standardizing keys to uppercase)
-    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1) }
+    # Reverse lookup: Map NCBI/RefSeq IDs to UCSC format (e.g. inv_map["NC_000001.11"] = "chr1")
+    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1); inv_map[toupper($1)] = $2 }
     close(ncbi_map)
-    # Load dbSNP coordinate to rsID map
     while ((getline < rsid_map) > 0) { r_map[toupper($1)] = $2 }
     close(rsid_map)
 }
 {
-    # 1. Parse the variant string from column 2 (e.g., 1:228489569:T:A)
     split($2, parts, ":")
     chrom = parts[1]
     pos   = parts[2]
     
-    # 2. Standardize chromosome naming to find the NCBI equivalent
     ucsc = (chrom ~ /^[Cc][Hh][Rr]/) ? toupper(chrom) : "CHR"toupper(chrom)
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc
     
-    # 3. Look up the coordinate key in the dbSNP map
     coord_key = ncbi":"pos
     final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key
     
-    # 4. Print directly while eliminating duplicate lines to maintain matrix order
+    # Pull the original UCSC name from the inverted reference map
+    final_chr = (toupper(ncbi) in inv_map) ? inv_map[toupper(ncbi)] : chrom
+    
     if (!seen[final_id]++) {
-        print final_id, ncbi, pos
+        print final_id, final_chr, pos
     }
 }' $BIM >> $OUTDIR/snp_location.txt
 
