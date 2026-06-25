@@ -8,6 +8,8 @@
 
 set -euo pipefail
 
+module load BCFtools
+
 TISSUE="$1" 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL
