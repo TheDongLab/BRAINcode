@@ -24,13 +24,15 @@ tissue    <- args[7]
 # Un-hash these rows to generate boxplots for ALL significant SNPs:
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots_colored.pdf"))
+pairs <- fread(GSfile, header=FALSE, col.names=c("geneid","snpid"))
 
 # Un-hash these rows to generate boxplots for the top 1000 subset:
 # out_file_std <- file.path(out_dir, paste0(tissue, "_top1000_sig_eQTL_boxplots.pdf"))
 # out_file_col <- file.path(out_dir, paste0(tissue, "_top1000_sig_eQTL_boxplots_colored.pdf"))
+# pairs <- fread(GSfile, header=FALSE, col.names=c("geneid","snpid"), nrows=1000)
 
 message("# Loading genomic matrices...")
-pairs    <- fread(GSfile, header=FALSE, col.names=c("geneid","snpid"))
+
 snp_mat  <- fread(snp_file, header=TRUE)
 expr_mat <- fread(expr_file, header=TRUE)
 cov_mat  <- fread(cov_file, header=TRUE)
