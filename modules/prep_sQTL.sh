@@ -242,10 +242,11 @@ EOF
 echo "Generating order-preserved location files for $TISSUE..."
 
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
+echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
     OFS="\t"
-    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1) }
+    while ((getline < ncbi_map) > 0) { n_map[toupper($2)] = toupper($1); inv_map[toupper($1)] = $2 }
     close(ncbi_map)
     while ((getline < rsid_map) > 0) { r_map[toupper($1)] = $2 }
     close(rsid_map)
@@ -254,15 +255,13 @@ BEGIN {
     split($2, parts, ":")
     chrom = parts[1]
     pos   = parts[2]
-    
     ucsc = (chrom ~ /^[Cc][Hh][Rr]/) ? toupper(chrom) : "CHR"toupper(chrom)
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc
-    
     coord_key = ncbi":"pos
     final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key
-    
+    final_chr = (toupper(ncbi) in inv_map) ? inv_map[toupper(ncbi)] : chrom
     if (!seen[final_id]++) {
-        print final_id, ncbi, pos
+        print final_id, final_chr, pos
     }
 }' "$BIM" >> "$OUTDIR/snp_location.txt"
 
