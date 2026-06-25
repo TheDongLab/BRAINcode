@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ###########################################
-# _eQTL_boxplot.R - CLEAN VERSION
+# _eQTL_boxplot.R
 # Now that prep script is fixed, no dedup needed
 ###########################################
 
@@ -21,8 +21,13 @@ snp_loc   <- args[5]
 out_dir   <- args[6]
 tissue    <- args[7]
 
+# Un-hash these rows to generate boxplots for ALL significant SNPs:
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots_colored.pdf"))
+
+# Un-hash these rows to generate boxplots for the top 1000 subset:
+# out_file_std <- file.path(out_dir, paste0(tissue, "_top1000_sig_eQTL_boxplots.pdf"))
+# out_file_col <- file.path(out_dir, paste0(tissue, "_top1000_sig_eQTL_boxplots_colored.pdf"))
 
 message("# Loading genomic matrices...")
 pairs    <- fread(GSfile, header=FALSE, col.names=c("geneid","snpid"))
