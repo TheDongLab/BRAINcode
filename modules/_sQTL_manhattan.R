@@ -49,7 +49,7 @@ message("## Processing SNP coordinates (Autosomes 1-22 only)...")
 prepare_coords <- function(df) {
     df[, chr_name := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
     # Filter out Chromosome X or 23 explicitly
-    df <- df[!(chr_name %in= c("X", "x", "23"))]
+    df <- df[!(chr_name %in% c("X", "x", "23"))]
     df[, chr_num := as.integer(chr_name)]
     return(df[!is.na(chr_num)]) # Drops non-autosomes, Y, M, or parsing errors
 }
