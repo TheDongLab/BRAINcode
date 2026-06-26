@@ -12,12 +12,14 @@ CRYPTEX_BIN="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
 CRYPTEX_SCRIPT="${CRYPTEX_BIN}/cryptex.sh"
 MASTER_META="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
-TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
+TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Thoracic_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
 SPECIES="human"
 PROTEIN="TDP43" 
 
 EXON_GFF_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation"
 STAR_REF_DIR="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR"
+
+mkdir -p /home/zw529/donglab/pipelines/scripts/rnaseq/logs
 
 echo "========================================================"
 echo "Starting CryptEx Orchestration on TargetALS Cohorts"
@@ -35,13 +37,11 @@ for TISSUE in "${TISSUES[@]}"; do
     
     mkdir -p "$META_DIR"
     
-    # 2. Dynamic Python execution to apply tissue regex patterns and extract support parameters
+    # 2. Extract entries matching your tissue regex map and use the standardized STAR symlink
     python3 - <<EOF
 import pandas as pd
-import re
 import os
 
-# Define User Remapping Patterns
 patterns = {
     "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
     "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
@@ -51,10 +51,8 @@ patterns = {
     "Cerebellum": "Cerebellum"
 }
 
-# Read Master Metadata sheet
 df = pd.read_csv("${MASTER_META}")
 
-# Filter lines matching current tissue criteria
 pattern = patterns["${TISSUE}"]
 tissue_df = df[df['tissue'].astype(str).str.contains(pattern, case=False, na=False)].copy()
 
@@ -62,17 +60,18 @@ if tissue_df.empty:
     print(f"⚠️ No matches found in master metadata sheet for pattern group: ${TISSUE}")
     exit(0)
 
-# Build target columns needed by Jack's pipeline structure
-# Header requirement: sample | bam | dataset | condition
 support_records = []
 
 for _, row in tissue_df.iterrows():
-    sample_id = row['externalsampleid']
+    raw_sample_id = row['externalsampleid']
     
-    # Reconstruct processed path matching your sQTL/eQTL structural outputs
-    bam_path = f"/home/zw529/donglab/data/target_ALS/${TISSUE}/RNAseq/Processed/{sample_id}/{sample_id}_unique.bam"
+    # Flip hyphens to underscores exclusively for directory name resolution
+    sample_dir = raw_sample_id.replace('-', '_')
     
-    # Standardize conditions for downstream contrast models
+    # Track the standard STAR output symlink directly
+    bam_path = f"/home/zw529/donglab/data/target_ALS/${TISSUE}/RNAseq/Processed/{sample_dir}/STAR.Aligned.sortedByCoord.out.bam"
+    
+    # Standardize conditions for DEXSeq contrasts
     raw_group = str(row['subject_group'])
     if "Control" in raw_group:
         condition = "Control"
@@ -82,22 +81,23 @@ for _, row in tissue_df.iterrows():
         condition = "Other"
         
     support_records.append({
-        "sample": sample_id,
+        "sample": sample_dir,
         "bam": bam_path,
         "dataset": "${TISSUE}",
         "condition": condition
     })
 
 support_df = pd.DataFrame(support_records)
-# Check if any BAM files exist before committing the support matrix row item
+
+# Use os.path.exists to verify symlink path target validity before exporting
 support_df['file_exists'] = support_df['bam'].apply(os.path.exists)
 valid_support = support_df[support_df['file_exists'] == True].drop(columns=['file_exists'])
 
 if valid_support.empty:
-    print(f"⚠️ Dropping out: Support entries built but 0 BAM files found on file system for ${TISSUE}.")
+    print(f"⚠️ Dropping out: 0 BAM files verified via symlinks for ${TISSUE}.")
 else:
     valid_support.to_csv("${SUPPORT_FILE}", sep="\t", index=False)
-    print(f"✅ Generated support.tab for ${TISSUE} with {len(valid_support)} active target rows.")
+    print(f"✅ Generated support.tab for ${TISSUE} with {len(valid_support)} active tracks.")
 EOF
 
     # 3. Guard check: Run pipeline block if support file was written successfully
