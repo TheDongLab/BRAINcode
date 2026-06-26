@@ -17,15 +17,19 @@ CRYPTEX_BIN="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
 CRYPTEX_SCRIPT="${CRYPTEX_BIN}/cryptex.sh"
 MASTER_META="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
-# These represent your target pooled cohorts
-TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Thoracic_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
+# Targets and Reference paths
+TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
 SPECIES="human"
 PROTEIN="TDP43" 
 
 EXON_GFF_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation"
 STAR_REF_DIR="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR"
 
-mkdir -p /home/zw529/donglab/pipelines/scripts/rnaseq/logs
+# FIX 1 & 3: Set working directory to your target data volume before running loop.
+# This forces CryptEx to generate its workspace folders relative to this path.
+OUTPUT_BASE_DIR="/home/zw529/donglab/data/target_ALS/CryptEx"
+mkdir -p "$OUTPUT_BASE_DIR"
+cd "$OUTPUT_BASE_DIR"
 
 echo "========================================================"
 echo "Starting CryptEx Orchestration on TargetALS Cohorts"
@@ -37,7 +41,6 @@ for TISSUE in "${TISSUES[@]}"; do
     echo "Processing Tissue: ${TISSUE}"
     echo "--------------------------------------------------------"
     
-    # We store the output support tables under the main pooled tissue group folder
     TISSUE_DIR="/home/zw529/donglab/data/target_ALS/${TISSUE}"
     META_DIR="${TISSUE_DIR}/metadata"
     SUPPORT_FILE="${META_DIR}/${TISSUE}_support.tab"
@@ -59,14 +62,12 @@ patterns = {
     "Cerebellum": "Cerebellum"
 }
 
-# Find all physical directories inside target_ALS matching this tissue pattern map
 base_data_dir = "/home/zw529/donglab/data/target_ALS"
 compiled_regex = re.compile(patterns["${TISSUE}"], re.IGNORECASE)
 
 matching_dirs = []
 if os.path.exists(base_data_dir):
     for d in os.listdir(base_data_dir):
-        # Match directory name (replacing underscores with spaces for clean parsing comparison)
         normalized_d = d.replace('_', ' ')
         if compiled_regex.search(normalized_d) or compiled_regex.search(d):
             full_path = os.path.join(base_data_dir, d)
@@ -89,10 +90,8 @@ for _, row in tissue_df.iterrows():
     raw_sample_id = row['externalsampleid']
     sample_underscore = raw_sample_id.replace('-', '_')
     
-    # Loop across every valid matched directory to locate where the cluster stored this BAM file
     final_bam = None
     for folder in matching_dirs:
-        # Check both naming styles inside the specific processing folder block
         path_underscore = f"{base_data_dir}/{folder}/RNAseq/Processed/{sample_underscore}/STAR.Aligned.sortedByCoord.out.bam"
         path_hyphen = f"{base_data_dir}/{folder}/RNAseq/Processed/{raw_sample_id}/STAR.Aligned.sortedByCoord.out.bam"
         
@@ -105,7 +104,6 @@ for _, row in tissue_df.iterrows():
             sample_name = raw_sample_id
             break
             
-    # Skip sample row entry if no BAM link targets match up
     if not final_bam:
         continue
         
@@ -138,21 +136,25 @@ EOF
         continue
     fi
     
-    # 5. Invoke Module Block Execution
-    bash "$CRYPTEX_SCRIPT" \
-        --species "$SPECIES" \
-        --protein "$PROTEIN" \
-        --support "$SUPPORT_FILE" \
-        --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
-        --gff "${EXON_GFF_BASE}.gtf" \
-        --splice_extractor yes \
-        --gff_creator yes \
-        --read_counter yes \
-        --DEXSeq yes \
-        --DESeq no \
-        --submit no \
-        --strict yes \
-        --hold_Step1 no
+    # FIX 2: Call the execution module inside parentheses (a subshell block)
+    # This shields the loop from CryptEx's internal hard exits and keeps the cohort iterations running.
+    echo "Spawning generation commands for ${TISSUE}..."
+    (
+        bash "$CRYPTEX_SCRIPT" \
+            --species "$SPECIES" \
+            --protein "$PROTEIN" \
+            --support "$SUPPORT_FILE" \
+            --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
+            --gff "${EXON_GFF_BASE}.gtf" \
+            --splice_extractor yes \
+            --gff_creator yes \
+            --read_counter yes \
+            --DEXSeq yes \
+            --DESeq no \
+            --submit no \
+            --strict yes \
+            --hold_Step1 no
+    ) || echo "⚠️ CryptEx processing configuration block returned exit status for ${TISSUE}."
         
     echo "Finished execution block generation for ${TISSUE} setup layout."
 done
