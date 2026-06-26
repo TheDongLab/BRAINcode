@@ -146,6 +146,7 @@ EOF
             --support "$SUPPORT_FILE" \
             --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
             --gff "${EXON_GFF_BASE}.gtf" \
+            --paired yes \
             --splice_extractor yes \
             --gff_creator yes \
             --read_counter yes \
