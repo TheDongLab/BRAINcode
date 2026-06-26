@@ -12,12 +12,11 @@ module load STAR
 module load BEDTools
 module load SAMtools
 
-# Paths and Global Settings
-CRYPTEX_BIN="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
-CRYPTEX_SCRIPT="${CRYPTEX_BIN}/cryptex.sh"
+# 1. Source and Destination Settings
+CRYPTEX_SRC_DIR="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
+CRYPTEX_SRC_SCRIPT="${CRYPTEX_SRC_DIR}/cryptex.sh"
 MASTER_META="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
-# Targets and Reference paths
 TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
 SPECIES="human"
 PROTEIN="TDP43" 
@@ -25,9 +24,9 @@ PROTEIN="TDP43"
 EXON_GFF_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation"
 STAR_REF_DIR="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR"
 
-# Explicitly define and build your desired data output home
-OUTPUT_BASE_DIR="/home/zw529/donglab/data/target_ALS/CryptEx"
-mkdir -p "$OUTPUT_BASE_DIR"
+# Clean destination setup
+DATA_CRYPTEX_DIR="/home/zw529/donglab/data/target_ALS/CryptEx"
+mkdir -p "$DATA_CRYPTEX_DIR"
 
 echo "========================================================"
 echo "Starting CryptEx Orchestration on TargetALS Cohorts"
@@ -39,13 +38,14 @@ for TISSUE in "${TISSUES[@]}"; do
     echo "Processing Tissue: ${TISSUE}"
     echo "--------------------------------------------------------"
     
-    TISSUE_DIR="/home/zw529/donglab/data/target_ALS/${TISSUE}"
-    META_DIR="${TISSUE_DIR}/metadata"
-    SUPPORT_FILE="${META_DIR}/${TISSUE}_support.tab"
+    # Define tissue-specific data folder where everything (support files + outputs) will land
+    TISSUE_OUT_DIR="${DATA_CRYPTEX_DIR}/${TISSUE}"
+    mkdir -p "$TISSUE_OUT_DIR"
     
-    mkdir -p "$META_DIR"
+    # Metadata support table sits right in the execution directory alongside results
+    SUPPORT_FILE="${TISSUE_OUT_DIR}/${TISSUE}_support.tab"
     
-    # 3. Use Python to scan all cluster tissue subdirectories that fit the pattern
+    # 2. Use Python to scan all cluster tissue subdirectories that fit the pattern
     python3 - <<EOF
 import pandas as pd
 import os
@@ -128,22 +128,29 @@ else:
     print(f"✅ Generated support.tab for ${TISSUE} with {len(support_df)} validated active tracks.")
 EOF
 
-    # 4. Guard check: Run pipeline block if support file was written successfully
+    # 3. Guard check: Run pipeline block if support file was written successfully
     if [ ! -f "$SUPPORT_FILE" ]; then
         echo "Skipping ${TISSUE} pipeline section due to missing inputs."
         continue
     fi
     
-    # 5. Invoke Module Block Execution
+    # 4. Create an isolated, runtime-patched execution script for this tissue cohort
+    PATCHED_SCRIPT="${TISSUE_OUT_DIR}/cryptex_${TISSUE}.sh"
+    
+    # We substitute line 147's oFolder targeting path to our tissue output destination cleanly
+    sed "s|^oFolder=.*|oFolder=\"${TISSUE_OUT_DIR}\"|g" "$CRYPTEX_SRC_SCRIPT" > "$PATCHED_SCRIPT"
+    chmod +x "$PATCHED_SCRIPT"
+
+    # 5. Invoke the localized runtime patched execution block
     echo "Spawning generation commands for ${TISSUE}..."
     (
-        bash "$CRYPTEX_SCRIPT" \
+        cd "$TISSUE_OUT_DIR"
+        bash "$PATCHED_SCRIPT" \
             --species "$SPECIES" \
             --protein "$PROTEIN" \
             --support "$SUPPORT_FILE" \
             --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
             --gff "${EXON_GFF_BASE}.gtf" \
-            --outdir "$OUTPUT_BASE_DIR" \
             --paired yes \
             --splice_extractor yes \
             --gff_creator yes \
@@ -154,6 +161,9 @@ EOF
             --strict yes \
             --hold_Step1 no
     ) || echo "⚠️ CryptEx processing configuration block returned exit status for ${TISSUE}."
+    
+    # Clean up the temporary patched execution wrapper script
+    rm -f "$PATCHED_SCRIPT"
         
     echo "Finished execution block generation for ${TISSUE} setup layout."
 done
