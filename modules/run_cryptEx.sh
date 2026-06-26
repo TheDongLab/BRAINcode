@@ -146,7 +146,7 @@ EOF
         --read_counter yes \
         --DEXSeq yes \
         --DESeq no \
-        --submit no \
+        --submit yes \
         --strict yes \
         --hold_Step1 no
         
