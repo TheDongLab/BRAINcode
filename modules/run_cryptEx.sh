@@ -7,11 +7,17 @@
 
 set -euo pipefail
 
-# 1. Paths and Global Settings
+module load R
+module load STAR
+module load BEDTools
+module load SAMtools
+
+# Paths and Global Settings
 CRYPTEX_BIN="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
 CRYPTEX_SCRIPT="${CRYPTEX_BIN}/cryptex.sh"
 MASTER_META="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
+# These represent your target pooled cohorts
 TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Thoracic_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
 SPECIES="human"
 PROTEIN="TDP43" 
@@ -31,16 +37,18 @@ for TISSUE in "${TISSUES[@]}"; do
     echo "Processing Tissue: ${TISSUE}"
     echo "--------------------------------------------------------"
     
+    # We store the output support tables under the main pooled tissue group folder
     TISSUE_DIR="/home/zw529/donglab/data/target_ALS/${TISSUE}"
     META_DIR="${TISSUE_DIR}/metadata"
     SUPPORT_FILE="${META_DIR}/${TISSUE}_support.tab"
     
     mkdir -p "$META_DIR"
     
-    # 2. Extract entries matching your tissue regex map and use the standardized STAR symlink
+    # 3. Use Python to scan all cluster tissue subdirectories that fit the pattern
     python3 - <<EOF
 import pandas as pd
 import os
+import re
 
 patterns = {
     "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
@@ -51,8 +59,23 @@ patterns = {
     "Cerebellum": "Cerebellum"
 }
 
-df = pd.read_csv("${MASTER_META}")
+# Find all physical directories inside target_ALS matching this tissue pattern map
+base_data_dir = "/home/zw529/donglab/data/target_ALS"
+compiled_regex = re.compile(patterns["${TISSUE}"], re.IGNORECASE)
 
+matching_dirs = []
+if os.path.exists(base_data_dir):
+    for d in os.listdir(base_data_dir):
+        # Match directory name (replacing underscores with spaces for clean parsing comparison)
+        normalized_d = d.replace('_', ' ')
+        if compiled_regex.search(normalized_d) or compiled_regex.search(d):
+            full_path = os.path.join(base_data_dir, d)
+            if os.path.isdir(full_path):
+                matching_dirs.append(d)
+
+print(f"🔍 System scanning directories matching '${TISSUE}': {matching_dirs}")
+
+df = pd.read_csv("${MASTER_META}")
 pattern = patterns["${TISSUE}"]
 tissue_df = df[df['tissue'].astype(str).str.contains(pattern, case=False, na=False)].copy()
 
@@ -64,14 +87,28 @@ support_records = []
 
 for _, row in tissue_df.iterrows():
     raw_sample_id = row['externalsampleid']
+    sample_underscore = raw_sample_id.replace('-', '_')
     
-    # Flip hyphens to underscores exclusively for directory name resolution
-    sample_dir = raw_sample_id.replace('-', '_')
-    
-    # Track the standard STAR output symlink directly
-    bam_path = f"/home/zw529/donglab/data/target_ALS/${TISSUE}/RNAseq/Processed/{sample_dir}/STAR.Aligned.sortedByCoord.out.bam"
-    
-    # Standardize conditions for DEXSeq contrasts
+    # Loop across every valid matched directory to locate where the cluster stored this BAM file
+    final_bam = None
+    for folder in matching_dirs:
+        # Check both naming styles inside the specific processing folder block
+        path_underscore = f"{base_data_dir}/{folder}/RNAseq/Processed/{sample_underscore}/STAR.Aligned.sortedByCoord.out.bam"
+        path_hyphen = f"{base_data_dir}/{folder}/RNAseq/Processed/{raw_sample_id}/STAR.Aligned.sortedByCoord.out.bam"
+        
+        if os.path.exists(path_underscore):
+            final_bam = path_underscore
+            sample_name = sample_underscore
+            break
+        elif os.path.exists(path_hyphen):
+            final_bam = path_hyphen
+            sample_name = raw_sample_id
+            break
+            
+    # Skip sample row entry if no BAM link targets match up
+    if not final_bam:
+        continue
+        
     raw_group = str(row['subject_group'])
     if "Control" in raw_group:
         condition = "Control"
@@ -81,32 +118,27 @@ for _, row in tissue_df.iterrows():
         condition = "Other"
         
     support_records.append({
-        "sample": sample_dir,
-        "bam": bam_path,
+        "sample": sample_name,
+        "bam": final_bam,
         "dataset": "${TISSUE}",
         "condition": condition
     })
 
-support_df = pd.DataFrame(support_records)
-
-# Use os.path.exists to verify symlink path target validity before exporting
-support_df['file_exists'] = support_df['bam'].apply(os.path.exists)
-valid_support = support_df[support_df['file_exists'] == True].drop(columns=['file_exists'])
-
-if valid_support.empty:
-    print(f"⚠️ Dropping out: 0 BAM files verified via symlinks for ${TISSUE}.")
+if len(support_records) == 0:
+    print(f"⚠️ Dropping out: Found 0 verified BAM files across checked directories for ${TISSUE}.")
 else:
-    valid_support.to_csv("${SUPPORT_FILE}", sep="\t", index=False)
-    print(f"✅ Generated support.tab for ${TISSUE} with {len(valid_support)} active tracks.")
+    support_df = pd.DataFrame(support_records)
+    support_df.to_csv("${SUPPORT_FILE}", sep="\t", index=False)
+    print(f"✅ Generated support.tab for ${TISSUE} with {len(support_df)} validated active tracks.")
 EOF
 
-    # 3. Guard check: Run pipeline block if support file was written successfully
+    # 4. Guard check: Run pipeline block if support file was written successfully
     if [ ! -f "$SUPPORT_FILE" ]; then
         echo "Skipping ${TISSUE} pipeline section due to missing inputs."
         continue
     fi
     
-    # 4. Invoke Module Block Execution
+    # 5. Invoke Module Block Execution
     bash "$CRYPTEX_SCRIPT" \
         --species "$SPECIES" \
         --protein "$PROTEIN" \
