@@ -158,7 +158,18 @@ try:
 
     sub_to_hra, final_aligned_subjects = {}, []
     junc_counts = Counter()
-    rep_dir_base = "/home/zw529/donglab/data/target_ALS/" + "$TISSUE_DIR" + "/RNAseq/Processed"
+    ROOT = "/home/zw529/donglab/data/target_ALS"
+    pattern_terms_norm = {p.strip().replace(' ', '_').upper() for p in pattern.split('|')}
+
+    candidate_proc_dirs = []
+    for name in os.listdir(ROOT):
+        proc_path = os.path.join(ROOT, name, "RNAseq", "Processed")
+        if os.path.isdir(proc_path):
+            name_norm = name.upper()
+            if any(term in name_norm or name_norm in term for term in pattern_terms_norm):
+                candidate_proc_dirs.append(proc_path)
+
+    print(f"DEBUG: matched {len(candidate_proc_dirs)} tissue-variant dirs: {candidate_proc_dirs}", file=sys.stderr)
 
     for s in common_subjects:
         row = meta_unique[meta_unique['externalsubjectid'] == s]
@@ -168,18 +179,25 @@ try:
         
         matches = [c for c in splicing_headers if c.startswith(hra)]
         if matches:
-            tsv_path = os.path.join(rep_dir_base, raw_sample_clean, "leafcutter", "psi", f"{raw_sample_clean}.leafcutter.PSI.tsv")
-            if os.path.exists(tsv_path):
+            tsv_path = None
+            for base in candidate_proc_dirs:
+                cand = os.path.join(base, raw_sample_clean, "leafcutter", "psi", f"{raw_sample_clean}.leafcutter.PSI.tsv")
+                if os.path.exists(cand):
+                    tsv_path = cand
+                    break
+
+            if tsv_path:
                 final_aligned_subjects.append(s)
                 sub_to_hra[s] = matches[0]
                 try:
                     df_rep = pd.read_csv(tsv_path, sep=r'\s+', usecols=['chrom', 'strand', 'start', 'end', 'reads'])
                     df_rep['j_id'] = df_rep['chrom'].astype(str) + ':' + df_rep['strand'].astype(str) + ':' + df_rep['start'].astype(str) + '-' + df_rep['end'].astype(str)
                     junc_counts.update(df_rep.loc[df_rep['reads'] >= 5, 'j_id'].unique())
-                except: pass
+                except: 
+                    pass
 
     if len(final_aligned_subjects) == 0:
-        raise ValueError(f"CRITICAL ERROR: Zero sample files matched! Checked base: {rep_dir_base}")
+        raise ValueError(f"CRITICAL ERROR: Zero sample files matched! Checked candidate roots: {candidate_proc_dirs}")
 
     min_pass = max(1, int(len(final_aligned_subjects) * 0.10))
     valid_junctions = {j for j, c in junc_counts.items() if c >= min_pass}
@@ -241,7 +259,6 @@ EOF
 # ─────────────────────────────────────────────────────────────────
 echo "Generating order-preserved location files for $TISSUE..."
 
-echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 echo -e "snpid\tchr\tpos" > "$OUTDIR/snp_location.txt"
 awk -v ncbi_map="$MAP_FILE" -v rsid_map="$TMP_RSID_MAP" '
 BEGIN {
