@@ -25,11 +25,9 @@ PROTEIN="TDP43"
 EXON_GFF_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation"
 STAR_REF_DIR="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR"
 
-# FIX 1 & 3: Set working directory to your target data volume before running loop.
-# This forces CryptEx to generate its workspace folders relative to this path.
+# Explicitly define and build your desired data output home
 OUTPUT_BASE_DIR="/home/zw529/donglab/data/target_ALS/CryptEx"
 mkdir -p "$OUTPUT_BASE_DIR"
-cd "$OUTPUT_BASE_DIR"
 
 echo "========================================================"
 echo "Starting CryptEx Orchestration on TargetALS Cohorts"
@@ -136,8 +134,7 @@ EOF
         continue
     fi
     
-    # FIX 2: Call the execution module inside parentheses (a subshell block)
-    # This shields the loop from CryptEx's internal hard exits and keeps the cohort iterations running.
+    # 5. Invoke Module Block Execution
     echo "Spawning generation commands for ${TISSUE}..."
     (
         bash "$CRYPTEX_SCRIPT" \
@@ -146,6 +143,7 @@ EOF
             --support "$SUPPORT_FILE" \
             --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
             --gff "${EXON_GFF_BASE}.gtf" \
+            --outdir "$OUTPUT_BASE_DIR" \
             --paired yes \
             --splice_extractor yes \
             --gff_creator yes \
