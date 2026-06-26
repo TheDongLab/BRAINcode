@@ -1,50 +1,118 @@
 #!/bin/bash
 #SBATCH --job-name=cryptEx_mgr
-#SBATCH --output=/home/zw529/donglab/pipelines/scripts/rnaseq/logs/cryptEx_mgr_%j.out
-#SBATCH --error=/home/zw529/donglab/pipelines/scripts/rnaseq/logs/cryptEx_mgr_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/CryptEx/run_cryptEx_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/CryptEx/run_cryptEx_%j.err
 #SBATCH --time=12:00:00
-#SBATCH --mem=4G
+#SBATCH --mem=8G
 
 set -euo pipefail
 
-# 1. Define Core Module Paths
+# 1. Paths and Global Settings
 CRYPTEX_BIN="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx"
 CRYPTEX_SCRIPT="${CRYPTEX_BIN}/cryptex.sh"
+MASTER_META="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 
-# 2. Setup your tissue lists
-TISSUES=("Frontal_Cortex" "Motor_Cortex" "Cerebellum" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord")
+TISSUES=("Motor_Cortex" "Cervical_Spinal_Cord" "Lumbar_Spinal_Cord" "Frontal_Cortex" "Cerebellum")
 SPECIES="human"
-PROTEIN="TDP43" # Adjust based on target criteria
+PROTEIN="TDP43" 
 
-# 3. Reference Genome Annotations on Bouchet (Update to actual paths)
-EXON_GFF_BASE="/home/zw529/donglab/references/annotations/Homo_sapiens.GRCh38.105_fixed"
+EXON_GFF_BASE="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation"
+STAR_REF_DIR="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequence/STAR"
 
 echo "========================================================"
-echo "Starting CryptEx Orchestration across multiple tissues"
+echo "Starting CryptEx Orchestration on TargetALS Cohorts"
 echo "Started at: $(date)"
 echo "========================================================"
 
 for TISSUE in "${TISSUES[@]}"; do
+    echo "--------------------------------------------------------"
     echo "Processing Tissue: ${TISSUE}"
+    echo "--------------------------------------------------------"
     
-    # Define Target paths dynamically based on data structure
     TISSUE_DIR="/home/zw529/donglab/data/target_ALS/${TISSUE}"
-    SUPPORT_FILE="${TISSUE_DIR}/metadata/${TISSUE}_support.tab"
+    META_DIR="${TISSUE_DIR}/metadata"
+    SUPPORT_FILE="${META_DIR}/${TISSUE}_support.tab"
     
-    # Skip tissue if support file hasn't been generated yet
+    mkdir -p "$META_DIR"
+    
+    # 2. Dynamic Python execution to apply tissue regex patterns and extract support parameters
+    python3 - <<EOF
+import pandas as pd
+import re
+import os
+
+# Define User Remapping Patterns
+patterns = {
+    "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
+    "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
+    "Lumbar_Spinal_Cord": "Lumbar Spinal Cord|Spinal_Cord_Lumbosacral|Lumbosacral_Spinal_Cord|Lumbar_spinal_cord|Lumbar|Lumbosacral",
+    "Thoracic_Spinal_Cord": "Thoracic Spinal Cord|Thoracic",
+    "Frontal_Cortex": "Frontal Cortex|Frontal",
+    "Cerebellum": "Cerebellum"
+}
+
+# Read Master Metadata sheet
+df = pd.read_csv("${MASTER_META}")
+
+# Filter lines matching current tissue criteria
+pattern = patterns["${TISSUE}"]
+tissue_df = df[df['tissue'].astype(str).str.contains(pattern, case=False, na=False)].copy()
+
+if tissue_df.empty:
+    print(f"⚠️ No matches found in master metadata sheet for pattern group: ${TISSUE}")
+    exit(0)
+
+# Build target columns needed by Jack's pipeline structure
+# Header requirement: sample | bam | dataset | condition
+support_records = []
+
+for _, row in tissue_df.iterrows():
+    sample_id = row['externalsampleid']
+    
+    # Reconstruct processed path matching your sQTL/eQTL structural outputs
+    bam_path = f"/home/zw529/donglab/data/target_ALS/${TISSUE}/RNAseq/Processed/{sample_id}/{sample_id}_unique.bam"
+    
+    # Standardize conditions for downstream contrast models
+    raw_group = str(row['subject_group'])
+    if "Control" in raw_group:
+        condition = "Control"
+    elif "ALS" in raw_group or "FTLD" in raw_group:
+        condition = "Case"
+    else:
+        condition = "Other"
+        
+    support_records.append({
+        "sample": sample_id,
+        "bam": bam_path,
+        "dataset": "${TISSUE}",
+        "condition": condition
+    })
+
+support_df = pd.DataFrame(support_records)
+# Check if any BAM files exist before committing the support matrix row item
+support_df['file_exists'] = support_df['bam'].apply(os.path.exists)
+valid_support = support_df[support_df['file_exists'] == True].drop(columns=['file_exists'])
+
+if valid_support.empty:
+    print(f"⚠️ Dropping out: Support entries built but 0 BAM files found on file system for ${TISSUE}.")
+else:
+    valid_support.to_csv("${SUPPORT_FILE}", sep="\t", index=False)
+    print(f"✅ Generated support.tab for ${TISSUE} with {len(valid_support)} active target rows.")
+EOF
+
+    # 3. Guard check: Run pipeline block if support file was written successfully
     if [ ! -f "$SUPPORT_FILE" ]; then
-        echo "⚠️ Warning: Support file missing for ${TISSUE} at ${SUPPORT_FILE}. Skipping."
+        echo "Skipping ${TISSUE} pipeline section due to missing inputs."
         continue
     fi
     
-    # 4. Invoke the underlying script using local paths and bypass its built-in SGE submission
-    # We set --submit no because we will wrap individual module tasks directly via Slurm if needed.
+    # 4. Invoke Module Block Execution
     bash "$CRYPTEX_SCRIPT" \
         --species "$SPECIES" \
         --protein "$PROTEIN" \
         --support "$SUPPORT_FILE" \
-        --annotation_file "${EXON_GFF_BASE}_annotations.tab" \
-        --gff "$EXON_GFF_BASE" \
+        --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
+        --gff "${EXON_GFF_BASE}.gtf" \
         --splice_extractor yes \
         --gff_creator yes \
         --read_counter yes \
@@ -54,5 +122,5 @@ for TISSUE in "${TISSUES[@]}"; do
         --strict yes \
         --hold_Step1 no
         
-    echo "Finished generation blocks for ${TISSUE} layout."
+    echo "Finished execution block generation for ${TISSUE} setup layout."
 done
