@@ -142,6 +142,68 @@ png(out_file_png2, width=18, height=6, units="in", res=300)
 print(p2)
 dev.off()
 
+# ========================================================================
+# PLOT 3: EXTRA STEP - CHROMOSOME 17 ONLY (LOCUS ZOOM STYLE)
+# ========================================================================
+message("## Filtering for Chromosome 17 subset...")
+
+# Isolate data frames specifically for Chromosome 17
+snp_chr17  <- snp_plot[chr_num == 17]
+lead_chr17 <- lead_plot[chr_num == 17]
+
+if (nrow(snp_chr17) == 0) {
+    message("## WARNING: No data points found on Chromosome 17. Skipping Plot 3.")
+} else {
+    message("## Creating Chromosome 17 Specific Regional Plot...")
+    
+    # Track top genes specifically on chr17 for custom labeling
+    extreme_hits_chr17 <- lead_chr17[order(log10p, decreasing = TRUE)][1:min(5, .N)]
+    
+    # Split backgrounds vs significant specifically for chr17 palette clarity
+    snp_chr17_sig <- snp_chr17[fdr_val <= sig_thresh_fdr]
+    snp_chr17_bg  <- snp_chr17[fdr_val > sig_thresh_fdr]
+    lead_chr17_sig <- lead_chr17[fdr_val <= sig_thresh_fdr]
+
+    p3 <- ggplot() +
+        # 1. Non-significant background variant cloud on chr17
+        geom_point(data=snp_chr17_bg, aes(x=pos / 1e6, y=log10p), 
+                   colour="#999999", size=0.8, alpha=0.4) +
+        
+        # 2. Significant markers on chr17 colored by unique gene association targets
+        geom_point(data=snp_chr17_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), 
+                   size=1.0, alpha=0.8) +
+        
+        # 3. Highlighting lead variants as diamonds
+        geom_point(data=lead_chr17_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), 
+                   shape=18, size=3.0) +
+        
+        geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
+        
+        geom_text_repel(data=extreme_hits_chr17, aes(x=pos / 1e6, y=log10p, label=geneid), 
+                        size=3.0, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
+        
+        # Format the X-axis to track MegaBase pairs cleanly
+        scale_x_continuous(expand=c(0.02, 0.02)) +
+        scale_y_continuous(expand=c(0.02, 0.5)) +
+        
+        labs(title=paste("Chromosome 17 Regional cis-eQTL Plot -", basename(out_prefix)),
+             subtitle=sprintf("Variants plotted by base-pair coordinates | N Significant Targets on Chr17 = %d", uniqueN(snp_chr17_sig$geneid)),
+             x="Position on Chromosome 17 (Mb)", y=expression(-log[10](p))) +
+        
+        theme_bw() + 
+        theme(legend.position="bottom", 
+              legend.title = element_blank(),
+              legend.text = element_text(size = 8),
+              panel.grid.minor = element_blank())
+
+    out_file_png3 <- paste0(out_prefix, ".manhattan_chr17.png")
+    # A standard aspect ratio works better for single-chromosome zooming than the hyper-wide banner shape
+    png(out_file_png3, width=10, height=6, units="in", res=300)
+    print(p3)
+    dev.off()
+    message(paste("## Chromosome 17 regional plot saved to:", out_file_png3))
+}
+
 message(paste("## Directional plot saved to:", out_file_png1))
 message(paste("## Gene diagnostic plot saved to:", out_file_png2))
 message("## Done!")
