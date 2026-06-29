@@ -3,7 +3,7 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/CryptEx/run_cryptEx_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/CryptEx/run_cryptEx_%j.err
 #SBATCH --time=12:00:00
-#SBATCH --mem=8G
+#SBATCH --mem=50G
 
 set -euo pipefail
 
