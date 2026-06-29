@@ -11,6 +11,7 @@ module load R
 module load STAR
 module load BEDTools
 module load SAMtools
+module load HTSeq
 
 # Paths and Global Settings
 CRYPTEX_SCRIPT="/home/zw529/donglab/pipelines/modules/rnaseq/bin/CryptEx/cryptex.sh"
