@@ -99,9 +99,11 @@ Rscript $PIPELINE/_eQTL_regional_zoom.R
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
+# This now runs seamlessly because convert_eqtl_names.R has appended 
+# the 'gene_symbol' column while preserving the raw 'geneid' column in $TOP_PAIRS!
 Rscript $PIPELINE/_eQTL_boxplot.R \
     "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
-
+    
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
 # If a folder was created with the prefix name, move contents up and delete it
 if [ -d "${OUTPUT_PREFIX}" ]; then
