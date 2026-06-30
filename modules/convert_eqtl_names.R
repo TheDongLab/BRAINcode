@@ -64,17 +64,32 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
   # Fallback to the original Ensembl ID (with version) if no mapping symbol exists
   final_symbols <- ifelse(is.na(gene_symbols), ensembl_ids, gene_symbols)
   
-  # ── Overwrite Column In Place ───────────────────────────────────────────────
-  if (is.numeric(id_col)) {
-    data_table[, id_col] <- final_symbols
+  # ── Structural Output Logic ──────────────────────────────────────────────────
+  if (is_boxplot_file) {
+    # Rebuild table: Keep Ensembl ID in Col 1, inject Symbol into Col 2, SNP in Col 3
+    # This prevents matrix lookup failure while giving the plotting script its titles
+    new_table <- data.frame(
+      geneid      = ensembl_ids,
+      gene_symbol = final_symbols,
+      snpid       = data_table[, 2],
+      stringsAsFactors = FALSE
+    )
+    
+    # Append remaining columns if they exist in the source file
+    if (ncol(data_table) > 2) {
+      new_table <- cbnd(new_table, data_table[, 3:ncol(data_table), drop=FALSE])
+    }
+    
+    data_table <- new_table
+    has_header <- TRUE  # Force header true so the boxplot script can use pairs$gene_symbol
+    
   } else {
-    data_table[[id_col]] <- final_symbols
-  }
-  
-  # Force standard headers on headerless boxplot files so downstream scripts parse cleanly
-  if (!has_header && is_boxplot_file) {
-    colnames(data_table) <- c("geneid", "snpid", if(ncol(data_table) > 2) colnames(data_table)[3:ncol(data_table)] else NULL)
-    has_header <- TRUE
+    # Standard summary files: Keep original behavior of overwriting in-place
+    if (is.numeric(id_col)) {
+      data_table[, id_col] <- final_symbols
+    } else {
+      data_table[[id_col]] <- final_symbols
+    }
   }
   
   # Save back cleanly
@@ -86,7 +101,7 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
 # EXECUTION
 # ==============================================================================
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
-sub_dir  <- paste0(base_dir, tissue, "_eQTL/")
+sub_dir  = paste0(base_dir, tissue, "_eQTL/")
 
 # 1. Standard summary tables
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"), is_boxplot_file=FALSE)
