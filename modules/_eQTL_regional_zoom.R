@@ -103,10 +103,6 @@ p_dir <- ggplot() +
     geom_point(data=snp_zoom[color_cat == "decrease"], aes(x=pos / 1e6, y=log10p), colour="blue", size=1.4, alpha=0.7) +
     geom_point(data=lead_zoom[color_cat == "inc_lead"], aes(x=pos / 1e6, y=log10p), colour="red", shape=18, size=3.5) +
     geom_point(data=lead_zoom[color_cat == "dec_lead"], aes(x=pos / 1e6, y=log10p), colour="blue", shape=18, size=3.5) +
-    
-    # If using an anchor SNP, explicitly draw a vertical indicator line at its center location
-    if(!is.null(anchor_snp)) geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8) +
-    
     geom_hline(yintercept=5, linetype="dashed", colour="grey40", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=pos / 1e6, y=log10p, label=geneid), size=3.0, colour="black", fontface="bold.italic", box.padding = 0.6, max.overlaps = 15) +
     scale_x_continuous(expand=c(0.02, 0.02)) + scale_y_continuous(expand=c(0.02, 0.8)) +
@@ -114,6 +110,11 @@ p_dir <- ggplot() +
          subtitle=sprintf("Region: %s | Red (+Beta), Blue (-Beta)", window_label),
          x=paste("Chromosome", target_chr, "Position (Mb)"), y=expression(-log[10](p-value))) +
     theme_bw() + theme(panel.grid.minor = element_blank())
+
+# Safely add the reference guide line if working with an explicit SNP anchor
+if(!is.null(anchor_snp)) {
+    p_dir <- p_dir + geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8)
+}
 
 out_file_dir <- paste0(out_prefix, out_suffix, "_directional.png")
 png(out_file_dir, width=11, height=6, units="in", res=300)
@@ -132,9 +133,6 @@ p_gene <- ggplot() +
     geom_point(data=snp_bg, aes(x=pos / 1e6, y=log10p), colour="#999999", size=1.0, alpha=0.3) +
     geom_point(data=snp_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), size=1.4, alpha=0.8) +
     geom_point(data=lead_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), shape=18, size=3.5) +
-    
-    if(!is.null(anchor_snp)) geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8) +
-    
     geom_hline(yintercept=5, linetype="dashed", colour="grey40", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=pos / 1e6, y=log10p, label=geneid), size=3.0, colour="black", fontface="bold", box.padding = 0.6, max.overlaps = 15) +
     scale_x_continuous(expand=c(0.02, 0.02)) + scale_y_continuous(expand=c(0.02, 0.8)) +
@@ -142,6 +140,11 @@ p_gene <- ggplot() +
          subtitle=sprintf("Region: %s | Colored by unique significant target gene structure", window_label),
          x=paste("Chromosome", target_chr, "Position (Mb)"), y=expression(-log[10](p-value))) +
     theme_bw() + theme(legend.position="bottom", legend.title = element_blank(), legend.text = element_text(size = 8.5), panel.grid.minor = element_blank())
+
+# Safely add the reference guide line here too
+if(!is.null(anchor_snp)) {
+    p_gene <- p_gene + geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8)
+}
 
 out_file_gene <- paste0(out_prefix, out_suffix, "_by_gene.png")
 png(out_file_gene, width=11, height=6.5, units="in", res=300)
