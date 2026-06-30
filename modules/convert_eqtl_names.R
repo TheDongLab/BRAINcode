@@ -77,7 +77,7 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
     
     # Append remaining columns if they exist in the source file
     if (ncol(data_table) > 2) {
-      new_table <- cbnd(new_table, data_table[, 3:ncol(data_table), drop=FALSE])
+      new_table <- cbind(new_table, data_table[, 3:ncol(data_table), drop=FALSE])
     }
     
     data_table <- new_table
@@ -101,17 +101,20 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
 # EXECUTION
 # ==============================================================================
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
-sub_dir  = paste0(base_dir, tissue, "_eQTL/")
+sub_dir  <- paste0(base_dir, tissue, "_eQTL/")
 
-# 1. Standard summary tables
+# 1. Main Output Mapping File
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.cis.txt"), is_boxplot_file=FALSE)
+
+# 2. Standard summary tables
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"), is_boxplot_file=FALSE)
 
-# 2. Meta-analysis path handling
+# 3. Meta-analysis path handling
 meta_path <- paste0(sub_dir, "target_ALS_Combined_Meta_eQTL.txt")
 if (!file.exists(meta_path)) { meta_path <- paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt") }
 convert_eqtl_genes(meta_path, is_boxplot_file=FALSE)
 
-# 3. Boxplot input pairs file (Processed uniformly inline)
+# 4. Boxplot input pairs file (Processed uniformly inline)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.top_for_boxplot.txt"), is_boxplot_file=TRUE)
