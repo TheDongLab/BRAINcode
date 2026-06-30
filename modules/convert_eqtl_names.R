@@ -87,13 +87,22 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
 # ==============================================================================
 # EXECUTION
 # ==============================================================================
+# Base directory points directly to results
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
+# Subdirectory where Matrix eQTL / postprocess dumps files before cleanup
+sub_dir  <- paste0(base_dir, tissue, "_eQTL/")
 
-# 1. Overwrite standard summary tables in place
+# 1. Overwrite standard summary tables in place (check both paths safely)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"), is_boxplot_file=FALSE)
-convert_eqtl_genes(paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt"), is_boxplot_file=FALSE)
+
+# Target the meta-analysis file inside the active subdirectory
+meta_path <- paste0(sub_dir, "target_ALS_Combined_Meta_eQTL.txt")
+if (!file.exists(meta_path)) {
+  meta_path <- paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt") # Fallback if already cleaned
+}
+convert_eqtl_genes(meta_path, is_boxplot_file=FALSE)
 
 # 2. Add symbols to the boxplot pairs file while PRESERVING raw Ensembl IDs
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.top_for_boxplot.txt"), is_boxplot_file=TRUE)
