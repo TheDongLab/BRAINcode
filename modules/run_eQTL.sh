@@ -88,6 +88,10 @@ echo "[3] Generating Manhattan plot..."
 Rscript $PIPELINE/_eQTL_manhattan.R \
     "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
 
+# ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
+echo "[3.5] Generating regional locus zoom plots..."
+Rscript $PIPELINE/_eQTL_regional_zoom.R
+
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
 Rscript $PIPELINE/_eQTL_boxplot.R \
