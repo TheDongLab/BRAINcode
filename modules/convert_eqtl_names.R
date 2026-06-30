@@ -15,30 +15,34 @@ library(AnnotationHub)
 library(AnnotationDbi)
 
 # Reusable function adapted to accept full exact paths
-convert_eqtl_genes <- function(file_path, output_path) {
+convert_eqtl_genes <- function(file_path) {
   if (!file.exists(file_path)) {
     warning("File not found, skipping: ", file_path)
     return(NULL)
   }
   
-  cat("Processing:", basename(file_path), "\n")
+  cat("Converting names inside:", basename(file_path), "\n")
   data_table <- read.table(file_path, sep="\t", header=TRUE, stringsAsFactors=FALSE, check.names=FALSE)
   
-  # Identify Ensembl ID column (added 'geneid' to the check)
+  # Identify the Ensembl ID column
   if ("geneid" %in% colnames(data_table)) {
     ensembl_ids <- data_table$geneid
+    id_col <- "geneid"
   } else if ("gene" %in% colnames(data_table)) {
     ensembl_ids <- data_table$gene
+    id_col <- "gene"
   } else if ("gene_id" %in% colnames(data_table)) {
     ensembl_ids <- data_table$gene_id
+    id_col <- "gene_id"
   } else {
     ensembl_ids <- rownames(data_table)
+    id_col <- NULL
   }
   
   # Strip version decimals (e.g., ENSG00000001460.19 -> ENSG00000001460)
   ensembl_ids_clean <- gsub("\\..*$", "", ensembl_ids)
   
-  # Query AnnotationHub
+  # Query AnnotationHub for Human OrgDb
   ah <- AnnotationHub()
   human_org <- query(ah, c("OrgDb", "Homo sapiens"))
   orgdb <- ah[[names(human_org)[1]]]
@@ -52,38 +56,31 @@ convert_eqtl_genes <- function(file_path, output_path) {
     multiVals = "first"
   )
   
-  # Handle NAs and uniqueness
+  # If a symbol is missing, fall back to the original Ensembl ID
   final_names <- ifelse(is.na(gene_symbols), ensembl_ids, gene_symbols)
   final_names <- make.unique(final_names)
   
-  # Inject column at the front
-  data_table$gene_symbol <- final_names
-  col_order <- c("gene_symbol", colnames(data_table)[colnames(data_table) != "gene_symbol"])
-  data_table <- data_table[, col_order]
+  # OVERWRITE the identity column directly so plotting tools pick it up automatically!
+  if (!is.null(id_col)) {
+    data_table[[id_col]] <- final_names
+  } else {
+    rownames(data_table) <- final_names
+  }
   
-  write.table(data_table, output_path, sep="\t", row.names=FALSE, quote=FALSE)
-  cat("Saved to:", basename(output_path), "\n\n")
+  # Save the table right back to its original location
+  write.table(data_table, file_path, sep="\t", row.names=FALSE, quote=FALSE)
+  cat("Successfully updated:", basename(file_path), "\n\n")
 }
 
 # ==============================================================================
-# DYNAMIC PATH EXECUTION
+# EXECUTION
 # ==============================================================================
-# Construct the path dynamically based on the passed tissue string
+args <- commandArgs(trailingOnly = TRUE)
+tissue <- args[1]
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
 
-# Define the targets dynamically using the tissue variable
-convert_eqtl_genes(
-  file_path   = paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"),
-  output_path = paste0(base_dir, tissue, "_eQTL.FDR0.05.with_symbols.txt")
-)
-
-convert_eqtl_genes(
-  file_path   = paste0(base_dir, tissue, "_eQTL.lead_snps.txt"),
-  output_path = paste0(base_dir, tissue, "_eQTL.lead_snps.with_symbols.txt")
-)
-
-# Meta-analysis file (assuming the filename layout remains consistent)
-convert_eqtl_genes(
-  file_path   = paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt"),
-  output_path = paste0(base_dir, "target_ALS_Combined_Meta_eQTL.with_symbols.txt")
-)
+# Overwrite the files in place
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"))
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"))
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"))
+convert_eqtl_genes(paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt"))
