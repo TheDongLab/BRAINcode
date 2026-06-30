@@ -7,15 +7,16 @@ if (length(args) == 0) {
   stop("Error: No tissue name provided. Usage: Rscript convert_eqtl_names.R <TISSUE>", call. = FALSE)
 }
 
-# The first argument passed will be our tissue variable
 tissue <- args[1]
 cat("--- Running gene name conversion for tissue:", tissue, "---\n")
 
-library(AnnotationHub)
-library(AnnotationDbi)
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(AnnotationDbi)
+})
 
-# Reusable function adapted to accept full exact paths
-convert_eqtl_genes <- function(file_path) {
+# Reusable function adapted to append gene symbols instead of overwriting raw IDs
+convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
   if (!file.exists(file_path)) {
     warning("File not found, skipping: ", file_path)
     return(NULL)
@@ -56,15 +57,26 @@ convert_eqtl_genes <- function(file_path) {
     multiVals = "first"
   )
   
-  # If a symbol is missing, fall back to the original Ensembl ID
-  final_names <- ifelse(is.na(gene_symbols), ensembl_ids, gene_symbols)
-  final_names <- make.unique(final_names)
+  # Fall back to original ID if symbol is missing
+  final_symbols <- ifelse(is.na(gene_symbols), ensembl_ids, gene_symbols)
+  final_symbols <- make.unique(final_symbols)
   
-  # OVERWRITE the identity column directly so plotting tools pick it up automatically!
-  if (!is.null(id_col)) {
-    data_table[[id_col]] <- final_names
+  if (is_boxplot_file) {
+    # CRITICAL FIX FOR NEW BOXPLOT SCRIPT:
+    # Keep the raw 'geneid' intact for matrix matching, and append the 'gene_symbol' column
+    data_table$gene_symbol <- final_symbols
+    
+    # Reorder columns to ensure layout matches: geneid, gene_symbol, snpid, etc.
+    remaining_cols <- setdiff(colnames(data_table), c(id_col, "gene_symbol"))
+    data_table <- data_table[, c(id_col, "gene_symbol", remaining_cols), drop = FALSE]
+    
   } else {
-    rownames(data_table) <- final_names
+    # Standard results files can continue overwriting the ID for clean reporting
+    if (!is.null(id_col)) {
+      data_table[[id_col]] <- final_symbols
+    } else {
+      rownames(data_table) <- final_symbols
+    }
   }
   
   # Save the table right back to its original location
@@ -75,12 +87,13 @@ convert_eqtl_genes <- function(file_path) {
 # ==============================================================================
 # EXECUTION
 # ==============================================================================
-args <- commandArgs(trailingOnly = TRUE)
-tissue <- args[1]
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
 
-# Overwrite the files in place
-convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"))
-convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"))
-convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"))
-convert_eqtl_genes(paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt"))
+# 1. Overwrite standard summary tables in place
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"), is_boxplot_file=FALSE)
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"), is_boxplot_file=FALSE)
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"), is_boxplot_file=FALSE)
+convert_eqtl_genes(paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt"), is_boxplot_file=FALSE)
+
+# 2. Add symbols to the boxplot pairs file while PRESERVING raw Ensembl IDs
+convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.top_for_boxplot.txt"), is_boxplot_file=TRUE)
