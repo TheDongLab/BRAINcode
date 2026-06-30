@@ -32,25 +32,39 @@ setnames(snp_raw, "SNP", "snpid", skip_absent = TRUE)
 setnames(lead_raw, "SNP", "snpid", skip_absent = TRUE)
 setnames(snp_raw, "gene", "geneid", skip_absent = TRUE)
 setnames(lead_raw, "gene", "geneid", skip_absent = TRUE)
-setnames(snp_raw, "source_gene", "geneid", skip_absent = TRUE) # Catch alternative names
+setnames(snp_raw, "source_gene", "geneid", skip_absent = TRUE)
 setnames(lead_raw, "source_gene", "geneid", skip_absent = TRUE)
 
-# ── In-Script Conversion to Common Gene Symbols ───────────────────────
-message("## Fetching AnnotationHub database for Ensembl -> Symbol translation...")
-ah <- AnnotationHub()
-human_org <- query(ah, c("OrgDb", "Homo sapiens"))
-orgdb <- ah[[names(human_org)[1]]]
+# ── Adaptive Conversion to Common Gene Symbols ────────────────────────
+# Check if conversion is actually needed (bypasses DB download if files are already mapped)
+needs_conversion <- any(grepl("^ENSG", snp_raw$geneid)) || any(grepl("^ENSG", lead_raw$geneid))
 
-translate_ids <- function(ids) {
-  ids_clean <- gsub("\\..*$", "", as.character(ids))
-  symbols <- mapIds(orgdb, keys = ids_clean, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first")
-  final_names <- ifelse(is.na(symbols), ids, symbols)
-  return(make.unique(final_names))
+if (needs_conversion) {
+  message("## Ensembl IDs detected. Fetching AnnotationHub database for translation...")
+  ah <- AnnotationHub()
+  human_org <- query(ah, c("OrgDb", "Homo sapiens"))
+  orgdb <- ah[[names(human_org)[1]]]
+  
+  translate_ids <- function(ids) {
+    # If the vector is already translated or empty, return as-is
+    if (!any(grepl("^ENSG", ids))) return(ids)
+    
+    # Strip decimals for clean database key-matching
+    ids_clean <- gsub("\\..*$", "", as.character(ids))
+    
+    symbols <- mapIds(orgdb, keys = ids_clean, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first")
+    
+    # Fallback to original ID if no mapping symbol exists. NO make.unique() here.
+    final_names <- ifelse(is.na(symbols), ids, symbols)
+    return(final_names)
+  }
+  
+  message("## Translating gene IDs to common names...")
+  if (nrow(snp_raw) > 0) snp_raw[, geneid := translate_ids(geneid)]
+  if (nrow(lead_raw) > 0) lead_raw[, geneid := translate_ids(geneid)]
+} else {
+  message("## Clean common gene names already present in input data matrices. Skipping DB mapping.")
 }
-
-message("## Translating gene IDs to common names...")
-if (nrow(snp_raw) > 0) snp_raw[, geneid := translate_ids(geneid)]
-if (nrow(lead_raw) > 0) lead_raw[, geneid := translate_ids(geneid)]
 
 # Calculate log p-values
 snp_raw[, log10p := -log10(`p-value`)]
