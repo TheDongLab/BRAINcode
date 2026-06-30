@@ -83,6 +83,11 @@ ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
 LEAD_FILE="${OUTPUT_PREFIX}.lead_snps.txt"
 TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
+# ── Step 2.5: Gene Name Conversion (AnnotationHub) ───────────────────
+echo "[2.5] Converting Ensembl IDs to common names..."
+# Pass TISSUE_DIR to match your dynamic folder layout structure
+Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR"
+
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
 echo "[3] Generating Manhattan plot..."
 Rscript $PIPELINE/_eQTL_manhattan.R \
