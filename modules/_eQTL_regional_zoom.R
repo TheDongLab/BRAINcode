@@ -3,7 +3,7 @@ library(data.table)
 library(ggplot2)
 library(ggrepel)
 
-# Hardcoded target window
+# Hardcoded target window for Plot 1 & Plot 2
 target_chr <- "17"
 start_pos  <- 45465000
 end_pos    <- 47055000
@@ -72,19 +72,13 @@ dev.off()
 # ========================================================================
 message("## Building Plot 2: Option A (Lead variants summary structure)...")
 
-# Group variants by Gene ID and keep only the single strongest sentinel variant per gene
 lead_snps_per_gene <- snp_zoom[order(geneid, -log10p), head(.SD, 1), by = geneid]
-
-# Distinct coloring mapping for the top driver vs secondary genes
 lead_snps_per_gene[, status := ifelse(geneid == top_gene, "Primary Locus Driver", "Secondary Target Gene")]
 
 p2 <- ggplot(data = lead_snps_per_gene, aes(x = pos / 1e6, y = log10p)) +
-    # Reference cutoff line
     geom_hline(yintercept = 5, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
-    # Plot pruned points cleanly categorized by significance tier
     geom_point(aes(colour = status), size = 4.0, alpha = 0.9) +
     scale_colour_manual(values = c("Primary Locus Driver" = "#E41A1C", "Secondary Target Gene" = "#377EB8")) +
-    # Repel text label for every distinct gene present in the locus window
     geom_text_repel(aes(label = geneid), size = 3.2, fontface = "bold", 
                     box.padding = 0.4, max.overlaps = 20, cluster_groups = FALSE) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.02, 0.02)) +
@@ -101,6 +95,70 @@ png(out_file2, width = 10, height = 6, units = "in", res = 300)
 print(p2)
 dev.off()
 
+
+# ========================================================================
+# PLOT 3: GENE DIAGNOSTIC REGIONAL ZOOM (CENTERED ON rs62056809)
+# ========================================================================
+message("## Building Plot 3: Gene Diagnostic Zoom centered on rs62056809...")
+
+anchor_snp <- "rs62056809"
+anchor_lookup <- snp_loc[snpid == anchor_snp]
+
+if (nrow(anchor_lookup) > 0) {
+    anchor_pos <- anchor_lookup[1, pos]
+    # Set window around the anchor (45.41 - 46.41 Mb matches image_66110e.jpg)
+    diag_start <- anchor_pos - 500000
+    diag_end   <- anchor_pos + 500000
+    
+    # Subset raw data down to the exact anchor bounding coordinates
+    snp_diag <- snp_raw[snpid %in% snp_loc[chr_clean == target_chr & pos >= diag_start & pos <= diag_end, snpid]]
+    setkey(snp_diag, snpid)
+    snp_diag <- snp_diag[snp_loc, nomatch = NULL]
+    
+    # Categorize significant target genes to color distinct genomic tracks cleanly
+    sig_genes <- unique(snp_diag[log10p >= 5, geneid])
+    snp_diag[, color_group := ifelse(geneid %in% sig_genes & log10p >= 5, geneid, "Background / Non-Sig")]
+    
+    # Get localized peak markers per structural gene for plot labels
+    diag_leads <- lead_raw[snpid %in% snp_diag$snpid & geneid %in% sig_genes]
+    diag_leads <- diag_leads[snp_loc, nomatch = NULL, on = "snpid"]
+    
+    # Setup custom qualitative colors for target tracks, rendering background variations in light gray
+    unique_sig_genes <- sort(setdiff(unique(snp_diag$color_group), "Background / Non-Sig"))
+    color_palette <- setNames(scales::hue_pal()(length(unique_sig_genes)), unique_sig_genes)
+    color_palette["Background / Non-Sig"] <- "#B0B0B0"
+    
+    p3 <- ggplot() +
+        geom_point(data = snp_diag[color_group == "Background / Non-Sig"], aes(x = pos / 1e6, y = log10p),
+                   colour = "#B0B0B0", size = 1.0, alpha = 0.3) +
+        geom_point(data = snp_diag[color_group != "Background / Non-Sig"], aes(x = pos / 1e6, y = log10p, colour = color_group),
+                   size = 1.5, alpha = 0.8) +
+        geom_point(data = diag_leads, aes(x = pos / 1e6, y = log10p, colour = geneid),
+                   shape = 23, fill = "white", size = 3.0, stroke = 1.5) +
+        geom_vline(xintercept = anchor_pos / 1e6, linetype = "dotted", colour = "#984EA3", linewidth = 1.0) +
+        geom_hline(yintercept = 5, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
+        geom_text_repel(data = diag_leads, aes(x = pos / 1e6, y = log10p, label = geneid),
+                        size = 3.2, fontface = "bold", box.padding = 0.5, max.overlaps = 15) +
+        scale_colour_manual(values = color_palette) +
+        scale_x_continuous(limits = c(diag_start / 1e6, diag_end / 1e6), expand = c(0.01, 0.01)) +
+        labs(title = "Gene Diagnostic Regional Zoom - Cerebellum_eQTL",
+             subtitle = sprintf("Region: Locus window around %s (chr%s:%.2f-%.2f Mb) | Colored by unique significant target gene structure", 
+                                anchor_snp, target_chr, diag_start/1e6, diag_end/1e6),
+             x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+        theme_bw() +
+        theme(panel.grid.minor = element_blank(),
+              legend.position = "bottom",
+              legend.title = element_blank(),
+              legend.text = element_text(size = 8)) +
+        guides(colour = guide_legend(ncol = 4, byrow = TRUE))
+        
+    out_file3 <- "~/donglab/data/target_ALS/Cerebellum/eQTL/results/Cerebellum_eQTL.gene_diagnostics.png"
+    png(out_file3, width = 11, height = 7, units = "in", res = 300)
+    print(p3)
+    dev.off()
+    message(paste("## Saved Layout 3:", out_file3))
+} else {
+    message("## Warning: Anchor SNP rs62056809 not found in location maps. Skipping Plot 3.")
+}
+
 message("## Execution completed cleanly!")
-message(paste("## Saved Layout 1:", out_file1))
-message(paste("## Saved Layout 2:", out_file2))
