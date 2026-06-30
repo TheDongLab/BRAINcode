@@ -95,7 +95,7 @@ Rscript $PIPELINE/_eQTL_manhattan.R \
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
 echo "[3.5] Generating regional locus zoom plots..."
-Rscript $PIPELINE/_eQTL_regional_zoom.R
+Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
