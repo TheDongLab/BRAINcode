@@ -104,14 +104,16 @@ p_dir <- ggplot() +
     geom_point(data=lead_zoom[color_cat == "inc_lead"], aes(x=pos / 1e6, y=log10p), colour="red", shape=18, size=3.5) +
     geom_point(data=lead_zoom[color_cat == "dec_lead"], aes(x=pos / 1e6, y=log10p), colour="blue", shape=18, size=3.5) +
     geom_hline(yintercept=5, linetype="dashed", colour="grey40", linewidth=0.5) +
-    geom_text_repel(data=extreme_hits, aes(x=pos / 1e6, y=log10p, label=geneid), size=3.0, colour="black", fontface="bold.italic", box.padding = 0.6, max.overlaps = 15) +
     scale_x_continuous(expand=c(0.02, 0.02)) + scale_y_continuous(expand=c(0.02, 0.8)) +
-    labs(title=paste("Directional Regional Zoom -", basename(out_prefix)),
+    labs(title=paste("Directional Regional Locus Zoom -", basename(out_prefix)),
          subtitle=sprintf("Region: %s | Red (+Beta), Blue (-Beta)", window_label),
          x=paste("Chromosome", target_chr, "Position (Mb)"), y=expression(-log[10](p-value))) +
-    theme_bw() + theme(panel.grid.minor = element_blank())
+    theme_bw() + 
+    theme(panel.grid.minor = element_blank(),
+          strip.text = element_text(face="bold", size=9)) +
+    # FACET STEP: Separates genes into individual clean horizontal rows
+    facet_wrap(~geneid, ncol=1, scales="free_y")
 
-# Safely add the reference guide line if working with an explicit SNP anchor
 if(!is.null(anchor_snp)) {
     p_dir <- p_dir + geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8)
 }
@@ -134,16 +136,19 @@ p_gene <- ggplot() +
     geom_point(data=snp_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), size=1.4, alpha=0.8) +
     geom_point(data=lead_sig, aes(x=pos / 1e6, y=log10p, colour=geneid), shape=18, size=3.5) +
     geom_hline(yintercept=5, linetype="dashed", colour="grey40", linewidth=0.5) +
-    geom_text_repel(data=extreme_hits, aes(x=pos / 1e6, y=log10p, label=geneid), size=3.0, colour="black", fontface="bold", box.padding = 0.6, max.overlaps = 15) +
     scale_x_continuous(expand=c(0.02, 0.02)) + scale_y_continuous(expand=c(0.02, 0.8)) +
-    labs(title=paste("Gene Diagnostic Regional Zoom -", basename(out_prefix)),
-         subtitle=sprintf("Region: %s | Colored by unique significant target gene structure", window_label),
+    labs(title=paste("Gene Diagnostic Regional Locus Zoom -", basename(out_prefix)),
+         subtitle=sprintf("Region: %s", window_label),
          x=paste("Chromosome", target_chr, "Position (Mb)"), y=expression(-log[10](p-value))) +
-    theme_bw() + theme(legend.position="bottom", legend.title = element_blank(), legend.text = element_text(size = 8.5), panel.grid.minor = element_blank())
+    theme_bw() + 
+    theme(legend.position="none", # Legend is redundant now since facet headers label the genes
+          panel.grid.minor = element_blank(),
+          strip.text = element_text(face="bold", size=9)) +
+    # FACET STEP: Splits the tracks up cleanly
+    facet_wrap(~geneid, ncol=1, scales="free_y")
 
-# Safely add the reference guide line here too
 if(!is.null(anchor_snp)) {
-    p_gene <- p_gene + geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8)
+    p_gene p_gene + geom_vline(xintercept=snp_pos/1e6, linetype="dotted", colour="purple", linewidth=0.8)
 }
 
 out_file_gene <- paste0(out_prefix, out_suffix, "_by_gene.png")
