@@ -12,15 +12,16 @@ module load R
 # ── Arguments ─────────────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
-    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\""
+    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\" [interaction]"
     exit 1
 fi
 
 TISSUE="$1"
+RUN_TYPE="${2:-standard}"   # Default to standard if second argument is empty
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
 echo "============================================"
-echo "  Matrix eQTL run for tissue : $TISSUE"
+echo "  Matrix eQTL run for tissue : $TISSUE ($RUN_TYPE mode)"
 echo "  $(date)"
 echo "============================================"
 
@@ -31,7 +32,13 @@ PLINK=$BASE/QTL/plink
 
 # Working directory is the tissue's eQTL folder
 INDIR=$BASE/$TISSUE_DIR/eQTL
-OUTDIR=$INDIR/results
+
+# Separate output directory based on run type to prevent overwrites
+if [ "$RUN_TYPE" == "interaction" ]; then
+    OUTDIR=$INDIR/interaction_results
+else
+    OUTDIR=$INDIR/results
+fi
 mkdir -p $OUTDIR
 
 # Match the filenames from your 'ls' output
@@ -71,15 +78,23 @@ fi
 
 # ── Step 1: Run Matrix eQTL ───────────────────────────────────────────
 echo "[1] Running Matrix eQTL..."
-# Rscript $PIPELINE/_eQTL.R \
-Rscript $PIPELINE_PATH/_eQTL_LINEAR_CROSS.R   ### hash out when not doing linear cross
-    "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$GENE_LOC" "$SNP_LOC"
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript $PIPELINE/_eQTL_LINEAR_CROSS.R \
+        "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$GENE_LOC" "$SNP_LOC"
+else
+    Rscript $PIPELINE/_eQTL.R \
+        "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$GENE_LOC" "$SNP_LOC"
+fi
 
 # ── Step 2: Post-processing ──────────────────────────────────────────
 echo "[2] Post-processing..."
-# Rscript $PIPELINE/_eQTL_postprocess.R \
-Rscript $PIPELINE/_eQTL_postprocess_LINEAR_CROSS.R \   ### hash out when not doing linear cross
-    "$CIS_FILE" "$SNP_LOC" "$GENE_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript $PIPELINE/_eQTL_postprocess_LINEAR_CROSS.R \
+        "$CIS_FILE" "$SNP_LOC" "$GENE_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
+else
+    Rscript $PIPELINE/_eQTL_postprocess.R \
+        "$CIS_FILE" "$SNP_LOC" "$GENE_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
+fi
 
 ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
 LEAD_FILE="${OUTPUT_PREFIX}.lead_snps.txt"
@@ -101,9 +116,18 @@ Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
-# Rscript $PIPELINE/_eQTL_boxplot.R \
-Rscript $PIPELINE/_eQTL_boxplot_LINEAR_CROSS.R \   ### hash out when not doing linear cross
-    "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript $PIPELINE/_eQTL_boxplot_LINEAR_CROSS.R \
+        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+else
+    Rscript $PIPELINE/_eQTL_boxplot.R \
+        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+fi
+
+else
+    Rscript $PIPELINE/_eQTL_boxplot.R \
+        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+fi
     
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
 # If a folder was created with the prefix name, move contents up and delete it
@@ -115,7 +139,7 @@ fi
 
 # ── Final summary ─────────────────────────────────────────────────────
 echo "============================================"
-echo "  Run complete for : $TISSUE"
+echo "  Run complete for : $TISSUE ($RUN_TYPE mode)"
 echo "  All outputs saved to: $OUTDIR"
 echo "  $(date)"
 echo "============================================"
