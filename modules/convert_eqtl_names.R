@@ -2,11 +2,15 @@
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) == 0) {
-  stop("Error: No tissue name provided. Usage: Rscript convert_eqtl_names.R <TISSUE>", call. = FALSE)
+  stop("Error: No tissue name provided. Usage: Rscript convert_eqtl_names.R <TISSUE> [standard|interaction]", call. = FALSE)
 }
 
-tissue <- args[1]
-cat("--- Running gene name conversion for tissue:", tissue, "---\n")
+tissue   <- args[1]
+run_type <- if (length(args) >= 2) args[2] else "standard"
+
+cat("--- Running gene name conversion ---\n")
+cat("Tissue:", tissue, "\n")
+cat("Run Type:", run_type, "\n---\n")
 
 suppressPackageStartupMessages({
   library(AnnotationHub)
@@ -39,7 +43,7 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
     ensembl_ids <- data_table[, 1]
   }
   
-  # Clean Ensembl IDs for database matching
+  # Clean Ensembl IDs for database matching (Strips trailing .versions or suffixes)
   ensembl_ids_clean <- gsub("\\..*$", "", ensembl_ids)
   
   # Safety check: Verify valid keys exist
@@ -66,25 +70,18 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
   
   # ── Structural Output Logic ──────────────────────────────────────────────────
   if (is_boxplot_file) {
-    # Rebuild table: Keep Ensembl ID in Col 1, inject Symbol into Col 2, SNP in Col 3
-    # This prevents matrix lookup failure while giving the plotting script its titles
     new_table <- data.frame(
       geneid      = ensembl_ids,
       gene_symbol = final_symbols,
       snpid       = data_table[, 2],
       stringsAsFactors = FALSE
     )
-    
-    # Append remaining columns if they exist in the source file
     if (ncol(data_table) > 2) {
       new_table <- cbind(new_table, data_table[, 3:ncol(data_table), drop=FALSE])
     }
-    
     data_table <- new_table
-    has_header <- TRUE  # Force header true so the boxplot script can use pairs$gene_symbol
-    
+    has_header <- TRUE
   } else {
-    # Standard summary files: Keep original behavior of overwriting in-place
     if (is.numeric(id_col)) {
       data_table[, id_col] <- final_symbols
     } else {
@@ -92,29 +89,33 @@ convert_eqtl_genes <- function(file_path, is_boxplot_file = FALSE) {
     }
   }
   
-  # Save back cleanly
   write.table(data_table, file_path, sep="\t", row.names=FALSE, col.names=has_header, quote=FALSE)
   cat("Successfully updated:", basename(file_path), "\n\n")
 }
 
 # ==============================================================================
-# EXECUTION
+# TARGET EXECUTION PATHS
 # ==============================================================================
-base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
-sub_dir  <- paste0(base_dir, tissue, "_eQTL/")
+if (run_type == "interaction") {
+  base_dir  <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/interaction_results/")
+  sub_dir   <- paste0(base_dir, tissue, "_eQTL/")
+  meta_name <- "target_ALS_Combined_Meta_Interaction_eQTL.txt"
+} else {
+  base_dir  <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/results/")
+  sub_dir   <- paste0(base_dir, tissue, "_eQTL/")
+  meta_name <- "target_ALS_Combined_Meta_eQTL.txt"
+}
 
-# 1. Main Output Mapping File
+# Run processing on exactly what is needed for this specific pipeline run
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.cis.txt"), is_boxplot_file=FALSE)
-
-# 2. Standard summary tables
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.full_annotated.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.FDR0.05.txt"), is_boxplot_file=FALSE)
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.lead_snps.txt"), is_boxplot_file=FALSE)
 
-# 3. Meta-analysis path handling
-meta_path <- paste0(sub_dir, "target_ALS_Combined_Meta_eQTL.txt")
-if (!file.exists(meta_path)) { meta_path <- paste0(base_dir, "target_ALS_Combined_Meta_eQTL.txt") }
-convert_eqtl_genes(meta_path, is_boxplot_file=FALSE)
-
-# 4. Boxplot input pairs file (Processed uniformly inline)
+# Boxplot coordinate matching file
 convert_eqtl_genes(paste0(base_dir, tissue, "_eQTL.top_for_boxplot.txt"), is_boxplot_file=TRUE)
+
+# Meta-analysis file (checks sub-directory first, falls back to base)
+meta_path <- paste0(sub_dir, meta_name)
+if (!file.exists(meta_path)) { meta_path <- paste0(base_dir, meta_name) }
+convert_eqtl_genes(meta_path, is_boxplot_file=FALSE)
