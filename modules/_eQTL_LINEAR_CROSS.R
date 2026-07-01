@@ -89,7 +89,7 @@ for(sl in 1:length(snps)) {
     case_carriers    <- rowSums(slice_mat[, is_als_vec == 1, drop = FALSE] > 0, na.rm = TRUE)
     
     # Evaluate safety threshold criteria
-    slice_keep <- (control_carriers >= 3) & (case_carriers >= 3)
+    slice_keep <- (control_carriers >= 10) & (case_carriers >= 10)
     keep_snps_vector <- c(keep_snps_vector, slice_keep)
 }
 
