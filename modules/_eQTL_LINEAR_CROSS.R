@@ -95,6 +95,10 @@ cvrt_to_adjust = cvrt_additive
 
 # ==============================================================================
 
+message("## Combining background covariates and setting 'is_als' as the last row...")
+cvrt_combined = SlicedData$new()
+cvrt_combined$CombineInRows(list(cvrt_additive, cvrt_interaction))
+
 if(gene_location_file_name != "" && snp_location_file_name!="")
 {
     message("## Load gene/SNP location data...")
@@ -106,8 +110,7 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     me = Matrix_eQTL_main(
         snps = snps, 
         gene = gene, 
-        cvrt = cvrt_to_cross,          # Only 'is_als' is crossed with genotype
-        cvrt.shared = cvrt_to_adjust,   # Sex, Age, and PCs adjust the model linearly
+        cvrt = cvrt_combined,          # Combined matrix (background + interaction term last)
         output_file_name     = paste(output_file_name,"trans.txt", sep="."),
         pvOutputThreshold     = pvOutputThreshold_tra,
         useModel = useModel, 
@@ -134,8 +137,7 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     me = Matrix_eQTL_engine(
         snps = snps,
         gene = gene,
-        cvrt = cvrt_to_cross,         # Only 'is_als' is crossed
-        cvrt.shared = cvrt_to_adjust,  # Background variations controlled here
+        cvrt = cvrt_combined,         # Combined matrix (background + interaction term last)
         output_file_name = paste(output_file_name,"txt", sep="."),
         pvOutputThreshold = pvOutputThreshold,
         useModel = useModel, 
