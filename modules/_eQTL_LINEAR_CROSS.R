@@ -4,7 +4,7 @@
 # http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/
 # Usage: Rscript $PIPELINE_PATH/_eQTL.R snp.txt expression.txt cov.txt output.txt geneloc.txt snploc.txt
 # Author: Xianjun Dong (modified by Zachery Wolfe)
-# Version: 1.3 (Interaction Edition)
+# Version: 1.4 (Interaction Edition)
 # Date: 7/1/2026
 ###########################################
 
@@ -71,8 +71,8 @@ if(length(covariates_file_name)>0) {
 
 message("## Separating interaction variable (is_als) from main additive covariates...")
 
-# Extract the reference class data structure layout as an R matrix
-full_cov_matrix <- cvrt$CombineInOneMatrix()
+# Safe S4 conversion of SlicedData container into a native R matrix structure
+full_cov_matrix <- as.matrix(cvrt)
 cov_names = rownames(full_cov_matrix)
 interaction_idx = which(cov_names == "is_als")
 
@@ -152,7 +152,6 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     show(me$all$eqtls);
 }
 
-# Generate diagnostics
 pdf(paste(output_file_name, "pdf", sep="."));
 plot(me);
 dev.off();
