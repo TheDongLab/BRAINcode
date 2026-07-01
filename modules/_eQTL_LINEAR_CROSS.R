@@ -96,10 +96,20 @@ cvrt_to_adjust = cvrt_additive
 # ==============================================================================
 
 message("## Combining background covariates and setting 'is_als' as the last row...")
-cvrt_combined = SlicedData$new()
-cvrt_combined$CombineInRows(list(cvrt_additive, cvrt_interaction))
 
-if(gene_location_file_name != "" && snp_location_file_name!="")
+# 1. Convert SlicedData objects to standard R matrices
+mat_adjust <- as.matrix(cvrt_to_adjust)
+mat_cross  <- as.matrix(cvrt_to_cross)
+
+# 2. Row-bind them together (background covariates first, interaction term last)
+mat_combined <- rbind(mat_adjust, mat_cross)
+
+# 3. Initialize a clean SlicedData object and fill it with the combined matrix
+cvrt_combined <- SlicedData$new()
+cvrt_combined$CreateFromMatrix(mat_combined)
+
+
+if(gene_location_file_name != "" && snp_location_file_name != "")
 {
     message("## Load gene/SNP location data...")
     snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE);
@@ -110,13 +120,13 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     me = Matrix_eQTL_main(
         snps = snps, 
         gene = gene, 
-        cvrt = cvrt_combined,          # Combined matrix (background + interaction term last)
-        output_file_name     = paste(output_file_name,"trans.txt", sep="."),
+        cvrt = cvrt_combined,          # Combined covariates object
+        output_file_name     = paste(output_file_name, "trans.txt", sep="."),
         pvOutputThreshold     = pvOutputThreshold_tra,
         useModel = useModel, 
         errorCovariance = errorCovariance, 
         verbose = TRUE, 
-        output_file_name.cis = paste(output_file_name,"cis.txt", sep="."),
+        output_file_name.cis = paste(output_file_name, "cis.txt", sep="."),
         pvOutputThreshold.cis = pvOutputThreshold_cis,
         snpspos = snpspos, 
         genepos = genepos,
@@ -137,8 +147,8 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     me = Matrix_eQTL_engine(
         snps = snps,
         gene = gene,
-        cvrt = cvrt_combined,         # Combined matrix (background + interaction term last)
-        output_file_name = paste(output_file_name,"txt", sep="."),
+        cvrt = cvrt_combined,         # Combined covariates object
+        output_file_name = paste(output_file_name, "txt", sep="."),
         pvOutputThreshold = pvOutputThreshold,
         useModel = useModel, 
         errorCovariance = errorCovariance, 
