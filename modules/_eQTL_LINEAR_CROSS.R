@@ -71,8 +71,9 @@ if(length(covariates_file_name)>0) {
 
 message("## Separating interaction variable (is_als) from main additive covariates...")
 
-# Find row index of the disease modifier status
-cov_names = rownames(cvrt)
+# Extract the reference class data structure layout as an R matrix
+full_cov_matrix <- cvrt$CombineInOneMatrix()
+cov_names = rownames(full_cov_matrix)
 interaction_idx = which(cov_names == "is_als")
 
 if(length(interaction_idx) == 0) {
@@ -80,11 +81,13 @@ if(length(interaction_idx) == 0) {
 }
 
 # Create a container holding exclusively the interaction row
-cvrt_interaction = cvrt$CreateFromMatrix( cvrt$ToMatrix()[interaction_idx, , drop=FALSE] )
+cvrt_interaction = SlicedData$new()
+cvrt_interaction$CreateFromMatrix( full_cov_matrix[interaction_idx, , drop=FALSE] )
 
 # Slice out the rest to act as additive background control variables
-additive_indices = setdiff(1:nrow(cvrt), interaction_idx)
-cvrt_additive = cvrt$CreateFromMatrix( cvrt$ToMatrix()[additive_indices, , drop=FALSE] )
+additive_indices = setdiff(1:nrow(full_cov_matrix), interaction_idx)
+cvrt_additive = SlicedData$new()
+cvrt_additive$CreateFromMatrix( full_cov_matrix[additive_indices, , drop=FALSE] )
 
 # Swap standard containers for the engine call
 cvrt_to_cross = cvrt_interaction
@@ -149,6 +152,7 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     show(me$all$eqtls);
 }
 
+# Generate diagnostics
 pdf(paste(output_file_name, "pdf", sep="."));
 plot(me);
 dev.off();
