@@ -71,12 +71,14 @@ fi
 
 # ── Step 1: Run Matrix eQTL ───────────────────────────────────────────
 echo "[1] Running Matrix eQTL..."
-Rscript $PIPELINE/_eQTL.R \
+# Rscript $PIPELINE/_eQTL.R \
+Rscript $PIPELINE_PATH/_eQTL_LINEAR_CROSS.R   ### hash out when not doing linear cross
     "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$GENE_LOC" "$SNP_LOC"
 
 # ── Step 2: Post-processing ──────────────────────────────────────────
 echo "[2] Post-processing..."
-Rscript $PIPELINE/_eQTL_postprocess.R \
+# Rscript $PIPELINE/_eQTL_postprocess.R \
+Rscript $PIPELINE/_eQTL_postprocess_LINEAR_CROSS.R \   ### hash out when not doing linear cross
     "$CIS_FILE" "$SNP_LOC" "$GENE_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
 
 ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
@@ -99,9 +101,8 @@ Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
-# This now runs seamlessly because convert_eqtl_names.R has appended 
-# the 'gene_symbol' column while preserving the raw 'geneid' column in $TOP_PAIRS!
-Rscript $PIPELINE/_eQTL_boxplot.R \
+# Rscript $PIPELINE/_eQTL_boxplot.R \
+Rscript $PIPELINE/_eQTL_boxplot_LINEAR_CROSS.R \   ### hash out when not doing linear cross
     "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
     
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
