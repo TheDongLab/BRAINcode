@@ -46,8 +46,8 @@ if (nrow(als_row) == 0) {
 
 # Jitter plotting definitions
 p_colors <- ifelse(als_vals > 0.5, "red", "#9932CC")
-p_shapes := ifelse(als_vals > 0.5, 16, 18)
-p_sizes  := ifelse(als_vals > 0.5, 0.7, 1.1)
+p_shapes <- ifelse(als_vals > 0.5, 16, 18)
+p_sizes  <- ifelse(als_vals > 0.5, 0.7, 1.1)
 
 run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     pdf(pdf_path, width=14, height=5.5)
