@@ -4,7 +4,7 @@
 # http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/
 # Usage: Rscript $PIPELINE_PATH/_eQTL.R snp.txt expression.txt cov.txt output.txt geneloc.txt snploc.txt
 # Author: Xianjun Dong (modified by Zachery Wolfe)
-# Version: 1.4 (Interaction Edition)
+# Version: 1.5 (Interaction Filter Edition)
 # Date: 7/1/2026
 ###########################################
 
@@ -61,6 +61,46 @@ if(length(covariates_file_name)>0) {
 }
 
 # ==============================================================================
+# CASE-CONTROL MINOR ALLELE CARRIER FILTER (PREVENT PERFECT SEPARATION CRASHES)
+# ==============================================================================
+# Filter out SNPs that do not have at least 3 minor allele carriers (genotype > 0)
+# in BOTH the control and the ALS case group.
+# ==============================================================================
+message("## Evaluating minor allele carrier distributions across case/control splits...")
+
+full_cov_matrix <- as.matrix(cvrt)
+cov_names = rownames(full_cov_matrix)
+interaction_idx = which(cov_names == "is_als")
+
+if(length(interaction_idx) == 0) {
+    stop("Error: Could not find 'is_als' in the row headers of your covariate file!")
+}
+
+is_als_vec <- as.numeric(full_cov_matrix[interaction_idx, ])
+
+# Scan through Slices of the Genotype matrix to flag valid SNPs efficiently
+keep_snps_vector <- c()
+
+for(sl in 1:length(snps)) {
+    slice_mat <- snps[[sl]]
+    
+    # Count carriers (genotype > 0) inside each disease bracket
+    control_carriers <- rowSums(slice_mat[, is_als_vec == 0, drop = FALSE] > 0, na.rm = TRUE)
+    case_carriers    <- rowSums(slice_mat[, is_als_vec == 1, drop = FALSE] > 0, na.rm = TRUE)
+    
+    # Evaluate safety threshold criteria
+    slice_keep <- (control_carriers >= 3) & (case_carriers >= 3)
+    keep_snps_vector <- c(keep_snps_vector, slice_keep)
+}
+
+# Apply the filtered structural mask directly across Schedulers of SlicedData
+snps$RowReorder(which(keep_snps_vector))
+
+message(paste("## Filter Complete: Dropped", sum(!keep_snps_vector), "volatile SNPs."))
+message(paste("## Retained", sum(keep_snps_vector), "statistically stable SNPs for interaction engines."))
+
+
+# ==============================================================================
 # INTERACTION SEPARATION STEP
 # ==============================================================================
 # By default, modelLINEAR_CROSS crosses the SNPs with every row in the 'cvrt' matrix.
@@ -70,15 +110,6 @@ if(length(covariates_file_name)>0) {
 # ==============================================================================
 
 message("## Separating interaction variable (is_als) from main additive covariates...")
-
-# Safe S4 conversion of SlicedData container into a native R matrix structure
-full_cov_matrix <- as.matrix(cvrt)
-cov_names = rownames(full_cov_matrix)
-interaction_idx = which(cov_names == "is_als")
-
-if(length(interaction_idx) == 0) {
-    stop("Error: Could not find 'is_als' in the row headers of your covariate file!")
-}
 
 # Create a container holding exclusively the interaction row
 cvrt_interaction = SlicedData$new()
