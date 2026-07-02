@@ -62,13 +62,19 @@ orig_dir <- Sys.getenv("ORIG_DIR")
 tissue_dir <- Sys.getenv("TISSUE_DIR")
 
 cov_file <- file.path(orig_dir, paste0("covariates_", tissue_dir, "_encoded.txt"))
-# keepna=TRUE or explicit na.strings prevent sample IDs like "NA***" from becoming actual <NA>
-cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE, na.strings="")
+cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE, na.strings=c("", "NA", "NaN"))
 
-# Assuming row label is 'Sex', Males = 1, Females = 2
-sex_row <- cov["Sex", ]
-males <- colnames(sex_row)[sex_row == 1]
-females <- colnames(sex_row)[sex_row == 2]
+# Extract the Sex row cleanly
+sex_row <- as.numeric(cov["Sex", ])
+names(sex_row) <- colnames(cov)
+
+# Using which() explicitly avoids generating NA indices
+males <- names(sex_row)[which(sex_row == 1)]
+females <- names(sex_row)[which(sex_row == 2)]
+
+# Strip out any accidental NA or empty elements just in case
+males <- safe_males <- males[!is.na(males) & males != "NA" & males != ""]
+females <- safe_females <- females[!is.na(females) & females != "NA" & females != ""]
 
 write.table(males, file.path(orig_dir, "male_ids.txt"), quote=FALSE, row.names=FALSE, col.names=FALSE)
 write.table(females, file.path(orig_dir, "female_ids.txt"), quote=FALSE, row.names=FALSE, col.names=FALSE)
