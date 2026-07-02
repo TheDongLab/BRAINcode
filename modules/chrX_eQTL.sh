@@ -4,7 +4,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.err
 #SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
+#SBATCH --mem=28G
 
 set -euo pipefail
 
