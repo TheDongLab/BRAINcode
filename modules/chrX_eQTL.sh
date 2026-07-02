@@ -4,7 +4,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.err
 #SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
+#SBATCH --mem=8G
 
 set -euo pipefail
 
@@ -27,10 +27,12 @@ ORIG_DIR=$BASE/$TISSUE_DIR/eQTL
 SNP_LOC=$ORIG_DIR/snp_location.txt
 GENE_LOC=$ORIG_DIR/gene_location.txt
 
-# Perfectly clean folder matching your standard structure layouts
+# Target flat folders inside your primary eQTL directory
 MALE_DIR=$ORIG_DIR/Male_ChrX
 FEMALE_DIR=$ORIG_DIR/Female_ChrX
 
+# Fresh clean start
+rm -rf "$MALE_DIR" "$FEMALE_DIR"
 mkdir -p "$MALE_DIR" "$FEMALE_DIR"
 
 echo "======================================================="
@@ -44,11 +46,11 @@ echo "======================================================="
 # ── Step 1: Subset SNP Location and Gene Location Files ──────────────
 echo "[1] Extracting Chromosome X locations and variants..."
 
-awk 'NR==1 || $2 == "chrX"' "$SNP_LOC" > "$MALE_DIR/snp_location.txt"
-cp "$MALE_DIR/snp_location.txt" "$FEMALE_DIR/snp_location.txt"
-
-awk 'NR==1 || $2 == "chrX"' "$GENE_LOC" > "$MALE_DIR/gene_location.txt"
+awk 'NR==1 || $2 == "chrX"' "$SNP_LOC" > "$MALE_DIR/gene_location.txt"
 cp "$MALE_DIR/gene_location.txt" "$FEMALE_DIR/gene_location.txt"
+
+awk 'NR==1 || $2 == "chrX"' "$GENE_LOC" > "$MALE_DIR/snp_location.txt"
+cp "$MALE_DIR/snp_location.txt" "$FEMALE_DIR/snp_location.txt"
 
 awk 'NR>1 {print $1}' "$MALE_DIR/snp_location.txt" > "$ORIG_DIR/chrx_variants_list.txt"
 
@@ -76,7 +78,7 @@ write.table(males, file.path(orig_dir, "male_ids.txt"), quote=FALSE, row.names=F
 write.table(females, file.path(orig_dir, "female_ids.txt"), quote=FALSE, row.names=FALSE, col.names=FALSE)
 EOF
 
-# ── Step 3: Extract Matrices Using Python ─────────────────────────────
+# ── Step 3: Extract Matrices Using Python (Beautifully Flat) ─────────
 echo "[3] Slicing expression, covariate, and genotype matrices into flat structures..."
 python3 - << 'EOF'
 import os
@@ -87,46 +89,56 @@ m_dir = os.environ["MALE_DIR"]
 f_dir = os.environ["FEMALE_DIR"]
 tissue_dir = os.environ["TISSUE_DIR"]
 
-# Set up the internal slash subdirectories to handle run_eQTL.sh constraints cleanly
-# INDIR evaluates as Male_ChrX/ because of the path workaround
-os.makedirs(f"{m_dir}/snp_{tissue_dir}/eQTL", exist_ok=True)
-os.makedirs(f"{m_dir}/expression_{tissue_dir}/eQTL", exist_ok=True)
-os.makedirs(f"{m_dir}/covariates_{tissue_dir}", exist_ok=True)
-
-os.makedirs(f"{f_dir}/snp_{tissue_dir}/eQTL", exist_ok=True)
-os.makedirs(f"{f_dir}/expression_{tissue_dir}/eQTL", exist_ok=True)
-os.makedirs(f"{f_dir}/covariates_{tissue_dir}", exist_ok=True)
-
 with open(f"{orig_dir}/male_ids.txt") as f: males = [line.strip() for line in f]
 with open(f"{orig_dir}/female_ids.txt") as f: females = [line.strip() for line in f]
 with open(f"{orig_dir}/chrx_variants_list.txt") as f: chrx_snps = set(line.strip() for line in f)
 
-# 1. Process Covariates 
+# 1. Process Covariates (Saving flat files)
 cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 cov_clean = cov.drop(index="Sex", errors="ignore")
-cov_clean[males].to_csv(f"{m_dir}/covariates_{tissue_dir}/eQTL_Male_ChrX_encoded.txt", sep="\t")
-cov_clean[females].to_csv(f"{f_dir}/covariates_{tissue_dir}/eQTL_Female_ChrX_encoded.txt", sep="\t")
+cov_clean[males].to_csv(f"{m_dir}/covariates.txt", sep="\t")
+cov_clean[females].to_csv(f"{f_dir}/covariates.txt", sep="\t")
 
-# 2. Process Expression
+# 2. Process Expression (Saving flat files)
 expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
-expr[males].to_csv(f"{m_dir}/expression_{tissue_dir}/eQTL_Male_ChrX.txt", sep="\t")
-expr[females].to_csv(f"{f_dir}/expression_{tissue_dir}/eQTL_Female_ChrX.txt", sep="\t")
+expr[males].to_csv(f"{m_dir}/expression.txt", sep="\t")
+expr[females].to_csv(f"{f_dir}/expression.txt", sep="\t")
 del expr
 
-# 3. Process SNPs
+# 3. Process SNPs (Saving flat files)
 snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 chrx_snp = snp.loc[snp.index.isin(chrx_snps)]
-chrx_snp[males].to_csv(f"{m_dir}/snp_{tissue_dir}/eQTL_Male_ChrX.txt", sep="\t")
-chrx_snp[females].to_csv(f"{f_dir}/snp_{tissue_dir}/eQTL_Female_ChrX.txt", sep="\t")
+chrx_snp[males].to_csv(f"{m_dir}/snp.txt", sep="\t")
+chrx_snp[females].to_csv(f"{f_dir}/snp.txt", sep="\t")
 EOF
+
+# ── Step 3.5: Build Symlink Trees to Intercept Pipeline Queries ───────
+echo "[3.5] Mapping pipeline routes via symlinks..."
+for DIR in "$MALE_DIR" "$FEMALE_DIR"; do
+    # This creates the deep path run_eQTL.sh looks for
+    TARGET_DIR="$DIR/eQTL/snp_${TISSUE_DIR}/eQTL"
+    mkdir -p "$TARGET_DIR"
+    
+    # Symlink the flat files to match the expected multi-subfolder names perfectly
+    ln -s "$DIR/snp.txt"        "$TARGET_DIR/${TISSUE_DIR}_eQTL_Male_ChrX.txt" || true
+    ln -s "$DIR/snp.txt"        "$TARGET_DIR/${TISSUE_DIR}_eQTL_Female_ChrX.txt" || true
+    
+    # Do the exact same alignment maps for expression and covariates
+    mkdir -p "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL"
+    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/${TISSUE_DIR}_eQTL_Male_ChrX.txt" || true
+    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/${TISSUE_DIR}_eQTL_Female_ChrX.txt" || true
+    
+    mkdir -p "$DIR/eQTL/covariates_${TISSUE_DIR}"
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/${TISSUE_DIR}_eQTL_Male_ChrX_encoded.txt" || true
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/${TISSUE_DIR}_eQTL_Female_ChrX_encoded.txt" || true
+done
 
 # ── Step 4: Submit the QTL Jobs via standard script ──────────────────
 echo "[4] Submitting sex-stratified Matrix eQTL jobs..."
 
-# The custom trail path cleanly resolves back up to make the output folders perfectly flat
-sbatch run_eQTL.sh "${TISSUE}/eQTL/Male_ChrX/.."
-sbatch run_eQTL.sh "${TISSUE}/eQTL/Female_ChrX/.."
+sbatch run_eQTL.sh "${TISSUE}/eQTL/Male_ChrX"
+sbatch run_eQTL.sh "${TISSUE}/eQTL/Female_ChrX"
 
 echo "======================================================="
-echo " Complete! Jobs dispatched flat inside $MALE_DIR and $FEMALE_DIR"
+echo " Complete! Slashing directories resolved cleanly."
 echo "======================================================="
