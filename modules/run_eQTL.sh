@@ -106,9 +106,26 @@ Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
 echo "[3] Generating Manhattan plot..."
-# This will now automatically use common symbols!
-Rscript $PIPELINE/_eQTL_manhattan.R \
-    "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
+
+if [ "$RUN_TYPE" == "interaction" ]; then
+    STD_ANNOTATED="$INDIR/results/${TISSUE_DIR}_eQTL.full_annotated.txt"
+    
+    # Safety Check: Ensure the baseline standard run actually exists
+    if [ ! -f "$STD_ANNOTATED" ]; then
+        echo "FATAL ERROR: Interaction plotting requires baseline standard eQTL results."
+        echo "Please run this tissue in standard mode first: sbatch run_eQTL.sh \"$TISSUE\""
+        exit 1
+    fi
+    
+    # Run with interaction context arguments
+    Rscript $PIPELINE/_eQTL_manhattan.R \
+        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH" \
+        "$RUN_TYPE" "$STD_ANNOTATED"
+else
+    # Standard Mode: Run exactly as it did originally (no extra arguments)
+    Rscript $PIPELINE/_eQTL_manhattan.R \
+        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
+fi
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
 echo "[3.5] Generating regional locus zoom plots..."
