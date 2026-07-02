@@ -144,7 +144,7 @@ EOF
 
 # 2. Purge Python and load R for plotting
 module purge
-module load R/4.4.0-gfbf-2023b
+module load R
 
 Rscript - <<'EOF'
 print("Generating abundance distribution plot using R...")
