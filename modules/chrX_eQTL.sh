@@ -8,6 +8,8 @@
 
 set -euo pipefail
 
+module load R
+
 # ── Arguments & Setup ──────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
