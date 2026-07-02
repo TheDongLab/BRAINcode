@@ -62,7 +62,8 @@ orig_dir <- Sys.getenv("ORIG_DIR")
 tissue_dir <- Sys.getenv("TISSUE_DIR")
 
 cov_file <- file.path(orig_dir, paste0("covariates_", tissue_dir, "_encoded.txt"))
-cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE)
+# keepna=TRUE or explicit na.strings prevent sample IDs like "NA***" from becoming actual <NA>
+cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE, na.strings="")
 
 # Assuming row label is 'Sex', Males = 1, Females = 2
 sex_row <- cov["Sex", ]
@@ -89,20 +90,19 @@ with open(f"{orig_dir}/male_ids.txt") as f: males = [line.strip() for line in f]
 with open(f"{orig_dir}/female_ids.txt") as f: females = [line.strip() for line in f]
 with open(f"{orig_dir}/chrx_variants_list.txt") as f: chrx_snps = set(line.strip() for line in f)
 
-# 1. Process Covariates (Subset columns, drop 'Sex' row since it becomes invariant)
-cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0)
+# Crucial: keep_default_na=False stops pandas from converting sample IDs named "NA..." into NaN
+# dtype=str forces index/columns to stay strings
+cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 cov_clean = cov.drop(index="Sex", errors="ignore")
 cov_clean[males].to_csv(f"{m_dir}/covariates_{tissue_dir}_Male_ChrX_encoded.txt", sep="\t")
 cov_clean[females].to_csv(f"{f_dir}/covariates_{tissue_dir}_Female_ChrX_encoded.txt", sep="\t")
 
-# 2. Process Expression (Subset columns)
-expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0)
+expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 expr[males].to_csv(f"{m_dir}/expression_{tissue_dir}_Male_ChrX.txt", sep="\t")
 expr[females].to_csv(f"{f_dir}/expression_{tissue_dir}_Female_ChrX.txt", sep="\t")
 del expr
 
-# 3. Process SNPs (Row filter for ChrX + Column filter for Sex)
-snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0)
+snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 chrx_snp = snp.loc[snp.index.isin(chrx_snps)]
 chrx_snp[males].to_csv(f"{m_dir}/snp_{tissue_dir}_Male_ChrX.txt", sep="\t")
 chrx_snp[females].to_csv(f"{f_dir}/snp_{tissue_dir}_Female_ChrX.txt", sep="\t")
