@@ -2,6 +2,7 @@
 ###########################################
 # _eQTL_manhattan.R
 # UPDATED: Generates both directional and gene-colored diagnostic plots
+# ADDED: Optional interaction-mode baseline direction mapping to fix the red-wall bias
 ###########################################
 suppressPackageStartupMessages({
     library(data.table)
@@ -14,6 +15,10 @@ input_file  <- args[1]
 lead_file   <- args[2]
 out_prefix  <- args[3]
 fdr_cutoff  <- as.numeric(args[4])
+
+# Read interaction-specific optional arguments if provided
+run_type   <- if(length(args) >= 5) args[5] else "standard"
+std_path   <- if(length(args) >= 6) args[6] else NULL
 
 message("## Reading data...")
 snp_plot  <- fread(input_file)
@@ -67,17 +72,45 @@ snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_n
 extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 
 # ========================================================================
-# PLOT 1: ORIGINAL DIRECTIONAL COLORING (BETA-BASED)
+# RE-MAP DIRECTIONALITY COLORS FOR INTERACTION MODES
+# ========================================================================
+# Initialize custom coloring direction vectors
+snp_plot[, color_beta := beta]
+lead_plot[, color_beta := beta]
+
+if (run_type == "interaction" && !is.null(std_path) && file.exists(std_path)) {
+    message("## Interaction mode detected. Fetching baseline eQTL directionality for coloring...")
+    
+    std_df <- fread(std_path)
+    
+    # Generate unique keys to safely map variant-gene pairs
+    snp_plot[, match_key := paste0(snpid, "_", geneid)]
+    lead_plot[, match_key := paste0(snpid, "_", geneid)]
+    std_df[, match_key := paste0(snpid, "_", geneid)]
+    
+    # Map the baseline beta vectors from standard results
+    std_betas <- std_df[, setNames(beta, match_key)]
+    
+    snp_plot[, color_beta := std_betas[match_key]]
+    lead_plot[, color_beta := std_betas[match_key]]
+    
+    # Fall back to interaction beta sign if the pair was completely absent from the standard run
+    snp_plot[is.na(color_beta), color_beta := beta]
+    lead_plot[is.na(color_beta), color_beta := beta]
+}
+
+# ========================================================================
+# PLOT 1: DIRECTIONAL COLORING (MODIFIED BETA-BASED)
 # ========================================================================
 message("## Assigning directional colors...")
 snp_plot[, color_cat := as.character(chr_num %% 2)]
-snp_plot[fdr_val <= sig_thresh_fdr & beta > 0, color_cat := "increase"]
-snp_plot[fdr_val <= sig_thresh_fdr & beta < 0, color_cat := "decrease"]
+snp_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "increase"]
+snp_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "decrease"]
 snp_plot[telomeric_flag == TRUE, color_cat := "telomere"]
 
 lead_plot[, color_cat := "none"]
-lead_plot[fdr_val <= sig_thresh_fdr & beta > 0, color_cat := "inc_lead"]
-lead_plot[fdr_val <= sig_thresh_fdr & beta < 0, color_cat := "dec_lead"]
+lead_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "inc_lead"]
+lead_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "dec_lead"]
 
 message("## Creating Directional Plot...")
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
