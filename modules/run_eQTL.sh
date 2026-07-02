@@ -123,11 +123,6 @@ else
     Rscript $PIPELINE/_eQTL_boxplot.R \
         "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 fi
-
-else
-    Rscript $PIPELINE/_eQTL_boxplot.R \
-        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
-fi
     
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
 # If a folder was created with the prefix name, move contents up and delete it
