@@ -37,7 +37,7 @@ matched_rows <- grep(gene_id, rownames(expr), value=TRUE)
 if (length(matched_rows) == 0) {
     stop(paste("Error: No row matching pattern", gene_id, "found in expression matrix."))
 }
-actual_row_name := matched_rows[1]
+actual_row_name <- matched_rows[1]
 cat("Matched row name in matrix:", actual_row_name, "\n")
 
 # Extract expression data
