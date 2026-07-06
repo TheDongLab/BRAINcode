@@ -149,7 +149,7 @@ module --force purge
 module load R
 
 Rscript - <<'EOF'
-print("Generating abundance distribution plot using R...")
+print("Generating discontinuous split-axis abundance distribution plot using R...")
 
 data_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_reads_summary.tmp"
 df <- read.delim(data_path, header=TRUE, sep="\t")
@@ -163,9 +163,18 @@ plot_data <- data.frame(
 )
 
 png_out <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
-png(png_out, width=3000, height=1500, res=300)
+# Slightly wider dimensions to accommodate the split layout cleanly
+png(png_out, width=3300, height=1600, res=300)
 
-par(mar=c(4.5, 4.5, 3, 1), bty="n")
+# Establish a 1-row, 2-column layout (82% width for main data, 18% for high-end outliers)
+layout(matrix(c(1, 2), nrow=1), widths=c(0.82, 0.18))
+
+# Shared Y-axis log tiering
+y_ticks <- 10^(0:5)
+
+# --- PANEL 1: Low to Moderate Abundance (Linear 0 to 300) ---
+# mar order: bottom, left, top, right. Minimal right margin to sit close to Panel 2
+par(mar=c(4.5, 5, 3, 0.5), bty="l") 
 
 plot(plot_data$reads, plot_data$circ_count, 
      log="y", 
@@ -173,15 +182,45 @@ plot(plot_data$reads, plot_data$circ_count,
      col="red4", 
      lwd=2,
      lend="square",
-     xlab="Number of back-spliced reads", 
+     xlim=c(0, 300),
+     ylim=c(1, 100000),
+     xlab="", 
      ylab="Number of circular RNAs",
-     main="Distribution of circRNA Expression by Back-spliced Read Support",
-     cex.lab=1.1, 
-     cex.main=1.2,
+     main="",
      yaxt="n")
 
-y_ticks <- 10^(0:5)
+# Explicitly format the clean log axis labels
 axis(2, at=y_ticks, labels=format(y_ticks, big.mark=","), las=1)
+
+# Position common labels relative to the primary panel window
+mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
+mtext("Distribution of circRNA Expression by Back-spliced Read Support", side=3, line=1, at=185, font=2, cex=1.2)
+
+
+# --- PANEL 2: Extreme High-End Outliers (10k to 80k) ---
+# Dropping the left margin and box entirely so it reads as a broken continuation
+par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
+
+plot(plot_data$reads, plot_data$circ_count, 
+     log="y", 
+     type="h", 
+     col="red4", 
+     lwd=2,
+     lend="square",
+     xlim=c(10000, 80000),
+     ylim=c(1, 100000),
+     xlab="", 
+     ylab="",
+     main="",
+     yaxt="n", 
+     xaxt="n")
+
+# Draw a specific, clean baseline segment for the outlier gap window
+axis(1, at=c(10000, 70000), labels=c("10k", "70k"))
+
+# Draw the standard publication axis break indicator channel (//)
+par(xpd=TRUE)
+text(2500, 0.5, "//", cex=1.2) 
 
 dev.off()
 
