@@ -44,7 +44,7 @@ def find_circ(sample_id):
             return c
     return None
 
-# Match paths (Garbage medical rows will naturally get None here since no folder matches them)
+# Match paths (Garbage medical rows naturally get None here since no folder matches them)
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
 
@@ -163,18 +163,17 @@ plot_data <- data.frame(
 )
 
 png_out <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
-# Slightly wider dimensions to accommodate the split layout cleanly
-png(png_out, width=3300, height=1600, res=300)
+png(png_out, width=3400, height=1600, res=300)
 
-# Establish a 1-row, 2-column layout (82% width for main data, 18% for high-end outliers)
-layout(matrix(c(1, 2), nrow=1), widths=c(0.82, 0.18))
+# Establish a 1-row, 2-column layout (80% width for main data, 20% for high-end outliers)
+layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
 
-# Shared Y-axis log tiering
+# Shared Y-axis log tiers
 y_ticks <- 10^(0:5)
 
 # --- PANEL 1: Low to Moderate Abundance (Linear 0 to 300) ---
-# mar order: bottom, left, top, right. Minimal right margin to sit close to Panel 2
-par(mar=c(4.5, 5, 3, 0.5), bty="l") 
+# Increased left margin to 6.5 to give the y-axis whole numbers room to breathe
+par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
 
 plot(plot_data$reads, plot_data$circ_count, 
      log="y", 
@@ -185,20 +184,20 @@ plot(plot_data$reads, plot_data$circ_count,
      xlim=c(0, 300),
      ylim=c(1, 100000),
      xlab="", 
-     ylab="Number of circular RNAs",
+     ylab="", # Cleared out here so we can custom-align it via mtext
      main="",
      yaxt="n")
 
-# Explicitly format the clean log axis labels
-axis(2, at=y_ticks, labels=format(y_ticks, big.mark=","), las=1)
+# Force clean whole integer formatting with big.mark grouping commas
+axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
 
-# Position common labels relative to the primary panel window
+# Explicitly positioned titles with clear spacing offsets (line=4.2 pushes it away from numbers)
+mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
 mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
 mtext("Distribution of circRNA Expression by Back-spliced Read Support", side=3, line=1, at=185, font=2, cex=1.2)
 
 
 # --- PANEL 2: Extreme High-End Outliers (10k to 80k) ---
-# Dropping the left margin and box entirely so it reads as a broken continuation
 par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
 
 plot(plot_data$reads, plot_data$circ_count, 
@@ -215,7 +214,6 @@ plot(plot_data$reads, plot_data$circ_count,
      yaxt="n", 
      xaxt="n")
 
-# Draw a specific, clean baseline segment for the outlier gap window
 axis(1, at=c(10000, 70000), labels=c("10k", "70k"))
 
 # Draw the standard publication axis break indicator channel (//)
@@ -223,7 +221,5 @@ par(xpd=TRUE)
 text(2500, 0.5, "//", cex=1.2) 
 
 dev.off()
-
-unlink(data_path)
-print(paste("Plot saved successfully to:", png_out))
+print(paste("Split-axis plot saved successfully to:", png_out))
 EOF
