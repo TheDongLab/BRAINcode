@@ -63,12 +63,12 @@ tissue_dir <- Sys.getenv("TISSUE_DIR")
 cov_file <- file.path(orig_dir, paste0("covariates_", tissue_dir, "_encoded.txt"))
 cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE, na.strings=c("", "NA", "NaN"))
 
-# Corrected to look for 'sex_bin' instead of 'Sex'
 sex_row <- as.numeric(cov["sex_bin", ])
 names(sex_row) <- colnames(cov)
 
+# 0 is Female, 1 is Male based on verification
 males <- names(sex_row)[which(sex_row == 1)]
-females <- names(sex_row)[which(sex_row == 2)]
+females <- names(sex_row)[which(sex_row == 0)]
 
 males <- males[!is.na(males) & males != "NA" & males != ""]
 females <- females[!is.na(females) & females != "NA" & females != ""]
@@ -150,13 +150,26 @@ with open(snp_in_path, "r") as infile, \
             f_out.write(f"{snp_id}\t" + "\t".join(f_vals) + "\n")
 EOF
 
-# ── Step 4: Submit the QTL Jobs natively ──────────────────────────────
-echo "[4] Submitting sex-stratified Matrix eQTL jobs..."
+# ── Step 4: Submit the QTL Jobs Natively (With Sample Guards) ─────────
+echo "[4] Dispatching stratified jobs where cohorts are present..."
 
-# Passing the tissue name and subfolder paths explicitly
-sbatch run_eQTL.sh "$TISSUE" "standard" "Male_ChrX"
-sbatch run_eQTL.sh "$TISSUE" "standard" "Female_ChrX"
+M_COUNT=$(awk 'END{print NR}' "$ORIG_DIR/male_ids.txt")
+F_COUNT=$(awk 'END{print NR}' "$ORIG_DIR/female_ids.txt")
+
+if [ "$M_COUNT" -gt 0 ] && [ -f "$MALE_DIR/snp_Male_ChrX.txt" ]; then
+    echo "-> Submitting Male Run ($M_COUNT samples)..."
+    sbatch run_eQTL.sh "$TISSUE" "standard" "Male_ChrX"
+else
+    echo "-> Skipping Male Run: No samples found for this tissue."
+fi
+
+if [ "$F_COUNT" -gt 0 ] && [ -f "$FEMALE_DIR/snp_Female_ChrX.txt" ]; then
+    echo "-> Submitting Female Run ($F_COUNT samples)..."
+    sbatch run_eQTL.sh "$TISSUE" "standard" "Female_ChrX"
+else
+    echo "-> Skipping Female Run: No samples found for this tissue."
+fi
 
 echo "======================================================="
-echo " Complete! Jobs dispatched smoothly."
+echo " Complete! Dispatches evaluated."
 echo "======================================================="
