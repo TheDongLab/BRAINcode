@@ -114,8 +114,22 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
 if [ -n "$SUB_DIR" ]; then
-    Rscript $PIPELINE/convert_eqtl_names.R "${TISSUE_DIR}/eQTL/${SUB_DIR}" "$RUN_TYPE"
+    # For stratified runs, call the function directly on the files where they live
+    Rscript - << EOF
+    source("$PIPELINE/convert_eqtl_names.R")
+    
+    out_dir <- "$OUTDIR"
+    prefix  <- "${FILE_PREFIX}_eQTL"
+    
+    # Run the conversion on the actual file paths directly
+    convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".cis.txt")), is_boxplot_file=FALSE)
+    convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".full_annotated.txt")), is_boxplot_file=FALSE)
+    convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".FDR0.05.txt")), is_boxplot_file=FALSE)
+    convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".lead_snps.txt")), is_boxplot_file=FALSE)
+    convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".top_for_boxplot.txt")), is_boxplot_file=TRUE)
+EOF
 else
+    # Standard runs can use the default CLI routine safely
     Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
 
