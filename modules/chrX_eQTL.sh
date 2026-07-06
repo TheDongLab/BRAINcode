@@ -115,22 +115,21 @@ EOF
 # ── Step 3.5: Build Symlink Trees to Intercept Pipeline Queries ───────
 echo "[3.5] Mapping pipeline routes via symlinks..."
 for DIR in "$MALE_DIR" "$FEMALE_DIR"; do
-    # This creates the deep path run_eQTL.sh looks for
+    # 1. Genotypes (SNPs)
     TARGET_DIR="$DIR/eQTL/snp_${TISSUE_DIR}/eQTL"
     mkdir -p "$TARGET_DIR"
-    
-    # Symlink the flat files to match the expected multi-subfolder names perfectly
     ln -s "$DIR/snp.txt"        "$TARGET_DIR/Male_ChrX.txt" || true
     ln -s "$DIR/snp.txt"        "$TARGET_DIR/Female_ChrX.txt" || true
     
-    # Do the exact same alignment maps for expression and covariates
+    # 2. Expression
     mkdir -p "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL"
     ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Male_ChrX.txt" || true
     ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Female_ChrX.txt" || true
     
-    mkdir -p "$DIR/eQTL/covariates_${TISSUE_DIR}"
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/Male_ChrX_encoded.txt" || true
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/Female_ChrX_encoded.txt" || true
+    # 3. Covariates (Fixed to include the nested eQTL/ folder)
+    mkdir -p "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL"
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL/Male_ChrX_encoded.txt" || true
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL/Female_ChrX_encoded.txt" || true
 done
 
 # ── Step 4: Submit the QTL Jobs via standard script ──────────────────
