@@ -113,9 +113,8 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
-# Pass the explicit directory context instead of trying to blend TISSUE_DIR and SUB_DIR
 if [ -n "$SUB_DIR" ]; then
-    Rscript $PIPELINE/convert_eqtl_names.R "$INDIR" "$RUN_TYPE"
+    Rscript $PIPELINE/convert_eqtl_names.R "${TISSUE_DIR}/eQTL/${SUB_DIR}" "$RUN_TYPE"
 else
     Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
