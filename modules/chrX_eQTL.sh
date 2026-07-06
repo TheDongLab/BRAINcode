@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=prep_chrx
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_chrx_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_chrx_%j.err
+#SBATCH --job-name=chrX_eQTL
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 
 set -euo pipefail
 module load R
@@ -76,7 +76,7 @@ write.table(males, file.path(orig_dir, "male_ids.txt"), quote=FALSE, row.names=F
 write.table(females, file.path(orig_dir, "female_ids.txt"), quote=FALSE, row.names=FALSE, col.names=FALSE)
 EOF
 
-# ── Step 3: Extract Matrices Using Python (Beautifully Flat) ─────────
+# ── Step 3: Extract Matrices Using Python (Beautifully Flat & Verified) ───
 echo "[3] Slicing expression, covariate, and genotype matrices into flat structures..."
 python3 - << 'EOF'
 import os
@@ -87,27 +87,43 @@ m_dir = os.environ["MALE_DIR"]
 f_dir = os.environ["FEMALE_DIR"]
 tissue_dir = os.environ["TISSUE_DIR"]
 
-with open(f"{orig_dir}/male_ids.txt") as f: males = [line.strip() for line in f]
-with open(f"{orig_dir}/female_ids.txt") as f: females = [line.strip() for line in f]
-with open(f"{orig_dir}/chrx_variants_list.txt") as f: chrx_snps = set(line.strip() for line in f)
+# Read and clean IDs to ensure no whitespace mismatches
+with open(f"{orig_dir}/male_ids.txt") as f: 
+    males = [line.strip() for line in f if line.strip()]
+with open(f"{orig_dir}/female_ids.txt") as f: 
+    females = [line.strip() for line in f if line.strip()]
+with open(f"{orig_dir}/chrx_variants_list.txt") as f: 
+    chrx_snps = set(line.strip() for line in f if line.strip())
 
-# 1. Process Covariates (Drop 'Sex' row since it's now invariant inside stratified runs)
+# 1. Process Covariates
 cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
+cov.columns = cov.columns.str.strip()
 cov_clean = cov.drop(index="Sex", errors="ignore")
-cov_clean[males].to_csv(f"{m_dir}/covariates_Male_ChrX_encoded.txt", sep="\t")
-cov_clean[females].to_csv(f"{f_dir}/covariates_Female_ChrX_encoded.txt", sep="\t")
+
+# Intersect IDs to make sure we only pull columns that exist in the file
+males_present = [m for m in males if m in cov_clean.columns]
+females_present = [f for f in females if f in cov_clean.columns]
+
+print(f"Verified column counts for this tissue -> Males: {len(males_present)}, Females: {len(females_present)}")
+
+cov_clean[males_present].to_csv(f"{m_dir}/covariates_Male_ChrX_encoded.txt", sep="\t")
+cov_clean[females_present].to_csv(f"{f_dir}/covariates_Female_ChrX_encoded.txt", sep="\t")
 
 # 2. Process Expression
 expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
-expr[males].to_csv(f"{m_dir}/expression_Male_ChrX.txt", sep="\t")
-expr[females].to_csv(f"{f_dir}/expression_Female_ChrX.txt", sep="\t")
+expr.columns = expr.columns.str.strip()
+expr[males_present].to_csv(f"{m_dir}/expression_Male_ChrX.txt", sep="\t")
+expr[females_present].to_csv(f"{f_dir}/expression_Female_ChrX.txt", sep="\t")
 del expr
 
-# 3. Process SNPs (Row filter for ChrX + Column filter for Sex)
+# 3. Process SNPs
 snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
+snp.columns = snp.columns.str.strip()
+snp.index = snp.index.str.strip()
+
 chrx_snp = snp.loc[snp.index.isin(chrx_snps)]
-chrx_snp[males].to_csv(f"{m_dir}/snp_Male_ChrX.txt", sep="\t")
-chrx_snp[females].to_csv(f"{f_dir}/snp_Female_ChrX.txt", sep="\t")
+chrx_snp[males_present].to_csv(f"{m_dir}/snp_Male_ChrX.txt", sep="\t")
+chrx_snp[females_present].to_csv(f"{f_dir}/snp_Female_ChrX.txt", sep="\t")
 EOF
 
 # ── Step 4: Submit the QTL Jobs natively ──────────────────────────────
