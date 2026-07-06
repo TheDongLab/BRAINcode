@@ -12,26 +12,37 @@ module load R
 # ── Arguments ─────────────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
-    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\" [interaction]"
+    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\" [interaction] [sub_dir]"
     exit 1
 fi
 
 TISSUE="$1"
 RUN_TYPE="${2:-standard}"   # Default to standard if second argument is empty
+SUB_DIR="${3:-}"            # Optional 3rd argument to process subfolder runs natively
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
-echo "============================================"
-echo "  Matrix eQTL run for tissue : $TISSUE ($RUN_TYPE mode)"
+echo "========================================================"
+if [ -n "$SUB_DIR" ]; then
+    echo "  Matrix eQTL run for : $TISSUE ($SUB_DIR) [$RUN_TYPE mode]"
+else
+    echo "  Matrix eQTL run for tissue : $TISSUE ($RUN_TYPE mode)"
+fi
 echo "  $(date)"
-echo "============================================"
+echo "========================================================"
 
 # ── Paths ─────────────────────────────────────────────────────────────
 BASE=/home/zw529/donglab/data/target_ALS
 PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
 PLINK=$BASE/QTL/plink
 
-# Working directory is the tissue's eQTL folder
-INDIR=$BASE/$TISSUE_DIR/eQTL
+# Adjust working directory and naming prefixes if a subfolder run is specified
+if [ -n "$SUB_DIR" ]; then
+    INDIR=$BASE/$TISSUE_DIR/eQTL/$SUB_DIR
+    FILE_PREFIX="${SUB_DIR}"
+else
+    INDIR=$BASE/$TISSUE_DIR/eQTL
+    FILE_PREFIX="${TISSUE_DIR}"
+fi
 
 # Separate output directory based on run type to prevent overwrites
 if [ "$RUN_TYPE" == "interaction" ]; then
@@ -41,16 +52,16 @@ else
 fi
 mkdir -p $OUTDIR
 
-# Match the filenames from your 'ls' output
-SNP_FILE=$INDIR/snp_${TISSUE_DIR}.txt
-EXPR_FILE=$INDIR/expression_${TISSUE_DIR}.txt
-COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
+# Match the filenames from your structure dynamically
+SNP_FILE=$INDIR/snp_${FILE_PREFIX}.txt
+EXPR_FILE=$INDIR/expression_${FILE_PREFIX}.txt
+COV_FILE=$INDIR/covariates_${FILE_PREFIX}_encoded.txt
 GENE_LOC=$INDIR/gene_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 
 # Output naming (Modified to keep files flat in $OUTDIR)
-OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_eQTL
+OUTPUT_PREFIX=$OUTDIR/${FILE_PREFIX}_eQTL
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
 TOP_N=1000000
@@ -102,13 +113,18 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
-Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
+# If this is a subfolder run, pass the full dynamic path argument so it maps cleanly
+if [ -n "$SUB_DIR" ]; then
+    Rscript $PIPELINE/convert_eqtl_names.R "${TISSUE_DIR}/eQTL/${SUB_DIR}" "$RUN_TYPE"
+else
+    Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
+fi
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
 echo "[3] Generating Manhattan plot..."
 
 if [ "$RUN_TYPE" == "interaction" ]; then
-    STD_ANNOTATED="$INDIR/results/${TISSUE_DIR}_eQTL.full_annotated.txt"
+    STD_ANNOTATED="$INDIR/results/${FILE_PREFIX}_eQTL.full_annotated.txt"
     
     # Safety Check: Ensure the baseline standard run actually exists
     if [ ! -f "$STD_ANNOTATED" ]; then
@@ -129,16 +145,20 @@ fi
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
 echo "[3.5] Generating regional locus zoom plots..."
-Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
+if [ -n "$SUB_DIR" ]; then
+    Rscript $PIPELINE/_eQTL_regional_zoom.R "${TISSUE_DIR}/eQTL/${SUB_DIR}"
+else
+    Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
+fi
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all sig. SNPs..."
 if [ "$RUN_TYPE" == "interaction" ]; then
     Rscript $PIPELINE/_eQTL_boxplot_LINEAR_CROSS.R \
-        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "${FILE_PREFIX}"
 else
     Rscript $PIPELINE/_eQTL_boxplot.R \
-        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+        "$TOP_PAIRS" "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "${FILE_PREFIX}"
 fi
     
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
