@@ -7,6 +7,7 @@
 #SBATCH --mem=32G
 
 set -euo pipefail
+module load R
 
 # ── Arguments & Setup ──────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
