@@ -4,7 +4,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=24G
+#SBATCH --mem=64G
 
 set -euo pipefail
 module load R
@@ -63,7 +63,8 @@ tissue_dir <- Sys.getenv("TISSUE_DIR")
 cov_file <- file.path(orig_dir, paste0("covariates_", tissue_dir, "_encoded.txt"))
 cov <- read.table(cov_file, header=TRUE, sep="\t", row.names=1, check.names=FALSE, na.strings=c("", "NA", "NaN"))
 
-sex_row <- as.numeric(cov["Sex", ])
+# Corrected to look for 'sex_bin' instead of 'Sex'
+sex_row <- as.numeric(cov["sex_bin", ])
 names(sex_row) <- colnames(cov)
 
 males <- names(sex_row)[which(sex_row == 1)]
@@ -76,8 +77,8 @@ write.table(males, file.path(orig_dir, "male_ids.txt"), quote=FALSE, row.names=F
 write.table(females, file.path(orig_dir, "female_ids.txt"), quote=FALSE, row.names=FALSE, col.names=FALSE)
 EOF
 
-# ── Step 3: Extract Matrices Using Python (Beautifully Flat & Verified) ───
-echo "[3] Slicing expression, covariate, and genotype matrices into flat structures..."
+# ── Step 3: Extract Matrices Using Memory-Efficient Streaming ─────────
+echo "[3] Slicing matrices via memory-safe line streaming..."
 python3 - << 'EOF'
 import os
 import pandas as pd
@@ -87,7 +88,7 @@ m_dir = os.environ["MALE_DIR"]
 f_dir = os.environ["FEMALE_DIR"]
 tissue_dir = os.environ["TISSUE_DIR"]
 
-# Read and clean IDs to ensure no whitespace mismatches
+# 1. Parse IDs and variants
 with open(f"{orig_dir}/male_ids.txt") as f: 
     males = [line.strip() for line in f if line.strip()]
 with open(f"{orig_dir}/female_ids.txt") as f: 
@@ -95,35 +96,58 @@ with open(f"{orig_dir}/female_ids.txt") as f:
 with open(f"{orig_dir}/chrx_variants_list.txt") as f: 
     chrx_snps = set(line.strip() for line in f if line.strip())
 
-# 1. Process Covariates
+# 2. Process Covariates (Small file, fine for memory)
 cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 cov.columns = cov.columns.str.strip()
-cov_clean = cov.drop(index="Sex", errors="ignore")
 
-# Intersect IDs to make sure we only pull columns that exist in the file
+# Corrected to drop 'sex_bin'
+cov_clean = cov.drop(index="sex_bin", errors="ignore")
+
 males_present = [m for m in males if m in cov_clean.columns]
 females_present = [f for f in females if f in cov_clean.columns]
 
-print(f"Verified column counts for this tissue -> Males: {len(males_present)}, Females: {len(females_present)}")
+print(f"Verified columns -> Males: {len(males_present)}, Females: {len(females_present)}")
 
 cov_clean[males_present].to_csv(f"{m_dir}/covariates_Male_ChrX_encoded.txt", sep="\t")
 cov_clean[females_present].to_csv(f"{f_dir}/covariates_Female_ChrX_encoded.txt", sep="\t")
 
-# 2. Process Expression
+# 3. Process Expression
 expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 expr.columns = expr.columns.str.strip()
 expr[males_present].to_csv(f"{m_dir}/expression_Male_ChrX.txt", sep="\t")
 expr[females_present].to_csv(f"{f_dir}/expression_Female_ChrX.txt", sep="\t")
 del expr
 
-# 3. Process SNPs
-snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
-snp.columns = snp.columns.str.strip()
-snp.index = snp.index.str.strip()
+# 4. Stream Genotypes Line-by-Line (Memory-Safe)
+snp_in_path = f"{orig_dir}/snp_{tissue_dir}.txt"
+m_out_path = f"{m_dir}/snp_Male_ChrX.txt"
+f_out_path = f"{f_dir}/snp_Female_ChrX.txt"
 
-chrx_snp = snp.loc[snp.index.isin(chrx_snps)]
-chrx_snp[males_present].to_csv(f"{m_dir}/snp_Male_ChrX.txt", sep="\t")
-chrx_snp[females_present].to_csv(f"{f_dir}/snp_Female_ChrX.txt", sep="\t")
+with open(snp_in_path, "r") as infile, \
+     open(m_out_path, "w") as m_out, \
+     open(f_out_path, "w") as f_out:
+    
+    header = infile.readline().strip().split("\t")
+    header = [h.strip() for h in header]
+    
+    m_indices = [header.index(m) for m in males_present if m in header]
+    f_indices = [header.index(f) for f in females_present if f in header]
+    
+    m_out.write("snpid\t" + "\t".join(males_present) + "\n")
+    f_out.write("snpid\t" + "\t".join(females_present) + "\n")
+    
+    for line in infile:
+        parts = line.strip().split("\t")
+        if not parts:
+            continue
+        snp_id = parts[0].strip()
+        
+        if snp_id in chrx_snps:
+            m_vals = [parts[idx] for idx in m_indices]
+            f_vals = [parts[idx] for idx in f_indices]
+            
+            m_out.write(f"{snp_id}\t" + "\t".join(m_vals) + "\n")
+            f_out.write(f"{snp_id}\t" + "\t".join(f_vals) + "\n")
 EOF
 
 # ── Step 4: Submit the QTL Jobs natively ──────────────────────────────
