@@ -1,19 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=chrX_eQTL
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/chrX_eQTL_%j.err
-#SBATCH --time=03:00:00
+#SBATCH --job-name=prep_chrx
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_chrx_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_chrx_%j.err
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=28G
+#SBATCH --mem=32G
 
 set -euo pipefail
-
-module load R
 
 # ── Arguments & Setup ──────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
-    echo "Usage: sbatch prep_chrx.sh \"Cerebellum\""
+    echo "Usage: sbatch chrX_eQTL.sh \"Cerebellum\""
     exit 1
 fi
 
@@ -27,30 +25,29 @@ ORIG_DIR=$BASE/$TISSUE_DIR/eQTL
 SNP_LOC=$ORIG_DIR/snp_location.txt
 GENE_LOC=$ORIG_DIR/gene_location.txt
 
-# Target flat folders inside your primary eQTL directory
+# Create perfectly flat folders inside the primary eQTL directory
 MALE_DIR=$ORIG_DIR/Male_ChrX
 FEMALE_DIR=$ORIG_DIR/Female_ChrX
 
-# Fresh clean start
 rm -rf "$MALE_DIR" "$FEMALE_DIR"
 mkdir -p "$MALE_DIR" "$FEMALE_DIR"
 
 echo "======================================================="
-echo "  Prepping Sex-Stratified ChrX Run for: $TISSUE"
-echo "  Source Directory: $ORIG_DIR"
-echo "  Target Male Workspace: $MALE_DIR"
-echo "  Target Female Workspace: $FEMALE_DIR"
+echo "  Prepping Flat Sex-Stratified ChrX Run for: $TISSUE"
+echo "  Source Workspace: $ORIG_DIR"
+echo "  Target Male Directory: $MALE_DIR"
+echo "  Target Female Directory: $FEMALE_DIR"
 echo "  $(date)"
 echo "======================================================="
 
 # ── Step 1: Subset SNP Location and Gene Location Files ──────────────
 echo "[1] Extracting Chromosome X locations and variants..."
 
-awk 'NR==1 || $2 == "chrX"' "$SNP_LOC" > "$MALE_DIR/gene_location.txt"
-cp "$MALE_DIR/gene_location.txt" "$FEMALE_DIR/gene_location.txt"
-
-awk 'NR==1 || $2 == "chrX"' "$GENE_LOC" > "$MALE_DIR/snp_location.txt"
+awk 'NR==1 || $2 == "chrX"' "$SNP_LOC" > "$MALE_DIR/snp_location.txt"
 cp "$MALE_DIR/snp_location.txt" "$FEMALE_DIR/snp_location.txt"
+
+awk 'NR==1 || $2 == "chrX"' "$GENE_LOC" > "$MALE_DIR/gene_location.txt"
+cp "$MALE_DIR/gene_location.txt" "$FEMALE_DIR/gene_location.txt"
 
 awk 'NR>1 {print $1}' "$MALE_DIR/snp_location.txt" > "$ORIG_DIR/chrx_variants_list.txt"
 
@@ -93,51 +90,32 @@ with open(f"{orig_dir}/male_ids.txt") as f: males = [line.strip() for line in f]
 with open(f"{orig_dir}/female_ids.txt") as f: females = [line.strip() for line in f]
 with open(f"{orig_dir}/chrx_variants_list.txt") as f: chrx_snps = set(line.strip() for line in f)
 
-# 1. Process Covariates (Saving flat files)
+# 1. Process Covariates (Drop 'Sex' row since it's now invariant inside stratified runs)
 cov = pd.read_csv(f"{orig_dir}/covariates_{tissue_dir}_encoded.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 cov_clean = cov.drop(index="Sex", errors="ignore")
-cov_clean[males].to_csv(f"{m_dir}/covariates.txt", sep="\t")
-cov_clean[females].to_csv(f"{f_dir}/covariates.txt", sep="\t")
+cov_clean[males].to_csv(f"{m_dir}/covariates_Male_ChrX_encoded.txt", sep="\t")
+cov_clean[females].to_csv(f"{f_dir}/covariates_Female_ChrX_encoded.txt", sep="\t")
 
-# 2. Process Expression (Saving flat files)
+# 2. Process Expression
 expr = pd.read_csv(f"{orig_dir}/expression_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
-expr[males].to_csv(f"{m_dir}/expression.txt", sep="\t")
-expr[females].to_csv(f"{f_dir}/expression.txt", sep="\t")
+expr[males].to_csv(f"{m_dir}/expression_Male_ChrX.txt", sep="\t")
+expr[females].to_csv(f"{f_dir}/expression_Female_ChrX.txt", sep="\t")
 del expr
 
-# 3. Process SNPs (Saving flat files)
+# 3. Process SNPs (Row filter for ChrX + Column filter for Sex)
 snp = pd.read_csv(f"{orig_dir}/snp_{tissue_dir}.txt", sep="\t", index_col=0, keep_default_na=False, dtype=str)
 chrx_snp = snp.loc[snp.index.isin(chrx_snps)]
-chrx_snp[males].to_csv(f"{m_dir}/snp.txt", sep="\t")
-chrx_snp[females].to_csv(f"{f_dir}/snp.txt", sep="\t")
+chrx_snp[males].to_csv(f"{m_dir}/snp_Male_ChrX.txt", sep="\t")
+chrx_snp[females].to_csv(f"{f_dir}/snp_Female_ChrX.txt", sep="\t")
 EOF
 
-# ── Step 3.5: Build Symlink Trees to Intercept Pipeline Queries ───────
-echo "[3.5] Mapping pipeline routes via symlinks..."
-for DIR in "$MALE_DIR" "$FEMALE_DIR"; do
-    # 1. Genotypes (SNPs)
-    TARGET_DIR="$DIR/eQTL/snp_${TISSUE_DIR}/eQTL"
-    mkdir -p "$TARGET_DIR"
-    ln -s "$DIR/snp.txt"        "$TARGET_DIR/Male_ChrX.txt" || true
-    ln -s "$DIR/snp.txt"        "$TARGET_DIR/Female_ChrX.txt" || true
-    
-    # 2. Expression
-    mkdir -p "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL"
-    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Male_ChrX.txt" || true
-    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Female_ChrX.txt" || true
-    
-    # 3. Covariates (Fixed to include the nested eQTL/ folder)
-    mkdir -p "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL"
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL/Male_ChrX_encoded.txt" || true
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/eQTL/Female_ChrX_encoded.txt" || true
-done
-
-# ── Step 4: Submit the QTL Jobs via standard script ──────────────────
+# ── Step 4: Submit the QTL Jobs natively ──────────────────────────────
 echo "[4] Submitting sex-stratified Matrix eQTL jobs..."
 
-sbatch run_eQTL.sh "${TISSUE}/eQTL/Male_ChrX"
-sbatch run_eQTL.sh "${TISSUE}/eQTL/Female_ChrX"
+# Passing the tissue name and subfolder paths explicitly
+sbatch run_eQTL.sh "$TISSUE" "standard" "Male_ChrX"
+sbatch run_eQTL.sh "$TISSUE" "standard" "Female_ChrX"
 
 echo "======================================================="
-echo " Complete! Slashing directories resolved cleanly."
+echo " Complete! Jobs dispatched smoothly."
 echo "======================================================="
