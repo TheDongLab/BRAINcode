@@ -114,14 +114,14 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
 if [ -n "$SUB_DIR" ]; then
-    # For stratified runs, call the function directly on the files where they live
-    Rscript - << EOF
-    source("$PIPELINE/convert_eqtl_names.R")
+    # We pass dummy args at the end so the sourced script doesn't trip its CLI guard
+    Rscript - "$TISSUE" "$RUN_TYPE" << 'EOF'
+    source("/home/zw529/donglab/pipelines/scripts/QTL/convert_eqtl_names.R")
     
-    out_dir <- "$OUTDIR"
-    prefix  <- "${FILE_PREFIX}_eQTL"
+    out_dir <- Sys.getenv("OUTDIR")
+    prefix  <- paste0(Sys.getenv("FILE_PREFIX"), "_eQTL")
     
-    # Run the conversion on the actual file paths directly
+    # Process the actual file paths directly
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".cis.txt")), is_boxplot_file=FALSE)
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".full_annotated.txt")), is_boxplot_file=FALSE)
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".FDR0.05.txt")), is_boxplot_file=FALSE)
@@ -129,7 +129,7 @@ if [ -n "$SUB_DIR" ]; then
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".top_for_boxplot.txt")), is_boxplot_file=TRUE)
 EOF
 else
-    # Standard runs can use the default CLI routine safely
+    # Standard runs use the default CLI routine safely
     Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
 
