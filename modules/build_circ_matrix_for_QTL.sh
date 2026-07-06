@@ -145,14 +145,14 @@ for c in chr_order:
 EOF
 
 # 2. Purge Python and load R cleanly
-module purge
+module --force purge
 module load R
 
 Rscript - <<'EOF'
 print("Generating abundance distribution plot using R...")
 
 data_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_reads_summary.tmp"
-df <- read.delim(data_path, header=True, sep="\t")
+df <- read.delim(data_path, header=TRUE, sep="\t")
 
 df <- df[df$total_reads > 0, ]
 
