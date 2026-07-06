@@ -170,7 +170,7 @@ par(mar=c(4.5, 4.5, 3, 1), bty="n")
 plot(plot_data$reads, plot_data$circ_count, 
      log="y", 
      type="h", 
-     col="crimson", 
+     col="red4", 
      lwd=2,
      lend="square",
      xlab="Number of back-spliced reads", 
