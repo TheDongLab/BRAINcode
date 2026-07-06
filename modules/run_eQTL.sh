@@ -114,15 +114,16 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
 if [ -n "$SUB_DIR" ]; then
-    # 1. Create a clean temporary version of the script without its trailing execution block
+    # 1. Create a clean version of the script without its trailing execution block
     sed '/# TARGET EXECUTION PATHS/,$d' /home/zw529/donglab/pipelines/scripts/QTL/convert_eqtl_names.R > tmpscript.R
     
-    # 2. Source the functions safely and call them on the exact files
-    Rscript - "$TISSUE" "$RUN_TYPE" << 'EOF'
-    source("tmpscript.R")
+    # 2. Pass the directory and prefix explicitly as command line arguments
+    Rscript - "$OUTDIR" "$FILE_PREFIX" << 'EOF'
+    args <- commandArgs(trailingOnly = TRUE)
+    out_dir <- args[1]
+    prefix  <- paste0(args[2], "_eQTL")
     
-    out_dir <- Sys.getenv("OUTDIR")
-    prefix  <- paste0(Sys.getenv("FILE_PREFIX"), "_eQTL")
+    source("tmpscript.R")
     
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".cis.txt")), is_boxplot_file=FALSE)
     convert_eqtl_genes(file.path(out_dir, paste0(prefix, ".full_annotated.txt")), is_boxplot_file=FALSE)
