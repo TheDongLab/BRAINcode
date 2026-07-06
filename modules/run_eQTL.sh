@@ -113,41 +113,42 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
-# If this is a subfolder run, pass the full dynamic path argument so it maps cleanly
+# Pass the explicit directory context instead of trying to blend TISSUE_DIR and SUB_DIR
 if [ -n "$SUB_DIR" ]; then
-    Rscript $PIPELINE/convert_eqtl_names.R "${TISSUE_DIR}/eQTL/${SUB_DIR}" "$RUN_TYPE"
+    Rscript $PIPELINE/convert_eqtl_names.R "$INDIR" "$RUN_TYPE"
 else
     Rscript $PIPELINE/convert_eqtl_names.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
-echo "[3] Generating Manhattan plot..."
-
-if [ "$RUN_TYPE" == "interaction" ]; then
-    STD_ANNOTATED="$INDIR/results/${FILE_PREFIX}_eQTL.full_annotated.txt"
-    
-    # Safety Check: Ensure the baseline standard run actually exists
-    if [ ! -f "$STD_ANNOTATED" ]; then
-        echo "FATAL ERROR: Interaction plotting requires baseline standard eQTL results."
-        echo "Please run this tissue in standard mode first: sbatch run_eQTL.sh \"$TISSUE\""
-        exit 1
-    fi
-    
-    # Run with interaction context arguments
-    Rscript $PIPELINE/_eQTL_manhattan.R \
-        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH" \
-        "$RUN_TYPE" "$STD_ANNOTATED"
+# Guarded: Skip genome-wide Manhattan plots for targeted single-chromosome runs
+if [ -n "$SUB_DIR" ]; then
+    echo "[3] Skipping genome-wide Manhattan plot for single-chromosome stratified run."
 else
-    # Standard Mode: Run exactly as it did originally (no extra arguments)
-    Rscript $PIPELINE/_eQTL_manhattan.R \
-        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
+    echo "[3] Generating Manhattan plot..."
+    if [ "$RUN_TYPE" == "interaction" ]; then
+        STD_ANNOTATED="$INDIR/results/${FILE_PREFIX}_eQTL.full_annotated.txt"
+        
+        if [ ! -f "$STD_ANNOTATED" ]; then
+            echo "FATAL ERROR: Interaction plotting requires baseline standard eQTL results."
+            echo "Please run this tissue in standard mode first: sbatch run_eQTL.sh \"$TISSUE\""
+            exit 1
+        fi
+        
+        Rscript $PIPELINE/_eQTL_manhattan.R \
+            "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH" \
+            "$RUN_TYPE" "$STD_ANNOTATED"
+    else
+        Rscript $PIPELINE/_eQTL_manhattan.R \
+            "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
+    fi
 fi
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
-echo "[3.5] Generating regional locus zoom plots..."
 if [ -n "$SUB_DIR" ]; then
-    Rscript $PIPELINE/_eQTL_regional_zoom.R "${TISSUE_DIR}/eQTL/${SUB_DIR}"
+    echo "[3.5] Skipping standard regional locus zoom for stratified subfolder runs."
 else
+    echo "[3.5] Generating regional locus zoom plots..."
     Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
 fi
 
@@ -162,7 +163,6 @@ else
 fi
     
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
-# If a folder was created with the prefix name, move contents up and delete it
 if [ -d "${OUTPUT_PREFIX}" ]; then
     echo "[5] Cleaning up redundant subdirectories..."
     mv "${OUTPUT_PREFIX}"/* "$OUTDIR/" 2>/dev/null || true
