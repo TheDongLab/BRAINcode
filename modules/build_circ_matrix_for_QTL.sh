@@ -35,20 +35,22 @@ rna.columns = rna.columns.str.strip().str.lower()
 
 # Find circularRNA files
 all_circ = list(BASE.glob("**/RNAseq/Processed/*/circularRNA_known_circ_percentage.txt"))
-print(f"Total physical circularRNA files found on disk: {len(all_circ)}")
 
 def find_circ(sample_id):
     sid_norm = norm_id(sample_id)
     for c in all_circ:
         parent = norm_id(c.parent.name)
-        # FIX: Enforce strict equality so 'CGND_HRA_0369' does not match 'CGND_HRA_03697'
         if sid_norm == parent:
             return c
     return None
 
+# Match paths (Garbage medical rows will naturally get None here since no folder matches them)
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
-print(f"RNA metadata samples mapping uniquely to a file: {len(rna_found)}")
+
+# Drop true duplicated metadata entries to ensure clean 1:1 matrix headers
+rna_found = rna_found.drop_duplicates(subset=["externalsampleid"], keep="first")
+print(f"Cleaned unique RNA samples for matrix processing (CGND + non-CGND): {len(rna_found)}")
 
 # Build Percentage Matrix & Track Raw Backspliced Reads
 expr = None
@@ -103,7 +105,7 @@ filtered_numeric = numeric_data[variant_mask].copy()
 filtered_circ_ids = circ_ids[variant_mask]
 expr_final = pd.concat([filtered_circ_ids.reset_index(drop=True), filtered_numeric.reset_index(drop=True)], axis=1)
 
-# Save Outputs
+# Save Matrix & Metadata Outputs
 expr_final.to_csv(OUT / "circ_matrix.txt", sep="\t", index=False)
 rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
     OUT / "circ_sample_metadata.csv", index=False
@@ -142,7 +144,7 @@ for c in chr_order:
         print(f"{c}: {chr_counts[c]:,}")
 EOF
 
-# 2. Purge Python and load R for plotting
+# 2. Purge Python and load R cleanly
 module purge
 module load R
 
