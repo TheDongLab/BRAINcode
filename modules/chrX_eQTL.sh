@@ -120,17 +120,17 @@ for DIR in "$MALE_DIR" "$FEMALE_DIR"; do
     mkdir -p "$TARGET_DIR"
     
     # Symlink the flat files to match the expected multi-subfolder names perfectly
-    ln -s "$DIR/snp.txt"        "$TARGET_DIR/${TISSUE_DIR}_eQTL_Male_ChrX.txt" || true
-    ln -s "$DIR/snp.txt"        "$TARGET_DIR/${TISSUE_DIR}_eQTL_Female_ChrX.txt" || true
+    ln -s "$DIR/snp.txt"        "$TARGET_DIR/Male_ChrX.txt" || true
+    ln -s "$DIR/snp.txt"        "$TARGET_DIR/Female_ChrX.txt" || true
     
     # Do the exact same alignment maps for expression and covariates
     mkdir -p "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL"
-    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/${TISSUE_DIR}_eQTL_Male_ChrX.txt" || true
-    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/${TISSUE_DIR}_eQTL_Female_ChrX.txt" || true
+    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Male_ChrX.txt" || true
+    ln -s "$DIR/expression.txt" "$DIR/eQTL/expression_${TISSUE_DIR}/eQTL/Female_ChrX.txt" || true
     
     mkdir -p "$DIR/eQTL/covariates_${TISSUE_DIR}"
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/${TISSUE_DIR}_eQTL_Male_ChrX_encoded.txt" || true
-    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/${TISSUE_DIR}_eQTL_Female_ChrX_encoded.txt" || true
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/Male_ChrX_encoded.txt" || true
+    ln -s "$DIR/covariates.txt" "$DIR/eQTL/covariates_${TISSUE_DIR}/Female_ChrX_encoded.txt" || true
 done
 
 # ── Step 4: Submit the QTL Jobs via standard script ──────────────────
