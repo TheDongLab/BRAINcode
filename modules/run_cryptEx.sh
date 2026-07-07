@@ -121,8 +121,11 @@ if len(support_records) == 0:
     print(f"⚠️ Dropping out: Found 0 verified BAM files across checked directories for ${TISSUE}.")
 else:
     support_df = pd.DataFrame(support_records)
+    # Deduplicate based on the sample column, keeping the first match found
+    support_df = support_df.drop_duplicates(subset=['sample'], keep='first')
+    
     support_df.to_csv("${SUPPORT_FILE}", sep="\t", index=False)
-    print(f"✅ Generated support.tab for ${TISSUE} with {len(support_df)} validated active tracks.")
+    print(f"✅ Generated support.tab for ${TISSUE} with {len(support_df)} unique validated active tracks.")
 EOF
 
     # 3. Guard check: Run pipeline block if support file was written successfully
