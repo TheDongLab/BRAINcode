@@ -45,30 +45,57 @@ if ("FDR" %in% names(lead_plot)) {
 
 sig_thresh_fdr <- fdr_cutoff
 
-message("## Processing SNP coordinates (Autosomes 1-22 only)...")
+message("## Processing SNP coordinates dynamically...")
 prepare_coords <- function(df) {
     df[, chr_name := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
-    # Filter out Chromosome X or 23 explicitly
-    df <- df[!(chr_name %in% c("X", "x", "23"))]
-    df[, chr_num := as.integer(chr_name)]
+    
+    # Match X/x/23 consistently to integer 23, map others directly to their number
+    if (any(chr_name %in% c("X", "x", "23")) && all(chr_name %in% c("X", "x", "23", "NA", ""))) {
+        df[, chr_num := 23]
+    } else {
+        df <- df[!(chr_name %in% c("X", "x", "23"))]
+        df[, chr_num := as.integer(chr_name)]
+    }
     return(df[!is.na(chr_num)]) # Drops non-autosomes, Y, M, or parsing errors
 }
 
 snp_plot  <- prepare_coords(snp_plot)
 lead_plot <- prepare_coords(lead_plot)
 
-chr_info <- snp_plot[, .(chr_len = max(as.numeric(pos))), by = chr_num][order(chr_num)]
-chr_info[, tot := shift(cumsum(as.numeric(chr_len)), fill = 0)]
+# Determine if this is a dedicated standalone Chromosome X focused run
+is_chrx_run <- all(snp_plot$chr_num == 23)
 
-setkey(snp_plot, chr_num); setkey(lead_plot, chr_num); setkey(chr_info, chr_num)
+if (is_chrx_run) {
+    message("## Setting up single-chromosome physical base-pair layout for ChrX...")
+    snp_plot[, cum_pos := pos]
+    lead_plot[, cum_pos := pos]
+    
+    # Generate explicit, readable x-axis layout parameters in Megabases
+    max_pos <- max(snp_plot$pos, na.rm=TRUE)
+    tick_breaks <- seq(0, max_pos, by = 25e6)
+    tick_labels <- paste0(tick_breaks / 1e6, " Mb")
+    x_expand <- c(0.02, 0.02)
+    x_axis_label <- "Chromosome X Coordinate"
+} else {
+    message("## Setting up standard multi-chromosomal cumulative stacked layout...")
+    chr_info <- snp_plot[, .(chr_len = max(as.numeric(pos))), by = chr_num][order(chr_num)]
+    chr_info[, tot := shift(cumsum(as.numeric(chr_len)), fill = 0)]
+    
+    setkey(snp_plot, chr_num); setkey(lead_plot, chr_num); setkey(chr_info, chr_num)
+    
+    snp_plot  <- chr_info[snp_plot]
+    snp_plot[, cum_pos := pos + tot]
+    
+    lead_plot <- chr_info[lead_plot]
+    lead_plot[, cum_pos := pos + tot]
+    
+    snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
+    tick_breaks <- snp_axis$centre
+    tick_labels <- paste0("chr", snp_axis$chr_num)
+    x_expand <- c(0.01, 0.01)
+    x_axis_label <- "Chromosome"
+}
 
-snp_plot  <- chr_info[snp_plot]
-snp_plot[, cum_pos := pos + tot]
-
-lead_plot <- chr_info[lead_plot]
-lead_plot[, cum_pos := pos + tot]
-
-snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
 extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 
 # ========================================================================
@@ -118,10 +145,10 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     geom_point(data=lead_plot[color_cat != "none"], aes(x=cum_pos, y=log10p, colour=color_cat), shape=18, size=2.0) +
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=geneid), size=2.5, colour="darkgreen", fontface="italic", box.padding = 0.5, max.overlaps = Inf) +
-    scale_colour_manual(values=c("0"="#444444", "1"="#999999", "increase"="red", "decrease"="blue", "telomere"="#E69F00", "inc_lead"="red", "dec_lead"="blue", "none"="white")) +
-    scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), breaks=snp_axis$centre, expand=c(0.01, 0.01)) +
+    scale_colour_manual(values=c("0"="#444444", "1"="#999999", "23"="#555555", "increase"="red", "decrease"="blue", "telomere"="#E69F00", "inc_lead"="red", "dec_lead"="blue", "none"="white")) +
+    scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
-    labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x="Chromosome", y=expression(-log[10](p))) +
+    labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x=x_axis_label, y=expression(-log[10](p))) +
     theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
 
 out_file_png1 <- paste0(out_prefix, ".manhattan_by_SNP.png")
@@ -156,14 +183,14 @@ p2 <- ggplot() +
                     size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
     
     # Control the background layers using fill, leaving scale_colour to handle genes dynamically
-    scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5"), guide="none") +
+    scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5", "23"="#CCCCCC"), guide="none") +
     
-    scale_x_continuous(labels=paste0("chr", snp_axis$chr_num), breaks=snp_axis$centre, expand=c(0.01, 0.01)) +
+    scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
     labs(title=paste("Diagnostic eQTL Manhattan Plot (By Gene Locus) -", basename(out_prefix)),
          subtitle=sprintf("Every unique significant Gene ID is assigned an independent color | N Significant Genes = %d", uniqueN(snp_sig$geneid)),
-         x="Chromosome", y=expression(-log[10](p))) +
+         x=x_axis_label, y=expression(-log[10](p))) +
     
     theme_bw() + 
     theme(legend.position="none", 
