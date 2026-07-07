@@ -84,12 +84,25 @@ keep_snps_vector <- c()
 for(sl in 1:length(snps)) {
     slice_mat <- snps[[sl]]
     
-    # Count carriers (genotype > 0) inside each disease bracket
-    control_carriers <- rowSums(slice_mat[, is_als_vec == 0, drop = FALSE] > 0, na.rm = TRUE)
-    case_carriers    <- rowSums(slice_mat[, is_als_vec == 1, drop = FALSE] > 0, na.rm = TRUE)
+    # Split the matrix into cases and controls up front
+    ctrl_mat <- slice_mat[, is_als_vec == 0, drop = FALSE]
+    case_mat <- slice_mat[, is_als_vec == 1, drop = FALSE]
     
-    # Evaluate safety threshold criteria
-    slice_keep <- (control_carriers >= 10) & (case_carriers >= 10)
+    # Calculate how many subjects fall into each genotype group (0, 1, 2) per row
+    ctrl_0 <- rowSums(abs(ctrl_mat - 0) < 0.1, na.rm = TRUE)
+    ctrl_1 <- rowSums(abs(ctrl_mat - 1) < 0.1, na.rm = TRUE)
+    ctrl_2 <- rowSums(abs(ctrl_mat - 2) < 0.1, na.rm = TRUE)
+    
+    case_0 <- rowSums(abs(case_mat - 0) < 0.1, na.rm = TRUE)
+    case_1 <- rowSums(abs(case_mat - 1) < 0.1, na.rm = TRUE)
+    case_2 <- rowSums(abs(case_mat - 2) < 0.1, na.rm = TRUE)
+    
+    # Verify that at least 2 distinct genotype buckets have >= 5 individuals
+    ctrl_valid_boxes <- (ctrl_0 >= 5) + (ctrl_1 >= 5) + (ctrl_2 >= 5)
+    case_valid_boxes <- (case_0 >= 5) + (case_1 >= 5) + (case_2 >= 5)
+    
+    # Keep only SNPs that meet this baseline layout requirement in both cohorts
+    slice_keep <- (ctrl_valid_boxes >= 2) & (case_valid_boxes >= 2)
     keep_snps_vector <- c(keep_snps_vector, slice_keep)
 }
 
