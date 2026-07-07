@@ -155,7 +155,6 @@ echo "[3] Generating Manhattan plot..."
         Rscript $PIPELINE/_eQTL_manhattan.R \
             "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
     fi
-fi
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
 if [ -n "$SUB_DIR" ]; then
