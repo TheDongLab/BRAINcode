@@ -49,8 +49,8 @@ if (nrow(eqtl_fdr) == 0) {
   
   # Sort by raw p-value and take pairs meeting a standard nominal threshold (e.g., p < 0.01)
   # Limit to top 250 pairs max so you don't generate thousands of junk plots
-  eqtl_ordered <- eqtl[order(pvalue)]
-  eqtl_fdr <- head(eqtl_ordered[pvalue < 0.01], 250)
+  eqtl_ordered <- eqtl[order(`p-value`)]
+  eqtl_fdr <- head(eqtl_ordered[`p-value` < 0.01], 250)
 }
 
 # Lead interaction SNP selection (per gene)
