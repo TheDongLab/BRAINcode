@@ -43,6 +43,16 @@ eqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
 # Filter for significant interaction effects
 eqtl_fdr <- eqtl[FDR < fdr_thresh]
 
+# Fallback mechanism: If FDR filters out everything but raw p-values are strong
+if (nrow(eqtl_fdr) == 0) {
+  message("## No pairs passed strict FDR. Falling back to top hits by raw p-value...")
+  
+  # Sort by raw p-value and take pairs meeting a standard nominal threshold (e.g., p < 0.01)
+  # Limit to top 250 pairs max so you don't generate thousands of junk plots
+  eqtl_ordered <- eqtl[order(pvalue)]
+  eqtl_fdr <- head(eqtl_ordered[pvalue < 0.01], 250)
+}
+
 # Lead interaction SNP selection (per gene)
 eqtl_lead <- eqtl_fdr[order(geneid, `p-value`, pos)]
 eqtl_lead <- eqtl_lead[!duplicated(geneid)]
