@@ -138,11 +138,7 @@ else
 fi
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
-# Guarded: Skip genome-wide Manhattan plots for targeted single-chromosome runs
-if [ -n "$SUB_DIR" ]; then
-    echo "[3] Skipping genome-wide Manhattan plot for single-chromosome stratified run."
-else
-    echo "[3] Generating Manhattan plot..."
+echo "[3] Generating Manhattan plot..."
     if [ "$RUN_TYPE" == "interaction" ]; then
         STD_ANNOTATED="$INDIR/results/${FILE_PREFIX}_eQTL.full_annotated.txt"
         
