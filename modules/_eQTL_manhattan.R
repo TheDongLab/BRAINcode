@@ -47,16 +47,18 @@ sig_thresh_fdr <- fdr_cutoff
 
 message("## Processing SNP coordinates dynamically...")
 prepare_coords <- function(df) {
-    df[, chr_name := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
+    # 1. Safely strip "chr" and create the character vector
+    c_names <- gsub("chr", "", as.character(df$chr), ignore.case = TRUE)
     
-    # Match X/x/23 consistently to integer 23, map others directly to their number
-    if (any(chr_name %in% c("X", "x", "23")) && all(chr_name %in% c("X", "x", "23", "NA", ""))) {
+    # 2. Run the dynamic conditional check on the vector, not an unassigned data.table symbol
+    if (any(c_names %in% c("X", "x", "23")) && all(c_names %in% c("X", "x", "23", "NA", "", NA))) {
         df[, chr_num := 23]
     } else {
-        df <- df[!(chr_name %in% c("X", "x", "23"))]
-        df[, chr_num := as.integer(chr_name)]
+        # Keep everything except X for the standard autosome plot path
+        df <- df[!(gsub("chr", "", as.character(chr), ignore.case = TRUE) %in% c("X", "x", "23"))]
+        df[, chr_num := as.integer(gsub("chr", "", as.character(chr), ignore.case = TRUE))]
     }
-    return(df[!is.na(chr_num)]) # Drops non-autosomes, Y, M, or parsing errors
+    return(df[!is.na(chr_num)]) 
 }
 
 snp_plot  <- prepare_coords(snp_plot)
