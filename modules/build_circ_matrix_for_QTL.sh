@@ -239,7 +239,8 @@ avg_path <- paste0(out_dir, "filtered_averages_summary.tmp")
 df_avg <- read.delim(avg_path, header=TRUE, sep="\t")
 df_avg <- df_avg[df_avg$avg_reads > 0, ]
 
-bin_width <- 0.2
+# Decreased bin width from 0.2 to 0.05 for sharper granularity
+bin_width <- 0.05
 breaks_seq <- seq(0, max(df_avg$avg_reads) + bin_width, by=bin_width)
 h <- hist(df_avg$avg_reads, breaks=breaks_seq, plot=FALSE)
 
@@ -260,21 +261,21 @@ png(png_out_avg, width=3400, height=1600, res=300)
 
 layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
 
-# Panel 1 (Averages 0 to 20)
+# Panel 1 (Averages 0 to 20) - Color updated to darkorange2
 par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
-plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="darkorange2", lwd=1.5, lend="square",
      xlim=c(0, 20), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
 axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
 mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
 mtext("Average number of back-spliced reads per sample", side=1, line=2.5, at=12.5, cex=1.1)
 mtext("Distribution of circRNA Expression by Average Back-spliced Read Support", side=3, line=1, at=12.5, font=2, cex=1.2)
 
-# Panel 2 (Averages Extreme Outliers)
+# Panel 2 (Averages Extreme Outliers) - Color updated to darkorange2
 par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
 max_avg <- max(plot_data_avg$reads_bin_center)
 xlim_p2_avg <- c(max_avg * 0.15, max_avg * 1.05)
 
-plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="darkorange2", lwd=1.5, lend="square",
      xlim=xlim_p2_avg, ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
 
 axis(1, at=round(seq(xlim_p2_avg[1], xlim_p2_avg[2], length.out=3), 1))
@@ -285,10 +286,13 @@ for(i in 1:nrow(top_outliers_avg)) {
     if(x_pos >= xlim_p2_avg[1] & x_pos <= xlim_p2_avg[2]) {
         segments(x0=x_pos, y0=10000, x1=x_pos, y1=3, lwd=1.2, col="black", lty=2)
         segments(x0=x_pos, y0=12000, x1=x_pos, y1=25000, lwd=1.5, col="black")
-        text(x=x_pos, y=30000, labels=top_outliers_avg$circ_id[i], srt=90, adj=0, cex=0.5, font=2, col="black")
+        # Text tilted to 45 degrees using srt=45, with adjusted base alignment
+        text(x=x_pos, y=30000, labels=top_outliers_avg$circ_id[i], srt=45, adj=c(0, 0), cex=0.5, font=2, col="black")
     }
 }
-text(xlim_p2_avg[1] - (xlim_p2_avg[1]*0.08), 0.5, "//", cex=1.2) 
+
+# Shifted the // break marker leftward out of the graph frame to prevent overlap
+text(xlim_p2_avg[1] - (xlim_p2_avg[1] * 0.18), 0.5, "//", cex=1.2) 
 dev.off()
 
 print("SUCCESS: Both graphs (PNG) and both plotting coordinates (txt) saved cleanly.")
