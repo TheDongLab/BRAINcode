@@ -44,7 +44,7 @@ def find_circ(sample_id):
             return c
     return None
 
-# Match paths (Garbage medical rows naturally get None here since no folder matches them)
+# Match paths
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
 
@@ -136,7 +136,8 @@ print(f"Top Subject (>0%): {top_sample} ({active_counts[top_sample]:,} circs)")
 print("\n" + "="*40)
 print("       === CHROMOSOMES ===")
 print("="*40)
-chrs_series = filtered_circ_ids.str.split(':').str[0]
+# FIX: reset_index aligns indices so value_counts sums up perfectly to the matrix total
+chrs_series = filtered_circ_ids.reset_index(drop=True).str.split(':').str[0]
 chr_counts = chrs_series.value_counts()
 chr_order = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY", "chrM"]
 for c in chr_order:
@@ -162,6 +163,10 @@ plot_data <- data.frame(
     circ_count = as.numeric(counts_table)
 )
 
+# Sort and extract top 5 extreme expression outliers to cleanly annotate
+df_sorted <- df[order(-df$total_reads), ]
+top_outliers <- head(df_sorted, 5)
+
 png_out <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
 png(png_out, width=3400, height=1600, res=300)
 
@@ -172,8 +177,7 @@ layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
 y_ticks <- 10^(0:5)
 
 # --- PANEL 1: Low to Moderate Abundance (Linear 0 to 300) ---
-# Increased left margin to 6.5 to give the y-axis whole numbers room to breathe
-par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
+par(mar=c(4.5, 6.5, 3, 1.0), bty="n") 
 
 plot(plot_data$reads, plot_data$circ_count, 
      log="y", 
@@ -184,21 +188,29 @@ plot(plot_data$reads, plot_data$circ_count,
      xlim=c(0, 300),
      ylim=c(1, 100000),
      xlab="", 
-     ylab="", # Cleared out here so we can custom-align it via mtext
+     ylab="", 
      main="",
-     yaxt="n")
+     yaxt="n",
+     xaxt="n")
 
-# Force clean whole integer formatting with big.mark grouping commas
+# Reconstruct clean open-border axis lines
+axis(1, at=seq(0, 300, 50))
 axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
 
-# Explicitly positioned titles with clear spacing offsets (line=4.2 pushes it away from numbers)
+# Explicitly positioned titles with clear spacing offsets
 mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
 mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
 mtext("Distribution of circRNA Expression by Back-spliced Read Support", side=3, line=1, at=185, font=2, cex=1.2)
 
+# Custom geometric inner break slashes on Panel 1's bottom right axis line
+par(xpd=TRUE)
+axis_y_bottom <- 1
+# Slanted axis cuts on Panel 1 right break side
+segments(x0=c(295, 301), y0=c(0.7, 0.7), x1=c(299, 305), y1=c(1.4, 1.4), lwd=2, col="black")
+
 
 # --- PANEL 2: Extreme High-End Outliers (10k to 80k) ---
-par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
+par(mar=c(4.5, 1.0, 3, 1.5), bty="n") 
 
 plot(plot_data$reads, plot_data$circ_count, 
      log="y", 
@@ -214,11 +226,25 @@ plot(plot_data$reads, plot_data$circ_count,
      yaxt="n", 
      xaxt="n")
 
-axis(1, at=c(10000, 70000), labels=c("10k", "70k"))
+axis(1, at=c(10000, 40000, 70000), labels=c("10k", "40k", "70k"))
 
-# Draw the standard publication axis break indicator channel (//)
-par(xpd=TRUE)
-text(2500, 0.5, "//", cex=1.2) 
+# Slanted axis cuts on Panel 2 left break side to complete the look
+segments(x0=c(7000, 9000), y0=c(0.7, 0.7), x1=c(11000, 13000), y1=c(1.4, 1.4), lwd=2, col="black")
+
+# --- ADD TICK POINTERS & CIRCRNA ID TEXT LABELS ---
+for(i in 1:nrow(top_outliers)) {
+    x_pos <- top_outliers$total_reads[i]
+    y_pos <- plot_data$circ_count[plot_data$reads == x_pos]
+    if(length(y_pos) == 0) y_pos <- 1
+    
+    # Render annotations for features residing within Panel 2 coordinates
+    if(x_pos >= 10000 & x_pos <= 80000) {
+        # Pointer line above the bar apex
+        arrows(x1=x_pos, y1=y_pos * 1.6, x2=x_pos, y2=y_pos * 1.1, length=0.03, lwd=1.2, col="black")
+        # Text string turned 90 degrees vertical
+        text(x=x_pos, y=y_pos * 2.6, labels=top_outliers$circ_id[i], srt=90, adj=0, cex=0.6, font=2, col="gray15")
+    }
+}
 
 dev.off()
 print(paste("Split-axis plot saved successfully to:", png_out))
