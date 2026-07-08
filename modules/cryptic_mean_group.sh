@@ -9,9 +9,6 @@
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Error: Missing arguments."
     echo "Usage: sbatch cryptic_mean_group.sh <CHROMOSOME> <COORD_PATTERN> [STRAND]"
-    echo "Examples:"
-    echo "  sbatch cryptic_mean_group.sh chr8 79611214               (Prefix pattern, any strand)"
-    echo "  sbatch cryptic_mean_group.sh chr8 79611214-79616822 '+'  (Exact match, plus strand)"
     exit 1
 fi
 
@@ -25,7 +22,6 @@ module load R
 
 echo "Job started at: $(date)"
 echo "Target: ${CHR} looking for coordinates matching: ${COORD_PAT}"
-if [ ! -z "${STRAND}" ]; then echo "Strand Filter: ${STRAND}"; fi
 echo "----------------------------------------"
 
 Rscript -e '
@@ -35,11 +31,8 @@ target_chr    <- Sys.getenv("CHR")
 coord_pat     <- Sys.getenv("COORD_PAT")
 target_strand <- Sys.getenv("STRAND")
 
-if (target_strand == "") {
-    target_strand <- "[+-]"
-}
+if (target_strand == "") { target_strand <- "[+-]" }
 
-# Dynamic exact vs. prefix mapping with literal string escape for plus signs
 if (grepl("-", coord_pat)) {
     safe_strand <- gsub("\\+", "\\\\+", target_strand)
     regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat, "$")
@@ -61,31 +54,38 @@ print(matched_rows)
 cat("\nUsing the primary match:", matched_rows[1], "\n\n")
 
 actual_row_name <- matched_rows[1]
-
-# Extract values
 junc_counts <- as.numeric(expr[actual_row_name, ])
 names(junc_counts) <- colnames(expr)
 
-# Sanitize sample IDs using lowercase "externalsampleid"
 clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", names(junc_counts)))
 names(junc_counts) <- clean_expr_ids
 
-# Map data 
 meta$splicing_value <- junc_counts[match(clean_meta_ids, names(junc_counts))]
 
-# QC Check
 valid_counts <- sum(!is.na(meta$splicing_value))
 cat("Total metadata rows:", nrow(meta), "\n")
 cat("Successfully matched samples:", valid_counts, "\n\n")
 
-if (valid_counts == 0) {
-    stop("Error: 0 samples matched between metadata and splicing matrix.")
-}
+# --- CLEAN AND MERGE CATEGORIES ---
+# 1. Strip raw trailing newlines and whitespace
+meta$subject_group <- trimws(gsub("[\r\n\t]+", " ", meta$subject_group))
 
-# Compute and output the categorical means using lowercase "subject_group"
+# 2. Merge Control duplicates
+meta$subject_group[meta$subject_group == "Non Neurological Control"] <- "Non-Neurological Control"
+
+# 3. Merge ALS Spectrum duplicates
+meta$subject_group[meta$subject_group == "ALS Spectrum MND, Other Neurological Diseases"] <- "ALS Spectrum MND, Other Neurological Disorders"
+
+# 4. Merge Other Neuro duplicates
+meta$subject_group[meta$subject_group == "Other Neurological Disorders"] <- "Other Neurological Disorders"
+
+# Compute the categorical means
 results <- aggregate(splicing_value ~ subject_group, data=meta, FUN=mean, na.rm=TRUE)
-print(results, row.names=FALSE)
+
+# Force R to extend its print console width so columns stay side-by-side
+options(width = 150)
+print(results, row.names=FALSE, right=FALSE)
 '
 
 echo "----------------------------------------"
