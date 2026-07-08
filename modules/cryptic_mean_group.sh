@@ -6,11 +6,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=28G
 
 if [ -z "$1" ]; then
     echo "Error: No Coordinate Pattern provided (e.g., chr19:17642)."
-    echo "Usage: sbatch get_splicing_means.sh <COORD_PATTERN>"
+    echo "Usage: sbatch cryptic_mean_group.sh <COORD_PATTERN>"
     exit 1
 fi
 
