@@ -9,37 +9,41 @@
 #SBATCH --mem=28G
 
 if [ -z "$1" ]; then
-    echo "Error: No Coordinate Pattern provided (e.g., chr19:17642)."
-    echo "Usage: sbatch cryptic_mean_group.sh <COORD_PATTERN>"
+    echo "Error: Missing arguments."
+    echo "Usage: sbatch cryptic_mean_group.sh <CHROMOSOME> <COORD_START_DIGITS>"
+    echo "Example: sbatch cryptic_mean_group.sh chr19 17642"
     exit 1
 fi
 
-# Paths updated for the splicing matrix
 export METADATA="/home/zw529/donglab/data/target_ALS/collections.postmortem_tissue_core.rnaseq_metadata.csv"
 export SPLICE_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/splicing_matrix.txt"
-export COORD_PATTERN="$1"
+export CHR="$1"
+export COORD_PAT="$2"
 
 module load R
 
 echo "Job started at: $(date)"
-echo "Target Junction Pattern: ${COORD_PATTERN}"
+echo "Target: ${CHR} looking for coordinates starting with ${COORD_PAT}"
 echo "----------------------------------------"
 
 Rscript -e '
-meta_path   <- Sys.getenv("METADATA")
+meta_path <- Sys.getenv("METADATA")
 splice_path <- Sys.getenv("SPLICE_MATRIX")
-coord_pat   <- Sys.getenv("COORD_PATTERN")
+target_chr  <- Sys.getenv("CHR")
+coord_pat   <- Sys.getenv("COORD_PAT")
 
 meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
-# Using read.table assuming splicing_matrix.txt is tab-separated with junction_id as column 1
 expr <- read.table(splice_path, header=TRUE, row.names=1, check.names=FALSE)
 
-matched_rows <- grep(coord_pat, rownames(expr), value=TRUE)
+# Build a regex that matches the chromosome, the strand indicator, and then the coordinate pattern
+# Example: ^chr19:[+-]:17642
+regex_pattern <- paste0("^", target_chr, ":[+-]:", coord_pat)
+
+matched_rows <- grep(regex_pattern, rownames(expr), value=TRUE)
 if (length(matched_rows) == 0) {
-    stop(paste("Error: No junctions matching pattern", coord_pat, "found in matrix."))
+    stop(paste("Error: No junctions matching regex", regex_pattern, "found in matrix."))
 }
 
-# Print out matches so you can see all junctions passing through the cryptic region
 cat("Found", length(matched_rows), "matching junction(s):\n")
 print(matched_rows)
 cat("\nUsing the primary match:", matched_rows[1], "\n\n")
@@ -50,7 +54,7 @@ actual_row_name <- matched_rows[1]
 junc_counts <- as.numeric(expr[actual_row_name, ])
 names(junc_counts) <- colnames(expr)
 
-# Sanitize sample IDs (hyphens, underscores, or periods converted to standard dots)
+# Sanitize sample IDs
 clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["Externalsampleid"]]))
 clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", names(junc_counts)))
 names(junc_counts) <- clean_expr_ids
