@@ -141,6 +141,7 @@ EOF
         --protein "$PROTEIN" \
         --support "$SUPPORT_FILE" \
         --annotation_file "${STAR_REF_DIR}/geneInfo.tab" \
+        --intron_BED "${STAR_REF_DIR}/introns.merged.bed" \
         --gff "${EXON_GFF_BASE}.gtf" \
         --outdir "$TISSUE_OUT_DIR" \
         --paired yes \
