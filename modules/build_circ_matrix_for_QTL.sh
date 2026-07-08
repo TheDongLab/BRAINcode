@@ -162,13 +162,14 @@ module load R
 Rscript - <<'EOF'
 # Define global shared variables upfront to prevent inner-loop execution drops
 y_ticks <- 10^(0:5)
+out_dir <- "/home/zw529/donglab/data/target_ALS/QTL/"
 
 # =========================================================================
 # GRAPH 1: COHORT TOTAL DISTRIBUTION (SUMMED SPLIT-AXIS PLOT)
 # =========================================================================
-print("Generating original cohort total split-axis distribution plot...")
+print("Generating original cohort total split-axis distribution plot and table...")
 
-data_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_reads_summary.tmp"
+data_path <- paste0(out_dir, "filtered_reads_summary.tmp")
 df_tot <- read.delim(data_path, header=TRUE, sep="\t")
 df_tot <- df_tot[df_tot$total_reads > 0, ]
 
@@ -178,10 +179,14 @@ plot_data_tot <- data.frame(
     circ_count = as.numeric(counts_table_tot)
 )
 
+# --- SAVE TABLE 1: TOTALS DATA ---
+write.table(plot_data_tot, paste0(out_dir, "circ_abundance_distribution_table.txt"), 
+            sep="\t", row.names=FALSE, quote=FALSE)
+
 df_tot_sorted <- df_tot[order(-df_tot$total_reads), ]
 top_outliers_tot <- head(df_tot_sorted, 5)
 
-png_out_tot <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
+png_out_tot <- paste0(out_dir, "circ_abundance_distribution.png")
 png(png_out_tot, width=3400, height=1600, res=300)
 
 layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
@@ -217,9 +222,9 @@ dev.off()
 # =========================================================================
 # GRAPH 2: CROSS-SUBJECT AVERAGES DISTRIBUTION (AVERAGED SPLIT-AXIS PLOT)
 # =========================================================================
-print("Generating new cohort average split-axis distribution plot...")
+print("Generating new cohort average split-axis distribution plot and table...")
 
-avg_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_averages_summary.tmp"
+avg_path <- paste0(out_dir, "filtered_averages_summary.tmp")
 df_avg <- read.delim(avg_path, header=TRUE, sep="\t")
 df_avg <- df_avg[df_avg$avg_reads > 0, ]
 
@@ -228,21 +233,25 @@ breaks_seq <- seq(0, max(df_avg$avg_reads) + bin_width, by=bin_width)
 h <- hist(df_avg$avg_reads, breaks=breaks_seq, plot=FALSE)
 
 plot_data_avg <- data.frame(
-    reads = h$mids[h$counts > 0],
+    reads_bin_center = h$mids[h$counts > 0],
     circ_count = h$counts[h$counts > 0]
 )
+
+# --- SAVE TABLE 2: AVERAGES DATA ---
+write.table(plot_data_avg, paste0(out_dir, "circ_abundance_averages_table.txt"), 
+            sep="\t", row.names=FALSE, quote=FALSE)
 
 df_avg_sorted <- df_avg[order(-df_avg$avg_reads), ]
 top_outliers_avg <- head(df_avg_sorted, 5)
 
-png_out_avg <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_averages.png"
+png_out_avg <- paste0(out_dir, "circ_abundance_averages.png")
 png(png_out_avg, width=3400, height=1600, res=300)
 
 layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
 
 # Panel 1 (Averages 0 to 20)
 par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
-plot(plot_data_avg$reads, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
      xlim=c(0, 20), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
 axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
 mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
@@ -251,10 +260,10 @@ mtext("Distribution of circRNA Expression by Average Back-spliced Read Support",
 
 # Panel 2 (Averages Extreme Outliers)
 par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
-max_avg <- max(plot_data_avg$reads)
+max_avg <- max(plot_data_avg$reads_bin_center)
 xlim_p2_avg <- c(max_avg * 0.15, max_avg * 1.05)
 
-plot(plot_data_avg$reads, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
      xlim=xlim_p2_avg, ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
 
 axis(1, at=round(seq(xlim_p2_avg[1], xlim_p2_avg[2], length.out=3), 1))
@@ -271,5 +280,5 @@ for(i in 1:nrow(top_outliers_avg)) {
 text(xlim_p2_avg[1] - (xlim_p2_avg[1]*0.08), 0.5, "//", cex=1.2) 
 dev.off()
 
-print("SUCCESS: Both total and average PNG plots saved cleanly.")
+print("SUCCESS: Both graphs (PNG) and both plotting coordinates (txt) saved cleanly.")
 EOF
