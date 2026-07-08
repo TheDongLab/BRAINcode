@@ -51,7 +51,7 @@ if (grepl("-", coord_pat)) {
     regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat)
 }
 
-meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
+meta <- read.delim(meta_path, sep=",", header=TRUE, quote="\"", fill=TRUE, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(splice_path, header=TRUE, row.names=1, check.names=FALSE)
 
 matched_rows <- grep(regex_pattern, rownames(expr), value=TRUE)
