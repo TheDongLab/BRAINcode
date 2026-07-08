@@ -61,9 +61,25 @@ if (valid_counts == 0) {
     stop("Error: 0 rows matched after converting hyphens/underscores.")
 }
 
+# --- CLEAN AND MERGE CATEGORIES ---
+# 1. Strip raw trailing newlines and whitespace
+meta$subject_group <- trimws(gsub("[\r\n\t]+", " ", meta$subject_group))
+
+# 2. Merge Control duplicates
+meta$subject_group[meta$subject_group == "Non Neurological Control"] <- "Non-Neurological Control"
+
+# 3. Merge ALS Spectrum duplicates
+meta$subject_group[meta$subject_group == "ALS Spectrum MND, Other Neurological Diseases"] <- "ALS Spectrum MND, Other Neurological Disorders"
+
+# 4. Merge Other Neuro duplicates
+meta$subject_group[meta$subject_group == "Other Neurological Disorders"] <- "Other Neurological Disorders"
+
 # Compute and output the categorical means using lowercase group header
 results <- aggregate(expression ~ subject_group, data=meta, FUN=mean, na.rm=TRUE)
-print(results, row.names=FALSE)
+
+# Force R to extend its print console width so columns stay side-by-side
+options(width = 150)
+print(results, row.names=FALSE, right=FALSE)
 '
 
 echo "----------------------------------------"
