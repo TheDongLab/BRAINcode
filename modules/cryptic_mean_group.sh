@@ -16,7 +16,8 @@ if [ -z "$1" ] || [ -z "$2" ]; then
     exit 1
 fi
 
-export METADATA="/home/zw529/donglab/data/target_ALS/collections.postmortem_tissue_core.rnaseq_metadata.csv"
+# Updated metadata file path here
+export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export SPLICE_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/splicing_matrix.txt"
 export CHR="$1"
 export COORD_PAT="$2"
@@ -36,14 +37,12 @@ target_chr    <- Sys.getenv("CHR")
 coord_pat     <- Sys.getenv("COORD_PAT")
 target_strand <- Sys.getenv("STRAND")
 
-# If strand is empty, default to a regex class matching both + and -
 if (target_strand == "") {
     target_strand <- "[+-]"
 }
 
-# If user provided a specific full range (contains a hyphen), force an exact string end anchor ($)
+# Dynamic exact vs. prefix mapping with literal string escape for plus signs
 if (grepl("-", coord_pat)) {
-    # Escape the strand character using gsub to safely handle the literal '+'
     safe_strand <- gsub("\\+", "\\\\+", target_strand)
     regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat, "$")
 } else {
@@ -51,7 +50,7 @@ if (grepl("-", coord_pat)) {
     regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat)
 }
 
-meta <- read.delim(meta_path, sep=",", header=TRUE, quote="\"", fill=TRUE, check.names=FALSE, stringsAsFactors=FALSE)
+meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(splice_path, header=TRUE, row.names=1, check.names=FALSE)
 
 matched_rows <- grep(regex_pattern, rownames(expr), value=TRUE)
