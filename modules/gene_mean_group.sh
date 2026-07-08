@@ -3,8 +3,6 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/gene_mean_group_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/gene_mean_group_%j.err
 #SBATCH --time=00:20:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 
@@ -15,7 +13,7 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
-export METADATA="/home/zw529/donglab/data/target_ALS/collections.postmortem_tissue_core.rnaseq_metadata.csv"
+export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export EXPR_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/expression_matrix.txt"
 export GENE_ID="$1"
 
