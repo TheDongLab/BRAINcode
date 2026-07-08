@@ -3,7 +3,6 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/cryptic_mean_group_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/cryptic_mean_group_%j.err
 #SBATCH --time=00:20:00
-#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=28G
 
@@ -69,7 +68,7 @@ junc_counts <- as.numeric(expr[actual_row_name, ])
 names(junc_counts) <- colnames(expr)
 
 # Sanitize sample IDs
-clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["Externalsampleid"]]))
+clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", names(junc_counts)))
 names(junc_counts) <- clean_expr_ids
 
