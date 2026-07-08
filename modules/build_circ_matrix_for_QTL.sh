@@ -90,6 +90,7 @@ for next_df in reads_list[1:]:
     reads_master = reads_master.merge(next_df, on="circ_id", how="outer")
 reads_master = reads_master.fillna(0)
 
+# Total Cohort Sums
 total_reads_per_circ = reads_master.drop(columns=["circ_id"]).sum(axis=1)
 reads_summary = pd.DataFrame({"circ_id": reads_master["circ_id"], "total_reads": total_reads_per_circ})
 
@@ -105,14 +106,24 @@ filtered_numeric = numeric_data[variant_mask].copy()
 filtered_circ_ids = circ_ids[variant_mask]
 expr_final = pd.concat([filtered_circ_ids.reset_index(drop=True), filtered_numeric.reset_index(drop=True)], axis=1)
 
-# Save Matrix & Metadata Outputs
+# --- TRACK PER-SAMPLE PROFILE AVERAGES SAFELY ---
+reads_filtered = reads_master[reads_master["circ_id"].isin(filtered_circ_ids)].copy()
+mean_reads_per_circ = reads_filtered.drop(columns=["circ_id"]).mean(axis=1)
+
+averages_summary = pd.DataFrame({
+    "circ_id": reads_filtered["circ_id"],
+    "avg_reads": mean_reads_per_circ
+})
+
+# Save Outputs
 expr_final.to_csv(OUT / "circ_matrix.txt", sep="\t", index=False)
 rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
     OUT / "circ_sample_metadata.csv", index=False
 )
 
-# Save intermediate reads summary for R plotting step
+# Export individual data summaries for both plots
 reads_summary[reads_summary["circ_id"].isin(filtered_circ_ids)].to_csv(OUT / "filtered_reads_summary.tmp", sep="\t", index=False)
+averages_summary.to_csv(OUT / "filtered_averages_summary.tmp", sep="\t", index=False)
 
 # GENERATE RUN STATISTICS
 num_circs, num_samples = filtered_numeric.shape
@@ -120,7 +131,7 @@ total_cells = filtered_numeric.size
 nonzero_cells = (filtered_numeric > 0).sum().sum()
 
 print("\n" + "="*40)
-print("       === MATRIX STATS ===")
+print("        === MATRIX STATS ===")
 print("="*40)
 print(f"Total circRNAs: {num_circs:,}")
 print(f"Total Samples: {num_samples:,}")
@@ -134,9 +145,8 @@ top_sample = active_counts.idxmax()
 print(f"Top Subject (>0%): {top_sample} ({active_counts[top_sample]:,} circs)")
 
 print("\n" + "="*40)
-print("       === CHROMOSOMES ===")
+print("        === CHROMOSOMES ===")
 print("="*40)
-# FIX: reset_index aligns indices so value_counts sums up perfectly to the matrix total
 chrs_series = filtered_circ_ids.reset_index(drop=True).str.split(':').str[0]
 chr_counts = chrs_series.value_counts()
 chr_order = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY", "chrM"]
@@ -150,100 +160,116 @@ module --force purge
 module load R
 
 Rscript - <<'EOF'
-print("Generating clean annotated split-axis abundance distribution plot using R...")
-
-data_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_reads_summary.tmp"
-df <- read.delim(data_path, header=TRUE, sep="\t")
-
-df <- df[df$total_reads > 0, ]
-
-counts_table <- table(df$total_reads)
-plot_data <- data.frame(
-    reads = as.numeric(names(counts_table)),
-    circ_count = as.numeric(counts_table)
-)
-
-# Sort and extract top 5 extreme expression outliers to cleanly annotate
-df_sorted <- df[order(-df$total_reads), ]
-top_outliers <- head(df_sorted, 5)
-
-png_out <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
-png(png_out, width=3400, height=1600, res=300)
-
-# Establish a 1-row, 2-column layout (80% width for main data, 20% for high-end outliers)
-layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
-
-# Shared Y-axis log tiers
+# Define global shared variables upfront to prevent inner-loop execution drops
 y_ticks <- 10^(0:5)
 
-# --- PANEL 1: Low to Moderate Abundance (Linear 0 to 300) ---
+# =========================================================================
+# GRAPH 1: COHORT TOTAL DISTRIBUTION (SUMMED SPLIT-AXIS PLOT)
+# =========================================================================
+print("Generating original cohort total split-axis distribution plot...")
+
+data_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_reads_summary.tmp"
+df_tot <- read.delim(data_path, header=TRUE, sep="\t")
+df_tot <- df_tot[df_tot$total_reads > 0, ]
+
+counts_table_tot <- table(df_tot$total_reads)
+plot_data_tot <- data.frame(
+    reads = as.numeric(names(counts_table_tot)),
+    circ_count = as.numeric(counts_table_tot)
+)
+
+df_tot_sorted <- df_tot[order(-df_tot$total_reads), ]
+top_outliers_tot <- head(df_tot_sorted, 5)
+
+png_out_tot <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_distribution.png"
+png(png_out_tot, width=3400, height=1600, res=300)
+
+layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
+
+# Panel 1 (Totals 0 to 300)
 par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
-
-plot(plot_data$reads, plot_data$circ_count, 
-     log="y", 
-     type="h", 
-     col="red4", 
-     lwd=2,
-     lend="square",
-     xlim=c(0, 300),
-     ylim=c(1, 100000),
-     xlab="", 
-     ylab="", 
-     main="",
-     yaxt="n")
-
-# Force clean whole integer formatting with big.mark grouping commas
+plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
+     xlim=c(0, 300), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
 axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
-
-# Explicitly positioned titles with clear spacing offsets
 mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
 mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
-mtext("Distribution of circRNA Expression by Back-spliced Read Support", side=3, line=1, at=185, font=2, cex=1.2)
+mtext("Distribution of circRNA Expression by Back-spliced Read Support (Totals)", side=3, line=1, at=185, font=2, cex=1.2)
 
-
-# --- PANEL 2: Extreme High-End Outliers (10k to 80k) ---
-# Reverted to bty="n" to eliminate the false vertical line at 10k
+# Panel 2 (Totals 10k to 80k Outliers)
 par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
-
-plot(plot_data$reads, plot_data$circ_count, 
-     log="y", 
-     type="h", 
-     col="red4", 
-     lwd=2,
-     lend="square",
-     xlim=c(10000, 80000),
-     ylim=c(1, 100000),
-     xlab="", 
-     ylab="",
-     main="",
-     yaxt="n", 
-     xaxt="n")
-
+plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
+     xlim=c(10000, 80000), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
 axis(1, at=c(10000, 40000, 70000), labels=c("10k", "40k", "70k"))
 
-
-# --- ADD TICK POINTERS & CIRCRNA ID TEXT LABELS ---
 par(xpd=TRUE)
-for(i in 1:nrow(top_outliers)) {
-    x_pos <- top_outliers$total_reads[i]
-    
-    # Robust numeric matching to avoid floating-point comparison failures
-    idx <- which.min(abs(plot_data$reads - x_pos))
-    y_pos <- plot_data$circ_count[idx]
-    
-    # Only render if it falls within our Panel 2 window
+for(i in 1:nrow(top_outliers_tot)) {
+    x_pos <- top_outliers_tot$total_reads[i]
     if(x_pos >= 10000 & x_pos <= 80000) {
-        # Draw a clean vertical tick mark right above the bar
-        segments(x0=x_pos, y0=y_pos * 1.3, x1=x_pos, y1=y_pos * 2.0, lwd=1.5, col="black")
-        # Draw the ID label vertically right over the tick
-        text(x=x_pos, y=y_pos * 2.5, labels=top_outliers$circ_id[i], srt=90, adj=0, cex=0.55, font=2, col="black")
+        segments(x0=x_pos, y0=10000, x1=x_pos, y1=3, lwd=1.2, col="black", lty=2)
+        segments(x0=x_pos, y0=12000, x1=x_pos, y1=25000, lwd=1.5, col="black")
+        text(x=x_pos, y=30000, labels=top_outliers_tot$circ_id[i], srt=90, adj=0, cex=0.5, font=2, col="black")
     }
 }
-
-
-# --- ORIGINAL LINE BREAK REVERSION ---
 text(2500, 0.5, "//", cex=1.2) 
-
 dev.off()
-print(paste("Split-axis plot saved successfully to:", png_out))
+
+
+# =========================================================================
+# GRAPH 2: CROSS-SUBJECT AVERAGES DISTRIBUTION (AVERAGED SPLIT-AXIS PLOT)
+# =========================================================================
+print("Generating new cohort average split-axis distribution plot...")
+
+avg_path <- "/home/zw529/donglab/data/target_ALS/QTL/filtered_averages_summary.tmp"
+df_avg <- read.delim(avg_path, header=TRUE, sep="\t")
+df_avg <- df_avg[df_avg$avg_reads > 0, ]
+
+bin_width <- 0.2
+breaks_seq <- seq(0, max(df_avg$avg_reads) + bin_width, by=bin_width)
+h <- hist(df_avg$avg_reads, breaks=breaks_seq, plot=FALSE)
+
+plot_data_avg <- data.frame(
+    reads = h$mids[h$counts > 0],
+    circ_count = h$counts[h$counts > 0]
+)
+
+df_avg_sorted <- df_avg[order(-df_avg$avg_reads), ]
+top_outliers_avg <- head(df_avg_sorted, 5)
+
+png_out_avg <- "/home/zw529/donglab/data/target_ALS/QTL/circ_abundance_averages.png"
+png(png_out_avg, width=3400, height=1600, res=300)
+
+layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
+
+# Panel 1 (Averages 0 to 20)
+par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
+plot(plot_data_avg$reads, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+     xlim=c(0, 20), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
+axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
+mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
+mtext("Average number of back-spliced reads per sample", side=1, line=2.5, at=12.5, cex=1.1)
+mtext("Distribution of circRNA Expression by Average Back-spliced Read Support", side=3, line=1, at=12.5, font=2, cex=1.2)
+
+# Panel 2 (Averages Extreme Outliers)
+par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
+max_avg <- max(plot_data_avg$reads)
+xlim_p2_avg <- c(max_avg * 0.15, max_avg * 1.05)
+
+plot(plot_data_avg$reads, plot_data_avg$circ_count, log="y", type="h", col="red4", lwd=3, lend="square",
+     xlim=xlim_p2_avg, ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
+
+axis(1, at=round(seq(xlim_p2_avg[1], xlim_p2_avg[2], length.out=3), 1))
+
+par(xpd=TRUE)
+for(i in 1:nrow(top_outliers_avg)) {
+    x_pos <- top_outliers_avg$avg_reads[i]
+    if(x_pos >= xlim_p2_avg[1] & x_pos <= xlim_p2_avg[2]) {
+        segments(x0=x_pos, y0=10000, x1=x_pos, y1=3, lwd=1.2, col="black", lty=2)
+        segments(x0=x_pos, y0=12000, x1=x_pos, y1=25000, lwd=1.5, col="black")
+        text(x=x_pos, y=30000, labels=top_outliers_avg$circ_id[i], srt=90, adj=0, cex=0.5, font=2, col="black")
+    }
+}
+text(xlim_p2_avg[1] - (xlim_p2_avg[1]*0.08), 0.5, "//", cex=1.2) 
+dev.off()
+
+print("SUCCESS: Both total and average PNG plots saved cleanly.")
 EOF
