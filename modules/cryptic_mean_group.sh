@@ -3,15 +3,16 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/cryptic_mean_group_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/cryptic_mean_group_%j.err
 #SBATCH --time=00:20:00
-#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=28G
 
-if [ -z "$1" ]; then
+if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch cryptic_mean_group.sh <CHROMOSOME> <COORD_START_DIGITS>"
-    echo "Example: sbatch cryptic_mean_group.sh chr19 17642"
+    echo "Usage: sbatch cryptic_mean_group.sh <CHROMOSOME> <COORD_PATTERN> [STRAND]"
+    echo "Examples:"
+    echo "  sbatch cryptic_mean_group.sh chr8 79611214               (Prefix pattern, any strand)"
+    echo "  sbatch cryptic_mean_group.sh chr8 79611214-79616822 '+'  (Exact match, plus strand)"
     exit 1
 fi
 
@@ -19,25 +20,37 @@ export METADATA="/home/zw529/donglab/data/target_ALS/collections.postmortem_tiss
 export SPLICE_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/splicing_matrix.txt"
 export CHR="$1"
 export COORD_PAT="$2"
+export STRAND="$3"
 
 module load R
 
 echo "Job started at: $(date)"
-echo "Target: ${CHR} looking for coordinates starting with ${COORD_PAT}"
+echo "Target: ${CHR} looking for coordinates matching: ${COORD_PAT}"
+if [ ! -z "${STRAND}" ]; then echo "Strand Filter: ${STRAND}"; fi
 echo "----------------------------------------"
 
 Rscript -e '
-meta_path <- Sys.getenv("METADATA")
-splice_path <- Sys.getenv("SPLICE_MATRIX")
-target_chr  <- Sys.getenv("CHR")
-coord_pat   <- Sys.getenv("COORD_PAT")
+meta_path     <- Sys.getenv("METADATA")
+splice_path   <- Sys.getenv("SPLICE_MATRIX")
+target_chr    <- Sys.getenv("CHR")
+coord_pat     <- Sys.getenv("COORD_PAT")
+target_strand <- Sys.getenv("STRAND")
+
+# If strand is empty, default to a regex class matching both + and -
+if (target_strand == "") {
+    target_strand <- "[+-]"
+}
+
+# If user provided a specific full range (contains a hyphen), force an exact string end anchor ($)
+# Otherwise, treat it as a flexible prefix match
+if (grepl("-", coord_pat)) {
+    regex_pattern <- paste0("^", target_chr, ":", target_strand, ":", coord_pat, "$")
+} else {
+    regex_pattern <- paste0("^", target_chr, ":", target_strand, ":", coord_pat)
+}
 
 meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(splice_path, header=TRUE, row.names=1, check.names=FALSE)
-
-# Build a regex that matches the chromosome, the strand indicator, and then the coordinate pattern
-# Example: ^chr19:[+-]:17642
-regex_pattern <- paste0("^", target_chr, ":[+-]:", coord_pat)
 
 matched_rows <- grep(regex_pattern, rownames(expr), value=TRUE)
 if (length(matched_rows) == 0) {
