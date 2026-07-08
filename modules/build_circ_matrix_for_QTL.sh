@@ -58,7 +58,18 @@ reads_list = []
 
 for _, row in rna_found.iterrows():
     sample = norm_id(row["externalsampleid"])
-    circ = pd.read_csv(row["circ_path"], sep=r"\s+")
+    circ_file = row["circ_path"]
+    
+    # DEFENSIVE CHECK: Skip if the path is a broken symlink or unreadable
+    if not circ_file.is_file():
+        print(f"Warning: Skipping {sample} - file missing or broken symlink: {circ_file}")
+        continue
+        
+    try:
+        circ = pd.read_csv(circ_file, sep=r"\s+")
+    except Exception as e:
+        print(f"Warning: Could not read {circ_file} due to error: {e}")
+        continue
     
     if "circ_percent" not in circ.columns or "readNumber" not in circ.columns:
         continue
