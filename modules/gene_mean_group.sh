@@ -11,7 +11,7 @@
 # Check if a Gene ID argument was passed
 if [ -z "$1" ]; then
     echo "Error: No Gene ID provided."
-    echo "Usage: sbatch get_group_means.sh <GENE_ID>"
+    echo "Usage: sbatch gene_mean_group.sh <GENE_ID>"
     exit 1
 fi
 
@@ -30,7 +30,7 @@ meta_path <- Sys.getenv("METADATA")
 expr_path <- Sys.getenv("EXPR_MATRIX")
 gene_id   <- Sys.getenv("GENE_ID")
 
-meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
+meta <- read.delim(meta_path, sep=",", header=TRUE, quote="\"", fill=TRUE, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(expr_path, header=TRUE, row.names=1, check.names=FALSE)
 
 matched_rows <- grep(gene_id, rownames(expr), value=TRUE)
