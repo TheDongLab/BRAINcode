@@ -42,8 +42,8 @@ cat("Matched row name in matrix:", actual_row_name, "\n")
 gene_counts <- as.numeric(expr[actual_row_name, ])
 names(gene_counts) <- colnames(expr)
 
-# --- SANITIZE IDS: Convert hyphens and underscores to periods ---
-clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["Externalsampleid"]]))
+# --- SANITIZE IDS: Convert hyphens and underscores to periods using lowercase header ---
+clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", names(gene_counts)))
 names(gene_counts) <- clean_expr_ids
 
@@ -61,8 +61,8 @@ if (valid_counts == 0) {
     stop("Error: 0 rows matched after converting hyphens/underscores.")
 }
 
-# Compute and output the categorical means
-results <- aggregate(expression ~ `Subject Group`, data=meta, FUN=mean, na.rm=TRUE)
+# Compute and output the categorical means using lowercase group header
+results <- aggregate(expression ~ subject_group, data=meta, FUN=mean, na.rm=TRUE)
 print(results, row.names=FALSE)
 '
 
