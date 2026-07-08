@@ -42,11 +42,13 @@ if (target_strand == "") {
 }
 
 # If user provided a specific full range (contains a hyphen), force an exact string end anchor ($)
-# Otherwise, treat it as a flexible prefix match
 if (grepl("-", coord_pat)) {
-    regex_pattern <- paste0("^", target_chr, ":", target_strand, ":", coord_pat, "$")
+    # Escape the strand character using gsub to safely handle the literal '+'
+    safe_strand <- gsub("\\+", "\\\\+", target_strand)
+    regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat, "$")
 } else {
-    regex_pattern <- paste0("^", target_chr, ":", target_strand, ":", coord_pat)
+    safe_strand <- gsub("\\+", "\\\\+", target_strand)
+    regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":", coord_pat)
 }
 
 meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
