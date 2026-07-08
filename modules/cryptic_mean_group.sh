@@ -15,7 +15,6 @@ if [ -z "$1" ] || [ -z "$2" ]; then
     exit 1
 fi
 
-# Updated metadata file path here
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export SPLICE_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/splicing_matrix.txt"
 export CHR="$1"
@@ -67,7 +66,7 @@ actual_row_name <- matched_rows[1]
 junc_counts <- as.numeric(expr[actual_row_name, ])
 names(junc_counts) <- colnames(expr)
 
-# Sanitize sample IDs
+# Sanitize sample IDs using lowercase "externalsampleid"
 clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", names(junc_counts)))
 names(junc_counts) <- clean_expr_ids
@@ -84,8 +83,8 @@ if (valid_counts == 0) {
     stop("Error: 0 samples matched between metadata and splicing matrix.")
 }
 
-# Compute and output the categorical means
-results <- aggregate(splicing_value ~ `Subject Group`, data=meta, FUN=mean, na.rm=TRUE)
+# Compute and output the categorical means using lowercase "subject_group"
+results <- aggregate(splicing_value ~ subject_group, data=meta, FUN=mean, na.rm=TRUE)
 print(results, row.names=FALSE)
 '
 
