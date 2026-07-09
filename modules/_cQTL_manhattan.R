@@ -24,27 +24,27 @@ message("## Reading data...")
 snp_plot  <- fread(input_file)
 lead_plot <- fread(lead_file)
 
-# Standardize column naming if necessary (MatrixEQTL uses gene, postprocess outputs circ_id)
+# Standardize column naming for circular RNA structures
 if("gene" %in% names(snp_plot)) setnames(snp_plot, "gene", "circ_id")
 if("gene" %in% names(lead_plot)) setnames(lead_plot, "gene", "circ_id")
 
 # Use FDR column if it exists, otherwise fall back to p-value
 if ("FDR" %in% names(snp_plot)) {
     message("## Using FDR column for significance threshold")
-    snp_plot$log10p <- -log10(snp_plot$`p-value`)
-    snp_plot$fdr_val <- snp_plot$FDR
+    snp_plot[, log10p <- -log10(`p-value`)]
+    snp_plot[, fdr_val <- FDR]
 } else {
     message("## FDR column not found, using p-value")
-    snp_plot$log10p <- -log10(snp_plot$`p-value`)
-    snp_plot$fdr_val <- snp_plot$`p-value`
+    snp_plot[, log10p <- -log10(`p-value`)]
+    snp_plot[, fdr_val <- `p-value`]
 }
 
 if ("FDR" %in% names(lead_plot)) {
-    lead_plot$log10p <- -log10(lead_plot$`p-value`)
-    lead_plot$fdr_val <- lead_plot$FDR
+    lead_plot[, log10p <- -log10(`p-value`)]
+    lead_plot[, fdr_val <- FDR]
 } else {
-    lead_plot$log10p <- -log10(lead_plot$`p-value`)
-    lead_plot$fdr_val <- lead_plot$`p-value`
+    lead_plot[, log10p <- -log10(`p-value`)]
+    lead_plot[, fdr_val <- `p-value`]
 }
 
 sig_thresh_fdr <- fdr_cutoff
@@ -54,10 +54,10 @@ prepare_coords <- function(df) {
     c_names <- gsub("chr", "", as.character(df$chr), ignore.case = TRUE)
     
     if (any(c_names %in% c("X", "x", "23")) && all(c_names %in% c("X", "x", "23", "NA", "", NA))) {
-        df$chr_num <- 23
+        df[, chr_num <- 23]
     } else {
         df <- df[!(gsub("chr", "", as.character(chr), ignore.case = TRUE) %in% c("X", "x", "23"))]
-        df$chr_num <- as.integer(gsub("chr", "", as.character(df$chr), ignore.case = TRUE))
+        df[, chr_num <- as.integer(gsub("chr", "", as.character(chr), ignore.case = TRUE))]
     }
     return(df[!is.na(chr_num)]) 
 }
@@ -70,8 +70,8 @@ is_chrx_run <- all(snp_plot$chr_num == 23)
 
 if (is_chrx_run) {
     message("## Setting up single-chromosome physical base-pair layout for ChrX...")
-    snp_plot$cum_pos <- snp_plot$pos
-    lead_plot$cum_pos <- lead_plot$pos
+    snp_plot[, cum_pos <- pos]
+    lead_plot[, cum_pos <- pos]
     
     max_pos <- max(snp_plot$pos, na.rm=TRUE)
     tick_breaks <- seq(0, max_pos, by = 25e6)
@@ -81,15 +81,15 @@ if (is_chrx_run) {
 } else {
     message("## Setting up standard multi-chromosomal cumulative stacked layout...")
     chr_info <- snp_plot[, .(chr_len = max(as.numeric(pos))), by = chr_num][order(chr_num)]
-    chr_info$tot <- shift(cumsum(as.numeric(chr_info$chr_len)), fill = 0)
+    chr_info[, tot <- shift(cumsum(as.numeric(chr_len)), fill = 0)]
     
     setkey(snp_plot, chr_num); setkey(lead_plot, chr_num); setkey(chr_info, chr_num)
     
     snp_plot  <- chr_info[snp_plot]
-    snp_plot$cum_pos <- snp_plot$pos + snp_plot$tot
+    snp_plot[, cum_pos := pos + tot]
     
     lead_plot <- chr_info[lead_plot]
-    lead_plot$cum_pos <- lead_plot$pos + lead_plot$tot
+    lead_plot[, cum_pos := pos + tot]
     
     snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
     tick_breaks <- snp_axis$centre
@@ -98,92 +98,108 @@ if (is_chrx_run) {
     x_axis_label <- "Chromosome"
 }
 
-extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)]
+extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 
 # ========================================================================
-# GENERATE DIAGNOSTIC PLOTS (MANHATTAN BY GENE, BY DIRECTION & QQ)
+# RE-MAP DIRECTIONALITY COLORS FOR INTERACTION MODES
 # ========================================================================
-out_pdf <- paste0(out_prefix, ".pdf")
-pdf(out_pdf, width = 14, height = 5)
+# Map slope/beta values based on MatrixEQTL output columns
+eff_col <- if("slope" %in% names(snp_plot)) "slope" else "beta"
 
-# 1. Setup Shared Metrics & Global Subsets
-snp_plot$is_sig <- ifelse(snp_plot$fdr_val <= sig_thresh_fdr, "Significant", "Non-Significant")
-snp_plot$bg_color <- ifelse(snp_plot$chr_num %% 2 == 0, "#7f8c8d", "#2c3e50")
-label_hits <- head(extreme_hits[fdr_val <= sig_thresh_fdr], 10)
-sig_thresh_line <- -log10(max(snp_plot$`p-value`[snp_plot$fdr_val <= sig_thresh_fdr], na.rm = TRUE))
+snp_plot[, color_beta <- get(eff_col)]
+lead_plot[, color_beta := get(eff_col)]
 
-# Shared theme parameters to minimize script bloating
-manhattan_theme <- theme_bw() + theme(
-    panel.grid.minor = element_blank(),
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
-    legend.position = "none"
-)
+if (run_type == "interaction" && !is.null(std_path) && file.exists(std_path)) {
+    message("## Interaction mode detected. Fetching baseline cQTL directionality for coloring...")
+    
+    std_df <- fread(std_path)
+    if("gene" %in% names(std_df)) setnames(std_df, "gene", "circ_id")
+    
+    snp_plot[, match_key := paste0(snpid, "_", circ_id)]
+    lead_plot[, match_key := paste0(snpid, "_", circ_id)]
+    std_df[, match_key := paste0(snpid, "_", circ_id)]
+    
+    std_betas <- std_df[, setNames(get(eff_col), match_key)]
+    
+    snp_plot[, color_beta := std_betas[match_key]]
+    lead_plot[, color_beta := std_betas[match_key]]
+    
+    snp_plot[is.na(color_beta), color_beta := get(eff_col)]
+    lead_plot[is.na(color_beta), color_beta := get(eff_col)]
+}
 
-# ─────────────────────────────────────────────────────────────────
-# LAYOUT 1: DIAGNOSTIC MANHATTAN PLOT (BY GENE LOCUS)
-# ─────────────────────────────────────────────────────────────────
-message("## Rendering Layout 1: Manhattan Overview by circRNA Locus...")
+# ========================================================================
+# PLOT 1: DIRECTIONAL COLORING (MODIFIED SLOPE-BASED)
+# ========================================================================
+message("## Assigning directional colors...")
+snp_plot[, color_cat := as.character(chr_num %% 2)]
+snp_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "increase"]
+snp_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "decrease"]
 
-unique_sig_circs <- sort(unique(snp_plot$circ_id[snp_plot$is_sig == "Significant"]))
-gene_palette <- scales::hue_pal()(length(unique_sig_circs))
-names(gene_palette) <- unique_sig_circs
+# Safely check for optional telomeric flag column if generated upstream
+if("telomeric_flag" %in% names(snp_plot)) {
+    snp_plot[telomeric_flag == TRUE, color_cat := "telomere"]
+}
 
-snp_plot$locus_color <- ifelse(snp_plot$is_sig == "Significant", snp_plot$circ_id, "Background")
+lead_plot[, color_cat := "none"]
+lead_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "inc_lead"]
+lead_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "dec_lead"]
 
-p_locus <- ggplot(snp_plot, aes(x = cum_pos / 1e6, y = log10p)) +
-    geom_point(data = subset(snp_plot, locus_color == "Background"), aes(colour = bg_color), size = 0.8, alpha = 0.4) +
-    geom_point(data = subset(snp_plot, locus_color != "Background"), aes(colour = locus_color), size = 1.2, alpha = 0.8) +
-    geom_hline(yintercept = sig_thresh_line, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
-    geom_text_repel(data = label_hits, aes(label = circ_id), size = 2.8, fontface = "bold", box.padding = 0.4, max.overlaps = 20) +
-    scale_x_continuous(breaks = tick_breaks / 1e6, labels = tick_labels, expand = x_expand) +
-    scale_colour_manual(values = c(gene_palette, "#7f8c8d" = "#D3D3D3", "#2c3e50" = "#A9A9A9")) +
-    labs(title = paste("Diagnostic cQTL Manhattan Plot (By Gene Locus) -", basename(out_prefix)),
-         subtitle = paste("N Significant Loci =", length(unique_sig_circs)), x = "Chromosome", y = expression(-log[10](p-value))) +
-    manhattan_theme
+message("## Creating Directional Plot...")
+p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
+    geom_point(aes(colour=color_cat), size=0.6, alpha=0.5) +
+    geom_point(data=lead_plot[color_cat != "none"], aes(x=cum_pos, y=log10p, colour=color_cat), shape=18, size=2.0) +
+    geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
+    geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), size=2.5, colour="darkgreen", fontface="italic", box.padding = 0.5, max.overlaps = Inf) +
+    scale_colour_manual(values=c("0"="#444444", "1"="#999999", "23"="#555555", "increase"="#E41A1C", "decrease"="#377EB8", "telomere"="#E69F00", "inc_lead"="#E41A1C", "dec_lead"="#377EB8", "none"="white")) +
+    scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
+    scale_y_continuous(expand=c(0.02, 0.5)) +
+    labs(title=paste("cis-cQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x=x_axis_label, y=expression(-log[10](p))) +
+    theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
 
-print(p_locus)
-
-# ─────────────────────────────────────────────────────────────────
-# LAYOUT 2: DIRECTIONAL MANHATTAN PLOT (EFFECT DIRECTION)
-# ─────────────────────────────────────────────────────────────────
-message("## Rendering Layout 2: Manhattan Overview by Effect Direction...")
-
-beta_col <- if("beta" %in% names(snp_plot)) "beta" else "slope"
-snp_plot$direction <- ifelse(snp_plot$is_sig == "Non-Significant", "Background",
-                             ifelse(snp_plot[[beta_col]] > 0, "Increased Expression", "Decreased Expression"))
-snp_plot$dir_color <- ifelse(snp_plot$direction == "Background", snp_plot$bg_color, snp_plot$direction)
-
-direction_palette <- c("Increased Expression" = "#E41A1C", "Decreased Expression" = "#377EB8", "#7f8c8d" = "#7f8c8d", "#2c3e50" = "#2c3e50")
-
-p_direction <- ggplot(snp_plot, aes(x = cum_pos / 1e6, y = log10p)) +
-    geom_point(data = subset(snp_plot, direction == "Background"), aes(colour = dir_color), size = 0.8, alpha = 0.5) +
-    geom_point(data = subset(snp_plot, direction != "Background"), aes(colour = dir_color), size = 1.2, alpha = 0.8) +
-    geom_hline(yintercept = sig_thresh_line, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
-    geom_text_repel(data = label_hits, aes(label = circ_id), size = 2.8, fontface = "bold", box.padding = 0.4, max.overlaps = 20, segment.color = "darkgreen") +
-    scale_x_continuous(breaks = tick_breaks / 1e6, labels = tick_labels, expand = x_expand) +
-    scale_colour_manual(values = direction_palette) +
-    labs(title = paste("cis-cQTL Manhattan Plot -", basename(out_prefix)),
-         subtitle = "Reds: Increased expression | Blues: Decreased expression", x = "Chromosome", y = expression(-log[10](p-value))) +
-    manhattan_theme
-
-print(p_direction)
-
-# ─────────────────────────────────────────────────────────────────
-# LAYOUT 3: THE Q-Q PLOT
-# ─────────────────────────────────────────────────────────────────
-message("## Rendering Layout 3: Q-Q Plot...")
-
-observed_p <- sort(snp_plot$`p-value`)
-qq_df <- data.frame(Expected = -log10((1:nrow(snp_plot)) / (nrow(snp_plot) + 1)), Observed = -log10(observed_p))
-
-p_qq <- ggplot(qq_df, aes(x = Expected, y = Observed)) +
-    geom_point(colour = "#34495e", size = 1.0, alpha = 0.6) +
-    geom_abline(intercept = 0, slope = 1, colour = "#e74c3c", linetype = "dashed", linewidth = 0.8) +
-    labs(title = paste("Quantile-Quantile (Q-Q) Plot -", basename(out_prefix)),
-         x = expression(Expected~~-log[10](p-value)), y = expression(Observed~~-log[10](p-value))) +
-    theme_bw() + theme(panel.grid.minor = element_blank())
-
-print(p_qq)
+out_file_png1 <- paste0(out_prefix, ".manhattan_by_SNP.png")
+png(out_file_png1, width=18, height=6, units="in", res=300)
+print(p1)
 dev.off()
 
-message("## Complete diagnostics pipeline complete! Output path: ", out_pdf)
+# ========================================================================
+# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE GENE ID (FIXED)
+# ========================================================================
+message("## Setting up circRNA ID diagnostic colors...")
+
+snp_sig  <- snp_plot[fdr_val <= sig_thresh_fdr]
+snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
+lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
+
+message("## Creating circRNA ID Diagnostic Plot...")
+p2 <- ggplot() +
+    geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
+               shape=21, stroke=0, size=0.6, alpha=0.3) +
+    geom_point(data=snp_sig, aes(x=cum_pos, y=log10p, colour=circ_id), size=0.6, alpha=0.7) +
+    geom_point(data=lead_sig, aes(x=cum_pos, y=log10p, colour=circ_id), shape=18, size=2.2) +
+    
+    geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
+    geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), 
+                    size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
+    
+    scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5", "23"="#CCCCCC"), guide="none") +
+    scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
+    scale_y_continuous(expand=c(0.02, 0.5)) +
+    
+    labs(title=paste("Diagnostic cQTL Manhattan Plot (By Gene Locus) -", basename(out_prefix)),
+         subtitle=sprintf("Every unique significant circular RNA structure is assigned an independent color | N Significant Loci = %d", uniqueN(snp_sig$circ_id)),
+         x=x_axis_label, y=expression(-log[10](p))) +
+    
+    theme_bw() + 
+    theme(legend.position="none", 
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor = element_blank())
+
+out_file_png2 <- paste0(out_prefix, ".manhattan_by_GENE.png")
+png(out_file_png2, width=18, height=6, units="in", res=300)
+print(p2)
+dev.off()
+
+message(paste("## Directional plot saved to:", out_file_png1))
+message(paste("## Structural diagnostic plot saved to:", out_file_png2))
+message("## Done!")
