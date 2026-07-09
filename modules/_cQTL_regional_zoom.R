@@ -32,11 +32,11 @@ setnames(snp_raw, "gene", "circ_id", skip_absent = TRUE)
 setnames(lead_raw, "gene", "circ_id", skip_absent = TRUE)
 
 # Calculate log p-values
-snp_raw[, log10p := -log10(`p-value`)]
-lead_raw[, log10p := -log10(`p-value`)]
+snp_raw[, log10p <- -log10(`p-value`)]
+lead_raw[, log10p <- -log10(`p-value`)]
 
 # Filter location reference map first to save memory overhead
-snp_loc[, chr_clean := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
+snp_loc[, chr_clean <- gsub("chr", "", as.character(chr), ignore.case = TRUE)]
 snp_loc_sub <- snp_loc[chr_clean == target_chr & pos >= start_pos & pos <= end_pos]
 
 # Keyed join
@@ -55,7 +55,7 @@ message(paste("## Top signal circRNA identified in this window:", top_circ))
 # PLOT 1: THE REGIONAL ZOOM PLOT (ALL VARIANTS)
 # ========================================================================
 message("## Building Plot 1: Full variant zoom...")
-snp_zoom[, color_cat := ifelse(circ_id == top_circ & `p-value` <= 0.05, "Top circRNA Locus", "Other/Background")]
+snp_zoom[, color_cat <- ifelse(circ_id == top_circ & `p-value` <= 0.05, "Top circRNA Locus", "Other/Background")]
 extreme_hits <- lead_zoom[order(-log10p)][1:min(3, .N)]
 
 p1 <- ggplot() +
@@ -86,14 +86,14 @@ dev.off()
 message("## Building Plot 2: Lead variants summary structure...")
 
 lead_snps_per_circ <- snp_zoom[order(circ_id, -log10p), head(.SD, 1), by = circ_id]
-lead_snps_per_circ[, status := ifelse(circ_id == top_circ, "Primary Locus Driver", "Secondary Target circRNA")]
+lead_snps_per_circ[, status <- ifelse(circ_id == top_circ, "Primary Locus Driver", "Secondary Target circRNA")]
 
 p2 <- ggplot(data = lead_snps_per_circ, aes(x = pos / 1e6, y = log10p)) +
     geom_hline(yintercept = 5, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
     geom_point(aes(colour = status), size = 4.0, alpha = 0.9) +
     scale_colour_manual(values = c("Primary Locus Driver" = "#E41A1C", "Secondary Target circRNA" = "#377EB8")) +
     geom_text_repel(aes(label = circ_id), size = 3.2, fontface = "bold", 
-                    box.padding = 0.4, max.overlaps = 20, cluster_groups = FALSE) +
+                box.padding = 0.4, max.overlaps = 50) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.02, 0.02)) +
     labs(title = sprintf("%s Lead cQTL Variant Summary", gsub("_", " ", tissue)),
          subtitle = "Pruned view: Showing only the top peak variant per unique circRNA structure",
@@ -124,10 +124,10 @@ if (nrow(anchor_lookup) > 0) {
     
     snp_diag <- snp_raw[snpid %in% snp_loc[chr_clean == target_chr & pos >= diag_start & pos <= diag_end, snpid]]
     setkey(snp_diag, snpid)
-    snp_diag := snp_diag[snp_loc, nomatch = NULL]
+    snp_diag <- snp_diag[snp_loc, nomatch = NULL]
     
     sig_circs <- unique(snp_diag[log10p >= 5, circ_id])
-    snp_diag[, color_group := ifelse(circ_id %in% sig_circs & log10p >= 5, circ_id, "Background / Non-Sig")]
+    snp_diag[, color_group <- ifelse(circ_id %in% sig_circs & log10p >= 5, circ_id, "Background / Non-Sig")]
     
     diag_leads <- lead_raw[snpid %in% snp_diag$snpid & circ_id %in% sig_circs]
     diag_leads <- diag_leads[snp_loc, nomatch = NULL, on = "snpid"]
