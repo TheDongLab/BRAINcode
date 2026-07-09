@@ -1,4 +1,4 @@
-#!/usr/bin/env BASH
+#!/usr/bin/env bash
 #SBATCH --job-name=run_cQTL
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_cQTL_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_cQTL_%j.err
