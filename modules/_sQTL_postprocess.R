@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 ###########################################
 # _sQTL_postprocess.R - ALL SIGNIFICANT PAIRS
-# Adapted from eQTL workflow v1.2
+# Adapted from eQTL workflow v1.2 (Corrected Meta-Analysis)
 ###########################################
 
 library(data.table)
@@ -65,7 +65,7 @@ fwrite(sqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quot
 message(sprintf("## Boxplot input file written with %d pairs (ordered by p-value)", nrow(sqtl_top)))
 
 ########################################################################
-# Meta-Analysis Logic
+# Meta-Analysis Logic (Fixed Effects Inverse-Variance Method)
 ########################################################################
 # Detect if we are running a Sex-stratified fold look
 current_sex <- ifelse(grepl("Male", out_prefix), "Male", "Female")
@@ -89,17 +89,28 @@ if (file.exists(other_sex_file)) {
                   sqtl_other[, .(junction_id, snpid, beta_other = beta, tstat_other = `t-stat`, pval_other = `p-value`)],
                   by=c("junction_id", "snpid"))
     
-    message(sprintf("## Performing Stouffer's Z-score meta-analysis on %d shared pairs...", nrow(meta)))
+    message(sprintf("## Performing Inverse-Variance Fixed-Effects meta-analysis on %d shared pairs...", nrow(meta)))
     
-    # Stouffer's Z-score Method (assuming equal weights/sample sizes)
-    meta[, z_curr  := qnorm(pval_curr / 2, lower.tail=FALSE) * sign(tstat_curr)]
-    meta[, z_other := qnorm(pval_other / 2, lower.tail=FALSE) * sign(tstat_other)]
-    meta[, z_meta  := (z_curr + z_other) / sqrt(2)]
-    meta[, p_meta  := 2 * pnorm(abs(z_meta), lower.tail=FALSE)]
-    meta[, FDR_meta := p.adjust(p_meta, method="BH")]
+    # Calculate Standard Errors from beta and t-stat (SE = |beta / t-stat|)
+    meta[, se_curr  := abs(beta_curr / tstat_curr)]
+    meta[, se_other := abs(beta_other / tstat_other)]
+    
+    # Calculate weights based on inverse variance (w = 1 / SE^2)
+    meta[, w_curr  := 1 / (se_curr^2)]
+    meta[, w_other := 1 / (se_other^2)]
+    
+    # Calculate pooled Meta-Beta (weighted average of effect sizes)
+    meta[, beta_meta := (beta_curr * w_curr + beta_other * w_other) / (w_curr + w_other)]
+    
+    # Calculate pooled Standard Error and Meta-Z-score
+    meta[, se_meta   := sqrt(1 / (w_curr + w_other))]
+    meta[, z_meta    := beta_meta / se_meta]
+    
+    # Compute two-tailed p-values and apply Benjamini-Hochberg FDR correction
+    meta[, p_meta    := 2 * pnorm(abs(z_meta), lower.tail = FALSE)]
+    meta[, FDR_meta  := p.adjust(p_meta, method = "BH")]
     
     # Robust tissue name extraction using regex on target path fields
-    # Grabs names like Cerebellum, Lateral_Ventricle, etc.
     tissue_match <- regexpr("target_ALS/[A-Za-z0-9_]+", out_prefix)
     if(tissue_match != -1) {
         tissue_raw <- regmatches(out_prefix, tissue_match)
