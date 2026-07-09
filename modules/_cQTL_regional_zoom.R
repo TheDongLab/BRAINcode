@@ -11,8 +11,8 @@ if (length(args) == 0) {
 tissue <- args[1]
 message(paste("## Running dynamic regional zoom plots for tissue:", tissue))
 
-# Hardcoded target window for Plot 1 & Plot 2
-target_chr <- "17"
+# Hardcoded target window for Plot 1 & Plot 2 (Matches your "chr17" structures)
+target_chr <- "chr17"
 start_pos  <- 45465000
 end_pos    <- 47055000
 
@@ -31,13 +31,12 @@ setnames(lead_raw, "SNP", "snpid", skip_absent = TRUE)
 setnames(snp_raw, "gene", "circ_id", skip_absent = TRUE)
 setnames(lead_raw, "gene", "circ_id", skip_absent = TRUE)
 
-# Calculate log p-values
-snp_raw[, log10p <- -log10(`p-value`)]
-lead_raw[, log10p <- -log10(`p-value`)]
+# Calculate log p-values using base assignment
+snp_raw$log10p <- -log10(snp_raw$`p-value`)
+lead_raw$log10p <- -log10(lead_raw$`p-value`)
 
-# Filter location reference map first to save memory overhead
-snp_loc[, chr_clean <- gsub("chr", "", as.character(chr), ignore.case = TRUE)]
-snp_loc_sub <- snp_loc[chr_clean == target_chr & pos >= start_pos & pos <= end_pos]
+# Filter location reference map straight against the clean chr column
+snp_loc_sub <- snp_loc[chr == target_chr & pos >= start_pos & pos <= end_pos]
 
 # Keyed join
 setkey(snp_raw, snpid); setkey(lead_raw, snpid); setkey(snp_loc_sub, snpid)
@@ -55,7 +54,7 @@ message(paste("## Top signal circRNA identified in this window:", top_circ))
 # PLOT 1: THE REGIONAL ZOOM PLOT (ALL VARIANTS)
 # ========================================================================
 message("## Building Plot 1: Full variant zoom...")
-snp_zoom[, color_cat <- ifelse(circ_id == top_circ & `p-value` <= 0.05, "Top circRNA Locus", "Other/Background")]
+snp_zoom$color_cat <- ifelse(snp_zoom$circ_id == top_circ & snp_zoom$`p-value` <= 0.05, "Top circRNA Locus", "Other/Background")
 extreme_hits <- lead_zoom[order(-log10p)][1:min(3, .N)]
 
 p1 <- ggplot() +
@@ -70,7 +69,7 @@ p1 <- ggplot() +
                     size = 3.5, colour = "black", fontface = "bold", box.padding = 0.5) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.01, 0.01)) +
     labs(title = sprintf("%s Regional cis-cQTL Zoom (All Variants)", gsub("_", " ", tissue)),
-         subtitle = sprintf("Region: chr17:45.47-47.05 Mb | Highlighted: %s", top_circ),
+         subtitle = sprintf("Region: %s:45.47-47.05 Mb | Highlighted: %s", target_chr, top_circ),
          x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
     theme_bw() + theme(panel.grid.minor = element_blank(), legend.position = "none")
 
@@ -86,7 +85,7 @@ dev.off()
 message("## Building Plot 2: Lead variants summary structure...")
 
 lead_snps_per_circ <- snp_zoom[order(circ_id, -log10p), head(.SD, 1), by = circ_id]
-lead_snps_per_circ[, status <- ifelse(circ_id == top_circ, "Primary Locus Driver", "Secondary Target circRNA")]
+lead_snps_per_circ$status <- ifelse(lead_snps_per_circ$circ_id == top_circ, "Primary Locus Driver", "Secondary Target circRNA")
 
 p2 <- ggplot(data = lead_snps_per_circ, aes(x = pos / 1e6, y = log10p)) +
     geom_hline(yintercept = 5, linetype = "dashed", colour = "grey40", linewidth = 0.5) +
@@ -122,12 +121,12 @@ if (nrow(anchor_lookup) > 0) {
     diag_start <- anchor_pos - 500000
     diag_end   <- anchor_pos + 500000
     
-    snp_diag <- snp_raw[snpid %in% snp_loc[chr_clean == target_chr & pos >= diag_start & pos <= diag_end, snpid]]
+    snp_diag <- snp_raw[snpid %in% snp_loc[chr == target_chr & pos >= diag_start & pos <= diag_end, snpid]]
     setkey(snp_diag, snpid)
     snp_diag <- snp_diag[snp_loc, nomatch = NULL]
     
     sig_circs <- unique(snp_diag[log10p >= 5, circ_id])
-    snp_diag[, color_group <- ifelse(circ_id %in% sig_circs & log10p >= 5, circ_id, "Background / Non-Sig")]
+    snp_diag$color_group <- ifelse(snp_diag$circ_id %in% sig_circs & snp_diag$log10p >= 5, snp_diag$circ_id, "Background / Non-Sig")
     
     diag_leads <- lead_raw[snpid %in% snp_diag$snpid & circ_id %in% sig_circs]
     diag_leads <- diag_leads[snp_loc, nomatch = NULL, on = "snpid"]
@@ -150,7 +149,7 @@ if (nrow(anchor_lookup) > 0) {
         scale_colour_manual(values = color_palette) +
         scale_x_continuous(limits = c(diag_start / 1e6, diag_end / 1e6), expand = c(0.01, 0.01)) +
         labs(title = sprintf("circRNA Diagnostic Regional Zoom - %s cQTL", gsub("_", " ", tissue)),
-             subtitle = sprintf("Region: Locus window around %s (chr%s:%.2f-%.2f Mb) | Colored by unique significant circular RNA structural locus", 
+             subtitle = sprintf("Region: Locus window around %s (%s:%.2f-%.2f Mb) | Colored by unique significant circular RNA structural locus", 
                                 anchor_snp, target_chr, diag_start/1e6, diag_end/1e6),
              x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
         theme_bw() +
