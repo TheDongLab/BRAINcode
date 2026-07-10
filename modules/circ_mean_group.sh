@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=circ_mean_group
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/circ_mean_group_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/circ_mean_group_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/circRNA_mean_group_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/circRNA_mean_group_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
@@ -9,7 +9,7 @@
 
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch circ_mean_group.sh <CHROMOSOME> <COORD_PATTERN> [STRAND]"
+    echo "Usage: sbatch circRNA_mean_group.sh <CHROMOSOME> <COORD_PATTERN> [STRAND]"
     exit 1
 fi
 
@@ -36,9 +36,9 @@ target_strand <- Sys.getenv("STRAND")
 
 if (target_strand == "") { target_strand <- "[+-]" }
 
-# Build pattern to scan for the coordinate pattern anywhere inside the circRNA string
+# --- FIX: Rebuilt regex for the chr:start-end:strand format ---
 safe_strand <- gsub("\\+", "\\\\+", target_strand)
-regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":.*", coord_pat)
+regex_pattern <- paste0("^", target_chr, ":.*", coord_pat, ".*:", safe_strand, "$")
 
 meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(circ_path, header=TRUE, row.names=1, check.names=FALSE)
@@ -106,7 +106,6 @@ tdp43$Neuronal_TDP43_Score <- trimws(gsub("[\r\n\t]+", " ", tdp43$Neuronal_TDP43
 tdp43$Neuronal_TDP43_Score[tdp43$Neuronal_TDP43_Score == ""] <- "Unknown/Missing"
 
 # --- ENFORCE EXPLICIT ORDERING ---
-# Convert the score column into a factor with your specified custom sequence
 custom_levels <- c(
     "Frequent", 
     "Moderate", 
