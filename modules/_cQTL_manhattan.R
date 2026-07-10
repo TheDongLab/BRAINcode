@@ -163,57 +163,60 @@ print(p1)
 dev.off()
 
 # ========================================================================
-# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE CIRC_ID (STAGGERED COLOR PATH)
+# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE CIRC_ID (RANDOMIZED PALETTE)
 # ========================================================================
-message("## Setting up circRNA ID diagnostic colors with staggered contrast...")
+message("## Setting up Circ ID diagnostic colors with a randomized palette...")
 
+# Isolate significant versus background data frames to prevent scale conflicts
 snp_sig  <- snp_plot[fdr_val <= sig_thresh_fdr]
 snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
 lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
 
-# Generate a qualitative palette matching the number of unique significant features
-unique_circs <- sort(unique(snp_sig$circ_id))
-num_circs    <- length(unique_circs)
+# 1. Get all unique significant IDs
+unique_circs <- unique(snp_sig$circ_id)
+n_circs      <- length(unique_circs)
 
-# Create a staggered mapping index (e.g., pulling every 3rd color to alternate adjacent genes)
-if (num_circs > 0) {
-    base_palette <- scales::hue_pal()(num_circs)
+if (n_circs > 0) {
+    # 2. Generate a standard distinct palette matching the total count
+    base_colors <- scales::hue_pal()(n_circs)
     
-    # Shuffle or step indices to break linear chromosome color continuity
-    stagger_idx  <- seq(1, num_circs, by = 1)
-    shuffled_idx <- c(stagger_idx[seq(1, num_circs, by = 2)], stagger_idx[seq(2, num_circs, by = 2)])
+    # 3. Seed the randomizer so your plot colors remain reproducible across runs
+    set.seed(100) 
+    shuffled_colors <- sample(base_colors)
     
-    circ_palette <- base_palette[shuffled_idx]
-    names(circ_palette) <- unique_circs
+    # 4. Bind the shuffled colors explicitly to the unique IDs
+    circ_palette <- setNames(shuffled_colors, unique_circs)
 } else {
     circ_palette <- c()
 }
 
-message("## Creating circRNA ID Diagnostic Plot...")
+message("## Creating Circ ID Diagnostic Plot...")
 p2 <- ggplot() +
-    # 1. Background non-significant points (Zebra background blocks)
+    # 1. Background non-significant points (Zebra style using shape 21 allows independent 'fill')
     geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
                shape=21, stroke=0, size=0.6, alpha=0.3) +
     
-    # 2. Significant points mapped to the non-sequential staggered palette
+    # 2. Significant points colored dynamically by their distinct Circ ID string
     geom_point(data=snp_sig, aes(x=cum_pos, y=log10p, colour=circ_id), size=0.6, alpha=0.7) +
     
-    # 3. Lead Diamonds tracking the exact same color key
+    # 3. Lead Diamonds mapped to the same Circ ID color scheme
     geom_point(data=lead_sig, aes(x=cum_pos, y=log10p, colour=circ_id), shape=18, size=2.2) +
     
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), 
                     size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
     
-    # Background constraints
+    # Control the background layers using fill
     scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5", "23"="#CCCCCC"), guide="none") +
-    scale_colour_manual(values=circ_palette) + # Explicitly sets the high-contrast staggered colors
+    
+    # FORCE GGPLOT TO USE OUR RANDOMIZED MAPPING KEY INSTEAD OF THE ALPHABETICAL DEFAULT
+    scale_colour_manual(values=circ_palette) +
     
     scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
-    labs(title=paste("Diagnostic cQTL Manhattan Plot (By Circular RNA Locus) -", basename(out_prefix)),
-         subtitle=sprintf("Adjacent circular RNA models are assigned highly contrasting colors to isolate independent signals | N Significant Loci = %d", num_circs),
+    labs(title=paste("Diagnostic cQTL Manhattan Plot (By Circ Locus) -", basename(out_prefix)),
+         subtitle=sprintf("Unique significant Circ IDs are assigned a randomized color palette to maximize local contrast | N Significant Circs = %d", n_circs),
          x=x_axis_label, y=expression(-log[10](p))) +
     
     theme_bw() + 
@@ -221,7 +224,6 @@ p2 <- ggplot() +
           panel.grid.major.x = element_blank(),
           panel.grid.minor = element_blank())
 
-# Renamed asset output footprint to match your project focus precisely
 out_file_png2 <- paste0(out_prefix, ".manhattan_by_CIRC.png")
 png(out_file_png2, width=18, height=6, units="in", res=300)
 print(p2)
