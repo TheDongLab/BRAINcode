@@ -115,7 +115,7 @@ custom_levels <- c(
     "Absent"
 )
 
-# Catch any unexpected values in the data that aren't in your defined list
+# Catch any unexpected values in the data that are not in your defined list
 extra_idx <- is.na(match(tdp43$Neuronal_TDP43_Score, custom_levels))
 extra_levels <- unique(tdp43$Neuronal_TDP43_Score[extra_idx])
 all_levels <- c(custom_levels, extra_levels)
