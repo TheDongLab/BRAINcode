@@ -109,11 +109,11 @@ dev.off()
 
 
 # ========================================================================
-# PLOT 3: circRNA DIAGNOSTIC REGIONAL ZOOM (CENTERED ON rs62056809)
+# PLOT 3: circRNA DIAGNOSTIC REGIONAL ZOOM (CENTERED ON rs430943)
 # ========================================================================
-message("## Building Plot 3: circRNA Diagnostic Zoom centered on rs62056809...")
+message("## Building Plot 3: circRNA Diagnostic Zoom centered on rs430943...")
 
-anchor_snp <- "rs62056809"
+anchor_snp <- "rs430943"
 anchor_lookup <- snp_loc[snpid == anchor_snp]
 
 if (nrow(anchor_lookup) > 0) {
@@ -151,7 +151,7 @@ if (nrow(anchor_lookup) > 0) {
         labs(title = sprintf("circRNA Diagnostic Regional Zoom - %s cQTL", gsub("_", " ", tissue)),
              subtitle = sprintf("Region: Locus window around %s (%s:%.2f-%.2f Mb) | Colored by unique significant circular RNA structural locus", 
                                 anchor_snp, target_chr, diag_start/1e6, diag_end/1e6),
-             x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+             x = "Chromosome 5 Position (Mb)", y = expression(-log[10](p-value))) +
         theme_bw() +
         theme(panel.grid.minor = element_blank(),
               legend.position = "bottom",
@@ -165,7 +165,7 @@ if (nrow(anchor_lookup) > 0) {
     dev.off()
     message(paste("## Saved Layout 3:", out_file3))
 } else {
-    message(sprintf("## Warning: Anchor SNP rs62056809 not found in location maps. Skipping Plot 3."))
+    message(sprintf("## Warning: Anchor SNP rs430943 not found in location maps. Skipping Plot 3."))
 }
 
 message("## Execution completed cleanly!")
