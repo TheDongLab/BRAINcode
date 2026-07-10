@@ -105,6 +105,22 @@ cat("============================================================\n\n")
 tdp43$Neuronal_TDP43_Score <- trimws(gsub("[\r\n\t]+", " ", tdp43$Neuronal_TDP43_Score))
 tdp43$Neuronal_TDP43_Score[tdp43$Neuronal_TDP43_Score == ""] <- "Unknown/Missing"
 
+# --- ENFORCE EXPLICIT ORDERING ---
+# Convert the score column into a factor with your specified custom sequence
+custom_levels <- c(
+    "Frequent", 
+    "Moderate", 
+    "Sparse", 
+    "Sparse Residual MN (with pTDP-43 Cytoplasmic Inclusions)", 
+    "Absent"
+)
+
+# Catch any unexpected values in the data that aren't in your defined list
+extra_levels <- unique(tdp43$Neuronal_TDP43_Score[!tdp43$Neuronal_TDP43_Score %in% custom_levels])
+all_levels <- c(custom_levels, extra_levels)
+
+tdp43$Neuronal_TDP43_Score <- factor(tdp43$Neuronal_TDP43_Score, levels = all_levels)
+
 # Sanitize TDP43 file sample IDs (mapping via RNAseq_Sample_ID)
 clean_tdp43_ids <- gsub("[_-]", ".", gsub(" ", "", tdp43[["RNAseq_Sample_ID"]]))
 
