@@ -116,7 +116,7 @@ custom_levels <- c(
 )
 
 # Catch any unexpected values in the data that aren't in your defined list
-extra_levels <- unique(tdp43$Neuronal_TDP43_Score[!tdp43$Neuronal_TDP43_Score %in% custom_levels])
+extra_levels <- unique(tdp43$Neuronal_TDP43_Score[which( !(tdp43$Neuronal_TDP43_Score %in% custom_levels) )])
 all_levels <- c(custom_levels, extra_levels)
 
 tdp43$Neuronal_TDP43_Score <- factor(tdp43$Neuronal_TDP43_Score, levels = all_levels)
