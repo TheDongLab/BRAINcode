@@ -54,12 +54,12 @@ prepare_coords <- function(df) {
     c_names <- gsub("chr", "", as.character(df$chr), ignore.case = TRUE)
     
     if (any(c_names %in% c("X", "x", "23")) && all(c_names %in% c("X", "x", "23", "NA", "", NA))) {
-        df[, chr_num <- 23]
+        df$chr_num <- 23
     } else {
         df <- df[!(gsub("chr", "", as.character(chr), ignore.case = TRUE) %in% c("X", "x", "23"))]
-        df[, chr_num <- as.integer(gsub("chr", "", as.character(chr), ignore.case = TRUE))]
+        df$chr_num <- as.integer(gsub("chr", "", as.character(df$chr), ignore.case = TRUE))
     }
-    return(df[!is.na(chr_num)]) 
+    return(df[!is.na(df$chr_num)]) 
 }
 
 snp_plot  <- prepare_coords(snp_plot)
