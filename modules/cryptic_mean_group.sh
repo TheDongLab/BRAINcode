@@ -15,6 +15,7 @@ fi
 
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export SPLICE_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/splicing_matrix.txt"
+export TDP43_METADATA="/home/zw529/donglab/data/target_ALS/aligned_rnaseq_tdp43_by_subject.csv"
 export CHR="$1"
 export COORD_PAT="$2"
 export STRAND="$3"
@@ -28,6 +29,7 @@ echo "----------------------------------------"
 Rscript -e '
 meta_path     <- Sys.getenv("METADATA")
 splice_path   <- Sys.getenv("SPLICE_MATRIX")
+tdp43_path    <- Sys.getenv("TDP43_METADATA")
 target_chr    <- Sys.getenv("CHR")
 coord_pat     <- Sys.getenv("COORD_PAT")
 target_strand <- Sys.getenv("STRAND")
@@ -40,6 +42,7 @@ regex_pattern <- paste0("^", target_chr, ":", safe_strand, ":.*", coord_pat)
 
 meta <- read.csv(meta_path, check.names=FALSE, stringsAsFactors=FALSE)
 expr <- read.table(splice_path, header=TRUE, row.names=1, check.names=FALSE)
+tdp43 <- read.csv(tdp43_path, check.names=FALSE, stringsAsFactors=FALSE)
 
 matched_rows <- grep(regex_pattern, rownames(expr), value=TRUE)
 if (length(matched_rows) == 0) {
@@ -87,6 +90,55 @@ for (i in 1:length(matched_rows)) {
     # Print the table side-by-side cleanly
     options(width = 150)
     print(results, row.names=FALSE, right=FALSE)
+    cat("\n\n")
+}
+
+# ==============================================================================
+# --- TDP43 SPECIFIC ANALYSIS ---
+# ==============================================================================
+cat("\n\n")
+cat("============================================================\n")
+cat(" RUNNING INTERSECTION WITH TDP43 COHORT                     \n")
+cat("============================================================\n\n")
+
+# Clean up whitespace and ensure missing scores are marked explicitly
+tdp43$Neuronal_TDP43_Score <- trimws(gsub("[\r\n\t]+", " ", tdp43$Neuronal_TDP43_Score))
+tdp43$Neuronal_TDP43_Score[tdp43$Neuronal_TDP43_Score == ""] <- "Unknown/Missing"
+
+# Sanitize TDP43 file sample IDs (mapping via RNAseq_Sample_ID)
+clean_tdp43_ids <- gsub("[_-]", ".", gsub(" ", "", tdp43[["RNAseq_Sample_ID"]]))
+
+# Re-sanitize the global matrix expression IDs just to ensure clean scope
+clean_expr_ids_tdp43 <- gsub("[_-]", ".", gsub(" ", "", colnames(expr)))
+
+for (i in 1:length(matched_rows)) {
+    junc_name <- matched_rows[i]
+    
+    cat("============================================================\n")
+    cat(" TDP43 COHORT - JUNCTION ", i, " OF ", length(matched_rows), ": ", junc_name, "\n", sep="")
+    cat("============================================================\n")
+    
+    # Extract values for this specific row
+    junc_counts <- as.numeric(expr[junc_name, ])
+    names(junc_counts) <- clean_expr_ids_tdp43
+    
+    # Map splicing values directly to the TDP43 structure using sanitized IDs
+    tdp43$tmp_splicing_value <- junc_counts[match(clean_tdp43_ids, names(junc_counts))]
+    
+    valid_counts_tdp43 <- sum(!is.na(tdp43$tmp_splicing_value))
+    cat("Successfully matched TDP43 cohort samples:", valid_counts_tdp43, "out of", nrow(tdp43), "\n\n")
+    
+    if (valid_counts_tdp43 > 0) {
+        # Compute the means grouped by Neuronal_TDP43_Score
+        tdp43_results <- aggregate(tmp_splicing_value ~ Neuronal_TDP43_Score, data=tdp43, FUN=mean, na.rm=TRUE)
+        colnames(tdp43_results)[2] <- "mean_splicing_value"
+        
+        # Print the side-by-side TDP43 table cleanly
+        options(width = 150)
+        print(tdp43_results, row.names=FALSE, right=FALSE)
+    } else {
+        cat("Warning: No matching sample expression data found for the TDP43 cohort.\n")
+    }
     cat("\n\n")
 }
 '
