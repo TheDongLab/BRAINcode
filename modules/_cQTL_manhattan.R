@@ -163,31 +163,57 @@ print(p1)
 dev.off()
 
 # ========================================================================
-# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE GENE ID (FIXED)
+# PLOT 2: DIAGNOSTIC COLORING BY UNIQUE CIRC_ID (STAGGERED COLOR PATH)
 # ========================================================================
-message("## Setting up circRNA ID diagnostic colors...")
+message("## Setting up circRNA ID diagnostic colors with staggered contrast...")
 
 snp_sig  <- snp_plot[fdr_val <= sig_thresh_fdr]
 snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
 lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
 
+# Generate a qualitative palette matching the number of unique significant features
+unique_circs <- sort(unique(snp_sig$circ_id))
+num_circs    <- length(unique_circs)
+
+# Create a staggered mapping index (e.g., pulling every 3rd color to alternate adjacent genes)
+if (num_circs > 0) {
+    base_palette <- scales::hue_pal()(num_circs)
+    
+    # Shuffle or step indices to break linear chromosome color continuity
+    stagger_idx  <- seq(1, num_circs, by = 1)
+    shuffled_idx <- c(stagger_idx[seq(1, num_circs, by = 2)], stagger_idx[seq(2, num_circs, by = 2)])
+    
+    circ_palette <- base_palette[shuffled_idx]
+    names(circ_palette) <- unique_circs
+} else {
+    circ_palette <- c()
+}
+
 message("## Creating circRNA ID Diagnostic Plot...")
 p2 <- ggplot() +
+    # 1. Background non-significant points (Zebra background blocks)
     geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
                shape=21, stroke=0, size=0.6, alpha=0.3) +
+    
+    # 2. Significant points mapped to the non-sequential staggered palette
     geom_point(data=snp_sig, aes(x=cum_pos, y=log10p, colour=circ_id), size=0.6, alpha=0.7) +
+    
+    # 3. Lead Diamonds tracking the exact same color key
     geom_point(data=lead_sig, aes(x=cum_pos, y=log10p, colour=circ_id), shape=18, size=2.2) +
     
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), 
                     size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
     
+    # Background constraints
     scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5", "23"="#CCCCCC"), guide="none") +
+    scale_colour_manual(values=circ_palette) + # Explicitly sets the high-contrast staggered colors
+    
     scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
     
-    labs(title=paste("Diagnostic cQTL Manhattan Plot (By Gene Locus) -", basename(out_prefix)),
-         subtitle=sprintf("Every unique significant circular RNA structure is assigned an independent color | N Significant Loci = %d", uniqueN(snp_sig$circ_id)),
+    labs(title=paste("Diagnostic cQTL Manhattan Plot (By Circular RNA Locus) -", basename(out_prefix)),
+         subtitle=sprintf("Adjacent circular RNA models are assigned highly contrasting colors to isolate independent signals | N Significant Loci = %d", num_circs),
          x=x_axis_label, y=expression(-log[10](p))) +
     
     theme_bw() + 
@@ -195,11 +221,12 @@ p2 <- ggplot() +
           panel.grid.major.x = element_blank(),
           panel.grid.minor = element_blank())
 
-out_file_png2 <- paste0(out_prefix, ".manhattan_by_GENE.png")
+# Renamed asset output footprint to match your project focus precisely
+out_file_png2 <- paste0(out_prefix, ".manhattan_by_CIRC.png")
 png(out_file_png2, width=18, height=6, units="in", res=300)
 print(p2)
 dev.off()
 
 message(paste("## Directional plot saved to:", out_file_png1))
-message(paste("## Structural diagnostic plot saved to:", out_file_png2))
+message(paste("## Structural circ diagnostic plot saved to:", out_file_png2))
 message("## Done!")
