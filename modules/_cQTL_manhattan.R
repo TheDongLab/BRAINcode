@@ -31,20 +31,20 @@ if("gene" %in% names(lead_plot)) setnames(lead_plot, "gene", "circ_id")
 # Use FDR column if it exists, otherwise fall back to p-value
 if ("FDR" %in% names(snp_plot)) {
     message("## Using FDR column for significance threshold")
-    snp_plot[, log10p <- -log10(`p-value`)]
-    snp_plot[, fdr_val <- FDR]
+    snp_plot$log10p <- -log10(snp_plot$`p-value`)
+    snp_plot$fdr_val <- snp_plot$FDR
 } else {
     message("## FDR column not found, using p-value")
-    snp_plot[, log10p <- -log10(`p-value`)]
-    snp_plot[, fdr_val <- `p-value`]
+    snp_plot$log10p <- -log10(snp_plot$`p-value`)
+    snp_plot$fdr_val <- snp_plot$`p-value`
 }
 
 if ("FDR" %in% names(lead_plot)) {
-    lead_plot[, log10p <- -log10(`p-value`)]
-    lead_plot[, fdr_val <- FDR]
+    lead_plot$log10p <- -log10(lead_plot$`p-value`)
+    lead_plot$fdr_val <- lead_plot$FDR
 } else {
-    lead_plot[, log10p <- -log10(`p-value`)]
-    lead_plot[, fdr_val <- `p-value`]
+    lead_plot$log10p <- -log10(lead_plot$`p-value`)
+    lead_plot$fdr_val <- lead_plot$`p-value`
 }
 
 sig_thresh_fdr <- fdr_cutoff
@@ -70,8 +70,8 @@ is_chrx_run <- all(snp_plot$chr_num == 23)
 
 if (is_chrx_run) {
     message("## Setting up single-chromosome physical base-pair layout for ChrX...")
-    snp_plot[, cum_pos <- pos]
-    lead_plot[, cum_pos <- pos]
+    snp_plot$cum_pos <- snp_plot$pos
+    lead_plot$cum_pos <- lead_plot$pos
     
     max_pos <- max(snp_plot$pos, na.rm=TRUE)
     tick_breaks <- seq(0, max_pos, by = 25e6)
@@ -81,15 +81,15 @@ if (is_chrx_run) {
 } else {
     message("## Setting up standard multi-chromosomal cumulative stacked layout...")
     chr_info <- snp_plot[, .(chr_len = max(as.numeric(pos))), by = chr_num][order(chr_num)]
-    chr_info[, tot <- shift(cumsum(as.numeric(chr_len)), fill = 0)]
+    chr_info$tot <- shift(cumsum(as.numeric(chr_info$chr_len)), fill = 0)
     
     setkey(snp_plot, chr_num); setkey(lead_plot, chr_num); setkey(chr_info, chr_num)
     
     snp_plot  <- chr_info[snp_plot]
-    snp_plot[, cum_pos := pos + tot]
+    snp_plot$cum_pos <- snp_plot$pos + snp_plot$tot
     
     lead_plot <- chr_info[lead_plot]
-    lead_plot[, cum_pos := pos + tot]
+    lead_plot$cum_pos <- lead_plot$pos + lead_plot$tot
     
     snp_axis <- snp_plot[, .(centre = (max(cum_pos) + min(cum_pos)) / 2), by = chr_num]
     tick_breaks <- snp_axis$centre
@@ -103,11 +103,10 @@ extreme_hits <- lead_plot[order(log10p, decreasing = TRUE)][1:min(10, .N)]
 # ========================================================================
 # RE-MAP DIRECTIONALITY COLORS FOR INTERACTION MODES
 # ========================================================================
-# Map slope/beta values based on MatrixEQTL output columns
 eff_col <- if("slope" %in% names(snp_plot)) "slope" else "beta"
 
-snp_plot[, color_beta <- get(eff_col)]
-lead_plot[, color_beta := get(eff_col)]
+snp_plot$color_beta <- snp_plot[[eff_col]]
+lead_plot$color_beta <- lead_plot[[eff_col]]
 
 if (run_type == "interaction" && !is.null(std_path) && file.exists(std_path)) {
     message("## Interaction mode detected. Fetching baseline cQTL directionality for coloring...")
@@ -115,40 +114,41 @@ if (run_type == "interaction" && !is.null(std_path) && file.exists(std_path)) {
     std_df <- fread(std_path)
     if("gene" %in% names(std_df)) setnames(std_df, "gene", "circ_id")
     
-    snp_plot[, match_key := paste0(snpid, "_", circ_id)]
-    lead_plot[, match_key := paste0(snpid, "_", circ_id)]
-    std_df[, match_key := paste0(snpid, "_", circ_id)]
+    snp_plot$match_key <- paste0(snp_plot$snpid, "_", snp_plot$circ_id)
+    lead_plot$match_key <- paste0(lead_plot$snpid, "_", lead_plot$circ_id)
+    std_df$match_key <- paste0(std_df$snpid, "_", std_df$circ_id)
     
-    std_betas <- std_df[, setNames(get(eff_col), match_key)]
+    std_betas <- setNames(std_df[[eff_col]], std_df$match_key)
     
-    snp_plot[, color_beta := std_betas[match_key]]
-    lead_plot[, color_beta := std_betas[match_key]]
+    snp_plot$color_beta <- std_betas[snp_plot$match_key]
+    lead_plot$color_beta <- std_betas[lead_plot$match_key]
     
-    snp_plot[is.na(color_beta), color_beta := get(eff_col)]
-    lead_plot[is.na(color_beta), color_beta := get(eff_col)]
+    snp_plot$color_beta <- ifelse(is.na(snp_plot$color_beta), snp_plot[[eff_col]], snp_plot$color_beta)
+    lead_plot$color_beta <- ifelse(is.na(lead_plot$color_beta), lead_plot[[eff_col]], lead_plot$color_beta)
 }
 
 # ========================================================================
 # PLOT 1: DIRECTIONAL COLORING (MODIFIED SLOPE-BASED)
 # ========================================================================
 message("## Assigning directional colors...")
-snp_plot[, color_cat := as.character(chr_num %% 2)]
-snp_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "increase"]
-snp_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "decrease"]
+snp_plot$color_cat <- as.character(snp_plot$chr_num %% 2)
 
-# Safely check for optional telomeric flag column if generated upstream
+# Vectorized conditional mutations targeting directional changes
+snp_plot$color_cat <- ifelse(snp_plot$fdr_val <= sig_thresh_fdr & snp_plot$color_beta > 0, "increase", snp_plot$color_cat)
+snp_plot$color_cat <- ifelse(snp_plot$fdr_val <= sig_thresh_fdr & snp_plot$color_beta < 0, "decrease", snp_plot$color_cat)
+
 if("telomeric_flag" %in% names(snp_plot)) {
-    snp_plot[telomeric_flag == TRUE, color_cat := "telomere"]
+    snp_plot$color_cat <- ifelse(snp_plot$telomeric_flag == TRUE, "telomere", snp_plot$color_cat)
 }
 
-lead_plot[, color_cat := "none"]
-lead_plot[fdr_val <= sig_thresh_fdr & color_beta > 0, color_cat := "inc_lead"]
-lead_plot[fdr_val <= sig_thresh_fdr & color_beta < 0, color_cat := "dec_lead"]
+lead_plot$color_cat <- "none"
+lead_plot$color_cat <- ifelse(lead_plot$fdr_val <= sig_thresh_fdr & lead_plot$color_beta > 0, "inc_lead", lead_plot$color_cat)
+lead_plot$color_cat <- ifelse(lead_plot$fdr_val <= sig_thresh_fdr & lead_plot$color_beta < 0, "dec_lead", lead_plot$color_cat)
 
 message("## Creating Directional Plot...")
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     geom_point(aes(colour=color_cat), size=0.6, alpha=0.5) +
-    geom_point(data=lead_plot[color_cat != "none"], aes(x=cum_pos, y=log10p, colour=color_cat), shape=18, size=2.0) +
+    geom_point(data=subset(lead_plot, color_cat != "none"), aes(x=cum_pos, y=log10p, colour=color_cat), shape=18, size=2.0) +
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), size=2.5, colour="darkgreen", fontface="italic", box.padding = 0.5, max.overlaps = Inf) +
     scale_colour_manual(values=c("0"="#444444", "1"="#999999", "23"="#555555", "increase"="#E41A1C", "decrease"="#377EB8", "telomere"="#E69F00", "inc_lead"="#E41A1C", "dec_lead"="#377EB8", "none"="white")) +
