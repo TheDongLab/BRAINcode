@@ -11,10 +11,10 @@ if (length(args) == 0) {
 tissue <- args[1]
 message(paste("## Running dynamic regional zoom plots for tissue:", tissue))
 
-# Hardcoded target window for Plot 1 & Plot 2 (Matches your "chr17" structures)
-target_chr <- "chr17"
-start_pos  <- 45465000
-end_pos    <- 47055000
+# Hardcoded target window for Plot 1 & Plot 2
+target_chr <- "chr5"
+start_pos  <- 80000000
+end_pos    <- 83500000
 
 # Base directory path setup
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/cQTL/")
