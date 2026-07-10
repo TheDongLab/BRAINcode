@@ -1,9 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=circ_mean_group
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/circRNA_mean_group_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/circRNA_mean_group_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/circ_mean_group_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/circ_mean_group_%j.err
 #SBATCH --time=00:30:00
-#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=28G
 
@@ -85,7 +84,7 @@ for (i in 1:length(matched_rows)) {
     
     # Compute the categorical means
     results <- aggregate(tmp_circ_value ~ subject_group, data=meta, FUN=mean, na.rm=TRUE)
-    colnames(results)[2] <- "mean_expression_value"
+    colnames(results)[2] <- "mean_circ_percentage"
     
     # Print the table side-by-side cleanly
     options(width = 150)
@@ -147,7 +146,7 @@ for (i in 1:length(matched_rows)) {
     if (valid_counts_tdp43 > 0) {
         # Compute the means grouped by Neuronal_TDP43_Score
         tdp43_results <- aggregate(tmp_circ_value ~ Neuronal_TDP43_Score, data=tdp43, FUN=mean, na.rm=TRUE)
-        colnames(tdp43_results)[2] <- "mean_expression_value"
+        colnames(tdp43_results)[2] <- "mean_circ_percentage"
         
         # Print the side-by-side TDP43 table cleanly
         options(width = 150)
