@@ -24,26 +24,23 @@ tissue    <- args[7]
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_Interaction_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_Interaction_boxplots_colored.pdf"))
 
-# Read file structure (expecting headers/columns: circ_id and snpid)
-pairs <- fread(GSfile, header=TRUE)
+# Read file structure (explicitly handle headerless top-pairs file)
+pairs <- fread(GSfile, header=FALSE)
+setnames(pairs, c("circ_id", "snpid"))
 
 message("# Loading genomic matrices...")
 snp_mat  <- fread(snp_file, header=TRUE)
 expr_mat <- fread(expr_file, header=TRUE)
 cov_mat  <- fread(cov_file, header=TRUE)
 
-# Standardize headers for circular RNAs and SNPs
-if("geneid" %in% names(pairs)) setnames(pairs, "geneid", "circ_id")
-if("gene" %in% names(pairs)) setnames(pairs, "gene", "circ_id")
-if("SNP" %in% names(pairs)) setnames(pairs, "SNP", "snpid")
-
 setnames(expr_mat, names(expr_mat)[1], "circ_id")
 setnames(snp_mat, names(snp_mat)[1], "snpid")
 
-# Process the clinical interaction covariate status
+# Process the clinical interaction covariate status robustly
 cov_first_col <- names(cov_mat)[1]
-als_row <- cov_mat[get(cov_first_col) == "is_als", ]
+als_row <- cov_mat[cov_mat[[1]] == "is_als", ]
 if (nrow(als_row) == 0) {
+  warning("Warning: 'is_als' row not found in covariate matrix. Defaulting all values to 0.")
   als_vals <- rep(0, ncol(cov_mat) - 1)
 } else {
   als_vals <- as.numeric(unlist(als_row[, -1, with=FALSE], use.names=FALSE))
