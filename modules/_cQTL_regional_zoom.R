@@ -13,12 +13,17 @@ message(paste("## Running dynamic regional zoom plots for tissue:", tissue))
 
 # Hardcoded target window for Plot 1 & Plot 2
 target_chr <- "chr5"
-start_pos  <- 80000000
+start_pos  <- 80050000
 end_pos    <- 83500000
 
 # Base directory path setup
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/cQTL/")
-results_dir <- paste0(base_dir, "results/")
+# Dynamically set results folder depending on the run type
+if (run_type == "interaction") {
+  results_dir <- paste0(base_dir, "interaction_results/")
+} else {
+  results_dir <- paste0(base_dir, "results/")
+}
 
 message("## Reading data matrix tables...")
 snp_raw  <- fread(paste0(results_dir, tissue, "_cQTL.cis.txt"))
