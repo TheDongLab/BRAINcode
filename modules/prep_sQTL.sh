@@ -243,7 +243,7 @@ try:
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     
-    cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[['sex_bin', 'age_at_death', 'is_als', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5']].T
+    cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']].T
 
     # 7. SAVE OUTPUTS
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
