@@ -18,7 +18,13 @@ end_pos    <- 47055000
 
 # Base directory path setup
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/")
-results_dir <- paste0(base_dir, "results/")
+
+# Dynamically set results folder depending on the run type
+if (run_type == "interaction") {
+  results_dir <- paste0(base_dir, "interaction_results/")
+} else {
+  results_dir <- paste0(base_dir, "results/")
+}
 
 message("## Reading data matrix tables...")
 snp_raw  <- fread(paste0(results_dir, tissue, "_eQTL.cis.txt"))
