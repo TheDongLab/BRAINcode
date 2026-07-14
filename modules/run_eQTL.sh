@@ -138,6 +138,7 @@ else
 fi
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
+# Guarded: Skip genome-wide Manhattan plots for targeted single-chromosome runs
 echo "[3] Generating Manhattan plot..."
     if [ "$RUN_TYPE" == "interaction" ]; then
         STD_ANNOTATED="$INDIR/results/${FILE_PREFIX}_eQTL.full_annotated.txt"
@@ -161,7 +162,7 @@ if [ -n "$SUB_DIR" ]; then
     echo "[3.5] Skipping standard regional locus zoom for stratified subfolder runs."
 else
     echo "[3.5] Generating regional locus zoom plots..."
-    Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR"
+    Rscript $PIPELINE/_eQTL_regional_zoom.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
