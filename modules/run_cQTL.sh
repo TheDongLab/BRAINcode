@@ -137,7 +137,7 @@ if [ -n "$SUB_DIR" ]; then
     echo "[3.5] Skipping standard regional locus zoom for stratified subfolder runs."
 else
     echo "[3.5] Generating regional locus zoom plots..."
-    Rscript $PIPELINE/_cQTL_regional_zoom.R "$TISSUE_DIR"
+    Rscript $PIPELINE/_cQTL_regional_zoom.R "$TISSUE_DIR" "$RUN_TYPE"
 fi
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
