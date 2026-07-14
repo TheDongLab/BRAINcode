@@ -6,10 +6,18 @@ library(ggrepel)
 # ── Parse Command Line Arguments ──────────────────────────────────────
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) == 0) {
-  stop("Error: No tissue name provided. Usage: Rscript _eQTL_regional_zoom.R <TISSUE>", call. = FALSE)
+  stop("Error: No tissue name provided. Usage: Rscript _eQTL_regional_zoom.R <TISSUE> [RUN_TYPE]", call. = FALSE)
 }
 tissue <- args[1]
-message(paste("## Running dynamic regional zoom plots for tissue:", tissue))
+
+# Safely capture run_type if passed by the bash script; default to standard
+if (length(args) >= 2) {
+  run_type <- args[2]
+} else {
+  run_type <- "standard"
+}
+
+message(paste("## Running dynamic regional zoom plots for tissue:", tissue, paste0("(", run_type, " mode)")))
 
 # Hardcoded target window for Plot 1 & Plot 2
 target_chr <- "17"
