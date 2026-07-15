@@ -277,8 +277,9 @@ if (nrow(outliers_p2_tot) > 0) {
 }
 
 # Extra headroom past the rightmost outlier so rotated labels near the edge (e.g. circHOMER1)
-# have room to render instead of getting clipped by the panel/canvas boundary.
-xlim_p2_upper <- max(df_metrics$total_reads, na.rm=TRUE) * 1.15
+# have room to render instead of getting clipped -- kept close to the original fixed limit,
+# just nudged a touch higher rather than scaling dynamically off the data max.
+xlim_p2_upper <- 85000
 
 build_panel1_totals <- function(bar_color) {
     ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
