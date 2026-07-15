@@ -60,23 +60,39 @@ map_tissue <- function(t) {
 }
 meta_clean <- meta_clean %>% mutate(mapped_tissue = map_tissue(tissue)) %>% filter(mapped_tissue != "Other_Unspecified")
 
-# Step 3: Crawl and Ensure Numeric Matrix
+# Step 3: Crawl and Debug
 message("Step 3: Parsing files and building matrix...")
 circ_list <- list()
+
 for (i in 1:nrow(meta_clean)) {
   s_id <- meta_clean$externalsampleid[i]
   f_path <- file.path("/home/zw529/donglab/data/target_ALS", meta_clean$mapped_tissue[i], "RNAseq/Processed", s_id, "circularRNA_known_circ_percentage.txt")
   
   if (file.exists(f_path)) {
+    # Read first 5 lines to check structure
+    data_header <- read.delim(f_path, header = TRUE, nrows = 5)
+    
+    # DEBUG: Print column names to the .out file
+    message("File: ", s_id, " | Columns: ", paste(colnames(data_header), collapse=", "))
+    
+    # Reload full data
     data <- read.delim(f_path, header = TRUE, stringsAsFactors = FALSE)
+    
     if ("readNumber" %in% colnames(data)) {
       circ_list[[s_id]] <- data %>%
         mutate(circ_id = paste0(chrom, ":", start, "-", end, ":", strand),
                readNumber = as.integer(readNumber)) %>%
         group_by(circ_id) %>% summarise(readNumber = sum(readNumber, na.rm = TRUE), .groups = 'drop')
+    } else {
+      message("WARNING: 'readNumber' NOT FOUND in ", s_id)
     }
+  } else {
+    message("WARNING: Path does not exist: ", f_path)
   }
 }
+
+# Add a check before building the matrix
+if (length(circ_list) == 0) stop("CRITICAL: No data frames loaded into circ_list.")
 
 count_df <- purrr::reduce(circ_list, full_join, by = "circ_id") %>% replace(is.na(.), 0) %>% column_to_rownames("circ_id")
 common <- intersect(colnames(count_df), meta_clean$externalsampleid)
