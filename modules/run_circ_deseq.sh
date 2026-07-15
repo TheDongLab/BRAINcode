@@ -21,97 +21,64 @@ library(readr)
 
 output_dir <- "/home/zw529/donglab/data/target_ALS"
 
-message("Step 1: Loading and robustly cleaning metadata...")
+# --- Step 1: Metadata ---
 meta_raw <- read_csv("~/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv", show_col_types = FALSE)
-
-# Clean and sanitize metadata
 meta_clean <- meta_raw %>%
   mutate(externalsampleid = gsub("-", "_", externalsampleid)) %>%
   filter(grepl("CGND_HRA", externalsampleid)) %>%
   distinct(externalsampleid, .keep_all = TRUE) %>%
-  mutate(
-    subject_group = trimws(gsub("[\r\n\t]+", " ", subject_group)),
-    condition = case_when(
-      grepl("ALS", subject_group) ~ "ALS",
-      grepl("Control", subject_group) ~ "Control",
-      TRUE ~ NA_character_
-    ),
-    sex = factor(sex_genotype),
-    age = as.numeric(age_at_death),
-    pmi = as.numeric(post_mortem_interval_in_hours)
-  ) %>%
-  filter(!is.na(condition), !is.na(sex), !is.na(age), !is.na(pmi))
+  mutate(condition = if_else(grepl("ALS", subject_group), "ALS", "Control")) %>%
+  filter(!is.na(age_at_death), !is.na(post_mortem_interval_in_hours))
 
-# Step 2: Mapping
+# --- Step 2: Mapping ---
 map_tissue <- function(t) {
-  case_when(
-    str_detect(t, "(?i)Motor Cortex|BA4|Lateral_motor_cortex") ~ "Motor_Cortex",
-    str_detect(t, "(?i)Cervical") ~ "Cervical_Spinal_Cord",
-    str_detect(t, "(?i)Lumbar|Lumbosacral") ~ "Lumbar_Spinal_Cord",
-    str_detect(t, "(?i)Thoracic") ~ "Thoracic_Spinal_Cord",
-    str_detect(t, "(?i)Frontal") ~ "Frontal_Cortex",
-    str_detect(t, "(?i)Cerebellum") ~ "Cerebellum",
-    str_detect(t, "(?i)Temporal") ~ "Temporal_Cortex",
-    str_detect(t, "(?i)Medulla") ~ "Medulla",
-    str_detect(t, "(?i)Pons") ~ "Pons",
-    str_detect(t, "(?i)Hippocampus") ~ "Hippocampus",
-    TRUE ~ "Other_Unspecified"
-  )
+  case_when(str_detect(t, "(?i)Motor Cortex|BA4") ~ "Motor_Cortex",
+            str_detect(t, "(?i)Cervical") ~ "Cervical_Spinal_Cord",
+            str_detect(t, "(?i)Lumbar") ~ "Lumbar_Spinal_Cord",
+            str_detect(t, "(?i)Frontal") ~ "Frontal_Cortex",
+            str_detect(t, "(?i)Cerebellum") ~ "Cerebellum",
+            TRUE ~ "Other")
 }
-meta_clean <- meta_clean %>% mutate(mapped_tissue = map_tissue(tissue)) %>% filter(mapped_tissue != "Other_Unspecified")
+meta_clean <- meta_clean %>% mutate(mapped_tissue = map_tissue(tissue)) %>% filter(mapped_tissue != "Other")
 
-# Step 3: Crawl and Debug
-message("Step 3: Parsing files and building matrix...")
+# --- Step 3: Parsing with String Sanitization ---
 circ_list <- list()
-
 for (i in 1:nrow(meta_clean)) {
   s_id <- meta_clean$externalsampleid[i]
   f_path <- file.path("/home/zw529/donglab/data/target_ALS", meta_clean$mapped_tissue[i], "RNAseq/Processed", s_id, "circularRNA_known_circ_percentage.txt")
   
   if (file.exists(f_path)) {
-    # Read first 5 lines to check structure
-    data_header <- read.delim(f_path, header = TRUE, nrows = 5)
-    
-    # DEBUG: Print column names to the .out file
-    message("File: ", s_id, " | Columns: ", paste(colnames(data_header), collapse=", "))
-    
-    # Reload full data
     data <- read.delim(f_path, header = TRUE, stringsAsFactors = FALSE)
-    
     if ("readNumber" %in% colnames(data)) {
       circ_list[[s_id]] <- data %>%
-        mutate(circ_id = paste0(chrom, ":", start, "-", end, ":", strand),
+        # Force uniform ID formatting: remove 'chr', lowercase, trim whitespace
+        mutate(circ_id = str_trim(paste0(str_remove(chrom, "chr"), ":", start, "-", end, ":", strand)),
+               circ_id = str_to_lower(circ_id),
                readNumber = as.integer(readNumber)) %>%
         group_by(circ_id) %>% summarise(readNumber = sum(readNumber, na.rm = TRUE), .groups = 'drop')
-    } else {
-      message("WARNING: 'readNumber' NOT FOUND in ", s_id)
     }
-  } else {
-    message("WARNING: Path does not exist: ", f_path)
   }
 }
 
-# Add a check before building the matrix
-if (length(circ_list) == 0) stop("CRITICAL: No data frames loaded into circ_list.")
+# --- Step 4: Matrix Construction ---
+# Use a common ID index (all circRNAs found across ANY sample)
+all_ids <- unique(unlist(lapply(circ_list, function(x) x$circ_id)))
+count_mat <- matrix(0, nrow = length(all_ids), ncol = length(circ_list), dimnames = list(all_ids, names(circ_list)))
 
-count_df <- purrr::reduce(circ_list, full_join, by = "circ_id") %>% replace(is.na(.), 0) %>% column_to_rownames("circ_id")
-common <- intersect(colnames(count_df), meta_clean$externalsampleid)
-count_mat <- as.matrix(count_df[, common])
-storage.mode(count_mat) <- "integer"
+for (s_id in names(circ_list)) {
+  df <- circ_list[[s_id]]
+  count_mat[df$circ_id, s_id] <- df$readNumber
+}
 
-# Step 4: DESeq2
-colData_df <- as.data.frame(meta_clean %>% filter(externalsampleid %in% common))
+# --- Step 5: DESeq2 ---
+common_samples <- intersect(colnames(count_mat), meta_clean$externalsampleid)
+count_mat <- count_mat[, common_samples]
+colData_df <- as.data.frame(meta_clean %>% filter(externalsampleid %in% common_samples))
 rownames(colData_df) <- colData_df$externalsampleid
-dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + pmi + mapped_tissue + condition)
 
+dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + post_mortem_interval_in_hours + mapped_tissue + condition)
 dds <- DESeq(dds[rowSums(counts(dds) >= 5) >= 10,])
 res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) %>% rownames_to_column("circRNA_ID")
 
 write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
-
-# Step 5: Volcano
-ggplot(res, aes(x = log2FoldChange, y = -log10(pvalue), color = pvalue < 0.05)) +
-  geom_point(alpha = 0.4) + theme_minimal() + 
-  labs(title="Differential circRNA Expression (ALS vs Control)") +
-  ggsave(file.path(output_dir, "volcano.png"))
 EOF
