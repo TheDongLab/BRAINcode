@@ -327,10 +327,10 @@ if (nrow(panel1_targets) > 0) {
     stagger_factor <- ((idx - 1) %% 4) + 1
     panel1_targets$y_label_pos <- panel1_targets$y_base * (1.8 + (stagger_factor * 1.5))
     panel1_targets$rotation_angle <- c(45, 60, 75)[((idx - 1) %% 3) + 1]
-    panel1_targets$y_arrow_end <- panel1_targets$y_base * c(1.2, 1.8, 2.5)[((idx - 1) %% 3) + 1]
+    panel1_targets$y_arrow_end <- panel1_targets$y_base * 1.8
     panel1_targets$y_arrow_start <- panel1_targets$y_label_pos * 0.9
     panel1_targets$label_text <- paste0(
-        "circ-", regmatches(panel1_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel1_targets$gene_name)),
+        "circ", regmatches(panel1_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel1_targets$gene_name)),
         " (", panel1_targets$total_reads, ")"
     )
 }
@@ -344,13 +344,19 @@ if (nrow(panel2_targets) > 0) {
     stagger_factor <- ((idx - 1) %% 4) + 1
     panel2_targets$y_label_pos <- 400 * (1.5 ^ stagger_factor)
     panel2_targets$rotation_angle <- c(35, 50, 65)[((idx - 1) %% 3) + 1]
-    panel2_targets$y_arrow_end <- panel2_targets$y_base * c(1.5, 2.5, 4.0)[((idx - 1) %% 3) + 1]
+    panel2_targets$y_arrow_end <- panel2_targets$y_base * 2.5
     panel2_targets$y_arrow_start <- panel2_targets$y_label_pos * 0.85
     panel2_targets$label_text <- paste0(
-        "circ-", regmatches(panel2_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel2_targets$gene_name)),
+        "circ", regmatches(panel2_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel2_targets$gene_name)),
         " (", format(panel2_targets$total_reads, big.mark=","), ")"
     )
 }
+
+# Shared legend for gene category: fill drives the visible legend (from the point markers),
+# color (used for arrows/labels) stays unlabeled so it doesn't duplicate the same legend.
+cat_labels <- c("ALS" = "ALS-associated", "SYN" = "Synapse-associated")
+fill_scale  <- scale_fill_manual(values=cat_colors, name="Gene category", labels=cat_labels)
+color_scale <- scale_color_manual(values=cat_colors, guide="none")
 
 p1_annot <- build_panel1_totals("gray85")
 if (nrow(panel1_targets) > 0) {
@@ -361,8 +367,7 @@ if (nrow(panel1_targets) > 0) {
                    inherit.aes=FALSE, shape=21, color="black", size=2, stroke=0.3) +
         geom_text(data=panel1_targets, aes(x=total_reads, y=y_label_pos, label=label_text, angle=rotation_angle, color=cat),
                   inherit.aes=FALSE, hjust=0, size=1.9, fontface="italic") +
-        scale_fill_manual(values=cat_colors, guide="none") +
-        scale_color_manual(values=cat_colors, guide="none")
+        fill_scale + color_scale
 }
 
 p2_annot <- build_panel2_totals("gray85")
@@ -374,11 +379,12 @@ if (nrow(panel2_targets) > 0) {
                    inherit.aes=FALSE, shape=21, color="black", size=2, stroke=0.3) +
         geom_text(data=panel2_targets, aes(x=total_reads, y=y_label_pos, label=label_text, angle=rotation_angle, color=cat),
                   inherit.aes=FALSE, hjust=0, size=1.9, fontface="italic") +
-        scale_fill_manual(values=cat_colors, guide="none") +
-        scale_color_manual(values=cat_colors, guide="none")
+        fill_scale + color_scale
 }
 
-plot_totals_annotated <- p1_annot + p2_annot + plot_layout(widths=c(0.80, 0.20))
+plot_totals_annotated <- p1_annot + p2_annot +
+    plot_layout(widths=c(0.80, 0.20), guides="collect") &
+    theme(legend.position="right")
 save_ggplot(plot_totals_annotated, "circ_abundance_distribution")
 
 # =========================================================================
