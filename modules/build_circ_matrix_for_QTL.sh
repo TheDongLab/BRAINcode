@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=build_circ_matrix
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/build_circ_matrix.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/build_circ_matrix.err
+#SBATCH --job-name=build_and_plot_circ
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/build_and_plot_circ.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/build_and_plot_circ.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=160G
@@ -222,35 +222,47 @@ module --force purge
 module load R
 
 Rscript - <<'EOF'
-y_ticks <- 10^(0:5)
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(patchwork)
+  library(svglite)
+  library(scales)
+})
+
 out_dir <- "/home/zw529/donglab/data/target_ALS/QTL/"
 table_path <- paste0(out_dir, "circ_abundance_distribution_table.txt")
 
 print("Loading unified metrics table...")
 df_metrics <- read.delim(table_path, header=TRUE, sep="\t")
 
-# =========================================================================
-# IDENTIFY TARGET GENES FOR DYNAMIC PLOT ANNOTATION (>= 10 TOTAL READS)
-# =========================================================================
-target_genes <- c(
-  "ATXN1", "ATXN2", "HOMER1", "QKI", "NTRK2", "SLC8A1", "RIMS1", "RIMS2", 
-  "KCNN2", "MAP7", "FMN2", "SLAIN1", "MTCL1", "AKT3", "PTK2", "HIPK3", 
-  "MIB1", "FBXW7", "VCAN", "LIFR", "RMST", "SOD1", "C9orf72", "FUS", 
-  "TARDBP", "UNC13A", "KIF5A", "TBK1", "OPTN", "DLG4", "SYN1", "SNAP25", "SHANK3"
-)
+y_ticks <- 10^(0:5)
 
-# Construct regex matching exact symbols surrounded by commas, triple underscores, or line boundaries
-gene_regex <- paste0("(^|___|,)(", paste(target_genes, collapse="|"), ")($|___|,)")
-df_targets <- df_metrics[grep(gene_regex, df_metrics$gene_name), ]
-df_targets <- df_targets[df_targets$total_reads >= 10, ]
+# =========================================================================
+# IDENTIFY TARGET GENES
+# =========================================================================
+als_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "TARDBP", "TBK1")
+syn_genes <- c("RIMS1", "RIMS2")
+target_genes <- c(als_genes, syn_genes)
+
+df_metrics$cat <- ifelse(grepl(paste(als_genes, collapse="|"), df_metrics$gene_name), "ALS",
+                  ifelse(grepl(paste(syn_genes, collapse="|"), df_metrics$gene_name), "SYN", NA))
+
+df_targets <- df_metrics[!is.na(df_metrics$cat) & df_metrics$total_reads >= 10, ]
+cat_colors <- c("ALS" = "#E41A1C", "SYN" = "#377EB8")
 
 print(paste("Found", nrow(df_targets), "target circRNAs with total reads >= 10 for annotation."))
 
 # =========================================================================
-# GRAPH 1: COHORT TOTAL DISTRIBUTION (SUMMED SPLIT-AXIS PLOT)
+# HELPER: save a ggplot/patchwork object as PNG + SVG (svglite backend -- no Cairo needed)
 # =========================================================================
-print("Generating original cohort total split-axis distribution plot...")
+save_ggplot <- function(plot_obj, basename, width_in = 11.33, height_in = 5.33, dpi = 300) {
+    ggsave(paste0(out_dir, basename, ".png"), plot=plot_obj, width=width_in, height=height_in, dpi=dpi, units="in")
+    ggsave(paste0(out_dir, basename, ".svg"), plot=plot_obj, width=width_in, height=height_in, units="in", device=svglite::svglite)
+}
 
+# =========================================================================
+# SHARED DATA: TOTAL-READS DISTRIBUTION
+# =========================================================================
 counts_table_tot <- table(df_metrics$total_reads)
 plot_data_tot <- data.frame(
     reads = as.numeric(names(counts_table_tot)),
@@ -259,72 +271,120 @@ plot_data_tot <- data.frame(
 
 df_tot_sorted <- df_metrics[order(-df_metrics$total_reads), ]
 top_outliers_tot <- head(df_tot_sorted, 5)
-
-png_out_tot <- paste0(out_dir, "circ_abundance_distribution.png")
-png(png_out_tot, width=3400, height=1600, res=300)
-
-layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
-
-# --- PANEL 1 (Totals 0 to 300) ---
-par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
-plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
-     xlim=c(0, 300), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
-axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
-mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
-mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
-mtext("Distribution of circRNA Expression by Back-spliced Read Support (Totals)", side=3, line=1, at=185, font=2, cex=1.2)
-
-# Dynamically annotate target genes that fall in Panel 1 (10 to 300 reads)
-par(xpd=TRUE)
-panel1_targets <- df_targets[df_targets$total_reads >= 10 & df_targets$total_reads <= 300, ]
-if(nrow(panel1_targets) > 0) {
-    for(i in 1:nrow(panel1_targets)) {
-        x_pos <- panel1_targets$total_reads[i]
-        # Clean label to extract just the gene symbol name matching our list for space efficiency
-        matched_gene <- regmatches(panel1_targets$gene_name[i], regexpr(paste(target_genes, collapse="|"), panel1_targets$gene_name[i]))
-        label_text <- paste0(matched_gene, " (", x_pos, ")")
-        
-        # Plot an indicator point at the top of the bar, then draw a label above it
-        points(x=x_pos, y=counts_table_tot[as.character(x_pos)], pch=18, col="blue", cex=0.8)
-        text(x=x_pos, y=counts_table_tot[as.character(x_pos)] * 1.5, labels=label_text, srt=90, adj=0, cex=0.5, font=4, col="blue")
-    }
+outliers_p2_tot <- top_outliers_tot[top_outliers_tot$total_reads >= 10000 & top_outliers_tot$total_reads <= 80000, ]
+if (nrow(outliers_p2_tot) > 0) {
+    outliers_p2_tot$label_text <- paste0(outliers_p2_tot$circ_id, " (", outliers_p2_tot$gene_name, ")")
 }
 
-# --- PANEL 2 (Totals 10k to 80k Outliers) ---
-par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
-plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
-     xlim=c(10000, 80000), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
-axis(1, at=c(10000, 40000, 70000), labels=c("10k", "40k", "70k"))
-
-# Standard Outlier Labels for Panel 2
-for(i in 1:nrow(top_outliers_tot)) {
-    x_pos <- top_outliers_tot$total_reads[i]
-    label_text <- paste0(top_outliers_tot$circ_id[i], " (", top_outliers_tot$gene_name[i], ")")
-    if(x_pos >= 10000 & x_pos <= 80000) {
-        segments(x0=x_pos, y0=10000, x1=x_pos, y1=3, lwd=1.2, col="black", lty=2)
-        segments(x0=x_pos, y0=12000, x1=x_pos, y1=25000, lwd=1.5, col="black")
-        text(x=x_pos, y=30000, labels=label_text, srt=90, adj=0, cex=0.5, font=2, col="black")
-    }
+build_panel1_totals <- function(bar_color) {
+    ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
+        geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
+        scale_y_log10(limits=c(1, 1e5), breaks=y_ticks, labels=comma) +
+        coord_cartesian(xlim=c(0, 300)) +
+        labs(x="Number of back-spliced reads", y="Number of circular RNAs",
+             title="Distribution of circRNA Expression by Back-spliced Read Support (Totals)") +
+        theme_classic(base_size=13) +
+        theme(plot.title=element_text(size=12, face="bold"))
 }
 
-# Also check if any target genes were large enough to fall into Panel 2
+build_panel2_totals <- function(bar_color) {
+    p <- ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
+        geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
+        scale_y_log10(limits=c(1, 1e5)) +
+        scale_x_continuous(breaks=c(10000, 40000, 70000), labels=c("10k", "40k", "70k")) +
+        coord_cartesian(xlim=c(10000, 80000)) +
+        labs(x=NULL, y=NULL) +
+        theme_classic(base_size=13) +
+        theme(axis.line.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+    if (nrow(outliers_p2_tot) > 0) {
+        p <- p +
+            geom_segment(data=outliers_p2_tot, aes(x=total_reads, xend=total_reads, y=3, yend=25000),
+                         inherit.aes=FALSE, linewidth=0.5, linetype="dashed", color="black") +
+            geom_text(data=outliers_p2_tot, aes(x=total_reads, y=30000, label=label_text),
+                      inherit.aes=FALSE, angle=90, hjust=0, size=1.8, fontface="bold", color="black")
+    }
+    p
+}
+
+# =========================================================================
+# GRAPH 1a: UNANNOTATED TOTAL DISTRIBUTION (plain red4 split-axis plot)
+# =========================================================================
+print("Generating unannotated cohort total split-axis distribution plot...")
+plot_totals_unannotated <- build_panel1_totals("red4") + build_panel2_totals("red4") + plot_layout(widths=c(0.80, 0.20))
+save_ggplot(plot_totals_unannotated, "circ_abundance_distribution_unannotated")
+
+# =========================================================================
+# GRAPH 1b: ANNOTATED TOTAL DISTRIBUTION (gray85, gene-labeled split-axis plot)
+# =========================================================================
+print("Generating annotated cohort total split-axis distribution plot...")
+
+panel1_targets <- df_targets[df_targets$total_reads <= 300, ]
+panel1_targets <- panel1_targets[order(panel1_targets$total_reads), ]
+if (nrow(panel1_targets) > 0) {
+    panel1_targets$y_base <- as.numeric(counts_table_tot[as.character(panel1_targets$total_reads)])
+    idx <- seq_len(nrow(panel1_targets))
+    stagger_factor <- ((idx - 1) %% 4) + 1
+    panel1_targets$y_label_pos <- panel1_targets$y_base * (1.8 + (stagger_factor * 1.5))
+    panel1_targets$rotation_angle <- c(45, 60, 75)[((idx - 1) %% 3) + 1]
+    panel1_targets$y_arrow_end <- panel1_targets$y_base * c(1.2, 1.8, 2.5)[((idx - 1) %% 3) + 1]
+    panel1_targets$y_arrow_start <- panel1_targets$y_label_pos * 0.9
+    panel1_targets$label_text <- paste0(
+        "circ-", regmatches(panel1_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel1_targets$gene_name)),
+        " (", panel1_targets$total_reads, ")"
+    )
+}
+
 panel2_targets <- df_targets[df_targets$total_reads >= 10000 & df_targets$total_reads <= 80000, ]
-if(nrow(panel2_targets) > 0) {
-    for(i in 1:nrow(panel2_targets)) {
-        x_pos <- panel2_targets$total_reads[i]
-        matched_gene <- regmatches(panel2_targets$gene_name[i], regexpr(paste(target_genes, collapse="|"), panel2_targets$gene_name[i]))
-        text(x=x_pos, y=8000, labels=paste("★", matched_gene), col="blue", font=2, cex=0.6)
-    }
+panel2_targets <- panel2_targets[order(panel2_targets$total_reads), ]
+if (nrow(panel2_targets) > 0) {
+    panel2_targets$y_base <- as.numeric(counts_table_tot[as.character(panel2_targets$total_reads)])
+    panel2_targets$y_base[is.na(panel2_targets$y_base)] <- 1
+    idx <- seq_len(nrow(panel2_targets))
+    stagger_factor <- ((idx - 1) %% 4) + 1
+    panel2_targets$y_label_pos <- 400 * (1.5 ^ stagger_factor)
+    panel2_targets$rotation_angle <- c(35, 50, 65)[((idx - 1) %% 3) + 1]
+    panel2_targets$y_arrow_end <- panel2_targets$y_base * c(1.5, 2.5, 4.0)[((idx - 1) %% 3) + 1]
+    panel2_targets$y_arrow_start <- panel2_targets$y_label_pos * 0.85
+    panel2_targets$label_text <- paste0(
+        "circ-", regmatches(panel2_targets$gene_name, regexpr(paste(target_genes, collapse="|"), panel2_targets$gene_name)),
+        " (", format(panel2_targets$total_reads, big.mark=","), ")"
+    )
 }
 
-text(2500, 0.5, "//", cex=1.2) 
-dev.off()
+p1_annot <- build_panel1_totals("gray85")
+if (nrow(panel1_targets) > 0) {
+    p1_annot <- p1_annot +
+        geom_segment(data=panel1_targets, aes(x=total_reads, xend=total_reads, y=y_arrow_start, yend=y_arrow_end, color=cat),
+                     inherit.aes=FALSE, linewidth=0.4, arrow=arrow(length=unit(0.06, "cm"), angle=15)) +
+        geom_point(data=panel1_targets, aes(x=total_reads, y=y_base, fill=cat),
+                   inherit.aes=FALSE, shape=21, color="black", size=2, stroke=0.3) +
+        geom_text(data=panel1_targets, aes(x=total_reads, y=y_label_pos, label=label_text, angle=rotation_angle, color=cat),
+                  inherit.aes=FALSE, hjust=0, size=1.9, fontface="italic") +
+        scale_fill_manual(values=cat_colors, guide="none") +
+        scale_color_manual(values=cat_colors, guide="none")
+}
 
+p2_annot <- build_panel2_totals("gray85")
+if (nrow(panel2_targets) > 0) {
+    p2_annot <- p2_annot +
+        geom_segment(data=panel2_targets, aes(x=total_reads, xend=total_reads, y=y_arrow_start, yend=y_arrow_end, color=cat),
+                     inherit.aes=FALSE, linewidth=0.4, arrow=arrow(length=unit(0.06, "cm"), angle=15)) +
+        geom_point(data=panel2_targets, aes(x=total_reads, y=y_base, fill=cat),
+                   inherit.aes=FALSE, shape=21, color="black", size=2, stroke=0.3) +
+        geom_text(data=panel2_targets, aes(x=total_reads, y=y_label_pos, label=label_text, angle=rotation_angle, color=cat),
+                  inherit.aes=FALSE, hjust=0, size=1.9, fontface="italic") +
+        scale_fill_manual(values=cat_colors, guide="none") +
+        scale_color_manual(values=cat_colors, guide="none")
+}
+
+plot_totals_annotated <- p1_annot + p2_annot + plot_layout(widths=c(0.80, 0.20))
+save_ggplot(plot_totals_annotated, "circ_abundance_distribution")
 
 # =========================================================================
-# GRAPH 2: CROSS-SUBJECT AVERAGES DISTRIBUTION (AVERAGED SPLIT-AXIS PLOT)
+# GRAPH 2: CROSS-SUBJECT AVERAGES DISTRIBUTION (unannotated, darkorange2)
 # =========================================================================
-print("Generating new cohort average split-axis distribution plot...")
+print("Generating cohort average split-axis distribution plot...")
 
 bin_width <- 0.05
 breaks_seq <- seq(0, max(df_metrics$avg_reads) + bin_width, by=bin_width)
@@ -338,43 +398,42 @@ plot_data_avg <- data.frame(
 df_avg_sorted <- df_metrics[order(-df_metrics$avg_reads), ]
 top_outliers_avg <- head(df_avg_sorted, 5)
 
-png_out_avg <- paste0(out_dir, "circ_abundance_averages.png")
-png(png_out_avg, width=3400, height=1600, res=300)
-
-layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
-
-# Panel 1 (Averages 0 to 20)
-par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
-plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="darkorange2", lwd=1.5, lend="square",
-     xlim=c(0, 20), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
-axis(2, at=y_ticks, labels=format(y_ticks, big.mark=",", scientific=FALSE), las=1, cex.axis=1.0)
-mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
-mtext("Average number of back-spliced reads per sample", side=1, line=2.5, at=12.5, cex=1.1)
-mtext("Distribution of circRNA Expression by Average Back-spliced Read Support", side=3, line=1, at=12.5, font=2, cex=1.2)
-
-# Panel 2 (Averages Extreme Outliers)
-par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
 max_avg <- max(plot_data_avg$reads_bin_center)
 xlim_p2_avg <- c(max_avg * 0.15, max_avg * 1.05)
 
-plot(plot_data_avg$reads_bin_center, plot_data_avg$circ_count, log="y", type="h", col="darkorange2", lwd=1.5, lend="square",
-     xlim=xlim_p2_avg, ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
-
-axis(1, at=round(seq(xlim_p2_avg[1], xlim_p2_avg[2], length.out=3), 1))
-
-par(xpd=TRUE)
-for(i in 1:nrow(top_outliers_avg)) {
-    x_pos <- top_outliers_avg$avg_reads[i]
-    label_text <- paste0(top_outliers_avg$circ_id[i], " (", top_outliers_avg$gene_name[i], ")")
-    if(x_pos >= xlim_p2_avg[1] & x_pos <= xlim_p2_avg[2]) {
-        segments(x0=x_pos, y0=10000, x1=x_pos, y1=3, lwd=1.2, col="black", lty=2)
-        segments(x0=x_pos, y0=12000, x1=x_pos, y1=25000, lwd=1.5, col="black")
-        text(x=x_pos, y=30000, labels=label_text, srt=45, adj=c(0, 0), cex=0.5, font=2, col="black")
-    }
+outliers_p2_avg <- top_outliers_avg[top_outliers_avg$avg_reads >= xlim_p2_avg[1] & top_outliers_avg$avg_reads <= xlim_p2_avg[2], ]
+if (nrow(outliers_p2_avg) > 0) {
+    outliers_p2_avg$label_text <- paste0(outliers_p2_avg$circ_id, " (", outliers_p2_avg$gene_name, ")")
 }
 
-text(xlim_p2_avg[1] - (xlim_p2_avg[1] * 0.18), 0.5, "//", cex=1.2) 
-dev.off()
+p1_avg <- ggplot(plot_data_avg, aes(x=reads_bin_center, y=circ_count)) +
+    geom_segment(aes(xend=reads_bin_center, y=0, yend=circ_count), color="darkorange2", linewidth=1, lineend="square") +
+    scale_y_log10(limits=c(1, 1e5), breaks=y_ticks, labels=comma) +
+    coord_cartesian(xlim=c(0, 20)) +
+    labs(x="Average number of back-spliced reads per sample", y="Number of circular RNAs",
+         title="Distribution of circRNA Expression by Average Back-spliced Read Support") +
+    theme_classic(base_size=13) +
+    theme(plot.title=element_text(size=12, face="bold"))
 
-print("SUCCESS: Unified table saved, split-axis plots updated, and target genes annotated.")
+p2_avg <- ggplot(plot_data_avg, aes(x=reads_bin_center, y=circ_count)) +
+    geom_segment(aes(xend=reads_bin_center, y=0, yend=circ_count), color="darkorange2", linewidth=1, lineend="square") +
+    scale_y_log10(limits=c(1, 1e5)) +
+    scale_x_continuous(breaks=round(seq(xlim_p2_avg[1], xlim_p2_avg[2], length.out=3), 1)) +
+    coord_cartesian(xlim=xlim_p2_avg) +
+    labs(x=NULL, y=NULL) +
+    theme_classic(base_size=13) +
+    theme(axis.line.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+
+if (nrow(outliers_p2_avg) > 0) {
+    p2_avg <- p2_avg +
+        geom_segment(data=outliers_p2_avg, aes(x=avg_reads, xend=avg_reads, y=3, yend=25000),
+                     inherit.aes=FALSE, linewidth=0.5, linetype="dashed", color="black") +
+        geom_text(data=outliers_p2_avg, aes(x=avg_reads, y=30000, label=label_text),
+                  inherit.aes=FALSE, angle=45, hjust=0, size=1.8, fontface="bold", color="black")
+}
+
+plot_averages <- p1_avg + p2_avg + plot_layout(widths=c(0.80, 0.20))
+save_ggplot(plot_averages, "circ_abundance_averages")
+
+print("SUCCESS: circ matrix rebuilt; 3 plots (unannotated totals, annotated totals, averages) saved as PNG and SVG via ggplot2/ggsave.")
 EOF
