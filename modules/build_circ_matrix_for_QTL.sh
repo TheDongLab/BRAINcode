@@ -78,11 +78,9 @@ def find_overlapping_genes(circ_id):
 # =========================================================================
 # STEP 2: MATRIX GENERATION & VARIANCE FILTERING
 # =========================================================================
-# Load Metadata
 rna = pd.read_csv(BASE / "targetALS_rnaseq_metadata.csv")
 rna.columns = rna.columns.str.strip().str.lower()
 
-# Find circularRNA files
 all_circ = list(BASE.glob("**/RNAseq/Processed/*/circularRNA_known_circ_percentage.txt"))
 
 def find_circ(sample_id):
@@ -93,15 +91,12 @@ def find_circ(sample_id):
             return c
     return None
 
-# Match paths
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
 
-# Drop duplicate metadata entries
 rna_found = rna_found.drop_duplicates(subset=["externalsampleid"], keep="first")
 print(f"Cleaned unique RNA samples for matrix processing: {len(rna_found)}")
 
-# Build Percentage Matrix & Track Raw Backspliced Reads
 expr = None
 reads_list = []
 
@@ -147,7 +142,6 @@ for next_df in reads_list[1:]:
     reads_master = reads_master.merge(next_df, on="circ_id", how="outer")
 reads_master = reads_master.fillna(0)
 
-# Variance-Based Filtering
 circ_ids = expr['circ_id']
 numeric_data = expr.drop('circ_id', axis=1)
 row_sds = numeric_data.std(axis=1)
@@ -166,16 +160,10 @@ print("Calculating read metrics and mapping host genes...")
 reads_filtered = reads_master[reads_master["circ_id"].isin(filtered_circ_ids)].copy()
 numeric_reads_filtered = reads_filtered.drop(columns=["circ_id"])
 
-# 1. Total reads per circRNA across cohort
 total_reads_filtered = numeric_reads_filtered.sum(axis=1)
-
-# 2. Average reads per circRNA across all samples (including zeros)
 mean_reads_filtered = numeric_reads_filtered.mean(axis=1)
-
-# 3. Average reads per circRNA across only active samples (excluding zeros)
 mean_reads_nonzero_only = numeric_reads_filtered.replace(0, np.nan).mean(axis=1).fillna(0)
 
-# Build unified dataframe
 master_metrics = pd.DataFrame({
     "circ_id": reads_filtered["circ_id"],
     "total_reads": total_reads_filtered,
@@ -185,26 +173,21 @@ master_metrics = pd.DataFrame({
 
 master_metrics["gene_name"] = master_metrics["circ_id"].apply(find_overlapping_genes)
 
-# Order and filter to keep only circRNAs supported by active transcription (reads > 0)
 col_order = ["circ_id", "gene_name", "total_reads", "avg_reads", "avg_reads_nonzero_only"]
 master_metrics = master_metrics[col_order]
 master_metrics_filtered = master_metrics[master_metrics["total_reads"] > 0].copy()
 
-# Save Outputs
 expr_final.to_csv(OUT / "circ_matrix.txt", sep="\t", index=False)
 rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
     OUT / "circ_sample_metadata.csv", index=False
 )
 
-# Export the single metrics table
-master_metrics_filtered.to_csv(OUT / "circ_abundance_metrics_table.txt", sep="\t", index=False)
+master_metrics_filtered.to_csv(OUT / "circ_abundance_distribution_table.txt", sep="\t", index=False)
 
-# Keep the lightweight temporary summary outputs for backwards-compatibility or downstream processes
-reads_summary = pd.DataFrame({"circ_id": reads_master["circ_id"], "total_reads": total_reads_per_circ = reads_master.drop(columns=["circ_id"]).sum(axis=1)})
+reads_summary = pd.DataFrame({"circ_id": reads_master["circ_id"], "total_reads": reads_master.drop(columns=["circ_id"]).sum(axis=1)})
 reads_summary[reads_summary["circ_id"].isin(filtered_circ_ids)].to_csv(OUT / "filtered_reads_summary.tmp", sep="\t", index=False)
 pd.DataFrame({"circ_id": reads_filtered["circ_id"], "avg_reads": mean_reads_filtered}).to_csv(OUT / "filtered_averages_summary.tmp", sep="\t", index=False)
 
-# GENERATE RUN STATISTICS
 num_circs, num_samples = filtered_numeric.shape
 total_cells = filtered_numeric.size
 nonzero_cells = (filtered_numeric > 0).sum().sum()
@@ -241,11 +224,27 @@ module load R
 Rscript - <<'EOF'
 y_ticks <- 10^(0:5)
 out_dir <- "/home/zw529/donglab/data/target_ALS/QTL/"
-table_path <- paste0(out_dir, "circ_abundance_metrics_table.txt")
+table_path <- paste0(out_dir, "circ_abundance_distribution_table.txt")
 
-# Load the single unified table
 print("Loading unified metrics table...")
 df_metrics <- read.delim(table_path, header=TRUE, sep="\t")
+
+# =========================================================================
+# IDENTIFY TARGET GENES FOR DYNAMIC PLOT ANNOTATION (>= 10 TOTAL READS)
+# =========================================================================
+target_genes <- c(
+  "ATXN1", "ATXN2", "HOMER1", "QKI", "NTRK2", "SLC8A1", "RIMS1", "RIMS2", 
+  "KCNN2", "MAP7", "FMN2", "SLAIN1", "MTCL1", "AKT3", "PTK2", "HIPK3", 
+  "MIB1", "FBXW7", "VCAN", "LIFR", "RMST", "SOD1", "C9orf72", "FUS", 
+  "TARDBP", "UNC13A", "KIF5A", "TBK1", "OPTN", "DLG4", "SYN1", "SNAP25", "SHANK3"
+)
+
+# Construct regex matching exact symbols surrounded by commas, triple underscores, or line boundaries
+gene_regex <- paste0("(^|___|,)(", paste(target_genes, collapse="|"), ")($|___|,)")
+df_targets <- df_metrics[grep(gene_regex, df_metrics$gene_name), ]
+df_targets <- df_targets[df_targets$total_reads >= 10, ]
+
+print(paste("Found", nrow(df_targets), "target circRNAs with total reads >= 10 for annotation."))
 
 # =========================================================================
 # GRAPH 1: COHORT TOTAL DISTRIBUTION (SUMMED SPLIT-AXIS PLOT)
@@ -266,7 +265,7 @@ png(png_out_tot, width=3400, height=1600, res=300)
 
 layout(matrix(c(1, 2), nrow=1), widths=c(0.80, 0.20))
 
-# Panel 1 (Totals 0 to 300)
+# --- PANEL 1 (Totals 0 to 300) ---
 par(mar=c(4.5, 6.5, 3, 0.5), bty="l") 
 plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
      xlim=c(0, 300), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n")
@@ -275,13 +274,29 @@ mtext("Number of circular RNAs", side=2, line=4.2, cex=1.1)
 mtext("Number of back-spliced reads", side=1, line=2.5, at=185, cex=1.1)
 mtext("Distribution of circRNA Expression by Back-spliced Read Support (Totals)", side=3, line=1, at=185, font=2, cex=1.2)
 
-# Panel 2 (Totals 10k to 80k Outliers)
+# Dynamically annotate target genes that fall in Panel 1 (10 to 300 reads)
+par(xpd=TRUE)
+panel1_targets <- df_targets[df_targets$total_reads >= 10 & df_targets$total_reads <= 300, ]
+if(nrow(panel1_targets) > 0) {
+    for(i in 1:nrow(panel1_targets)) {
+        x_pos <- panel1_targets$total_reads[i]
+        # Clean label to extract just the gene symbol name matching our list for space efficiency
+        matched_gene <- regmatches(panel1_targets$gene_name[i], regexpr(paste(target_genes, collapse="|"), panel1_targets$gene_name[i]))
+        label_text <- paste0(matched_gene, " (", x_pos, ")")
+        
+        # Plot an indicator point at the top of the bar, then draw a label above it
+        points(x=x_pos, y=counts_table_tot[as.character(x_pos)], pch=18, col="blue", cex=0.8)
+        text(x=x_pos, y=counts_table_tot[as.character(x_pos)] * 1.5, labels=label_text, srt=90, adj=0, cex=0.5, font=4, col="blue")
+    }
+}
+
+# --- PANEL 2 (Totals 10k to 80k Outliers) ---
 par(mar=c(4.5, 0.5, 3, 1.5), bty="n") 
 plot(plot_data_tot$reads, plot_data_tot$circ_count, log="y", type="h", col="red4", lwd=2, lend="square",
      xlim=c(10000, 80000), ylim=c(1, 100000), xlab="", ylab="", main="", yaxt="n", xaxt="n")
 axis(1, at=c(10000, 40000, 70000), labels=c("10k", "40k", "70k"))
 
-par(xpd=TRUE)
+# Standard Outlier Labels for Panel 2
 for(i in 1:nrow(top_outliers_tot)) {
     x_pos <- top_outliers_tot$total_reads[i]
     label_text <- paste0(top_outliers_tot$circ_id[i], " (", top_outliers_tot$gene_name[i], ")")
@@ -291,6 +306,17 @@ for(i in 1:nrow(top_outliers_tot)) {
         text(x=x_pos, y=30000, labels=label_text, srt=90, adj=0, cex=0.5, font=2, col="black")
     }
 }
+
+# Also check if any target genes were large enough to fall into Panel 2
+panel2_targets <- df_targets[df_targets$total_reads >= 10000 & df_targets$total_reads <= 80000, ]
+if(nrow(panel2_targets) > 0) {
+    for(i in 1:nrow(panel2_targets)) {
+        x_pos <- panel2_targets$total_reads[i]
+        matched_gene <- regmatches(panel2_targets$gene_name[i], regexpr(paste(target_genes, collapse="|"), panel2_targets$gene_name[i]))
+        text(x=x_pos, y=8000, labels=paste("★", matched_gene), col="blue", font=2, cex=0.6)
+    }
+}
+
 text(2500, 0.5, "//", cex=1.2) 
 dev.off()
 
@@ -350,5 +376,5 @@ for(i in 1:nrow(top_outliers_avg)) {
 text(xlim_p2_avg[1] - (xlim_p2_avg[1] * 0.18), 0.5, "//", cex=1.2) 
 dev.off()
 
-print("SUCCESS: Unified table saved and split-axis plots updated.")
+print("SUCCESS: Unified table saved, split-axis plots updated, and target genes annotated.")
 EOF
