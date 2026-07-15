@@ -2,8 +2,8 @@
 ###########################################
 # RNAseq pipeline (paired-end, stranded)
 # Author: Xianjun Dong & Zachery Wolfe (Zachery updated)
-# Date: 3/19/2026
-# Version: 5.4 (Dynamic user home paths via $4 or default $USER fallback)
+# Date: 7/15/2026
+# Version: 5.5 (Updated circ percentage calculation)
 ###########################################
 
 set -euo pipefail
@@ -62,7 +62,15 @@ ANNOT_BEDS="${STAR_GENOME}"
 STAR_BAM="$SAMPLE_DIR/STAR.Aligned.sortedByCoord.out.bam"
 STAR_CREATED_BAM=false
  
-EXISTING_BAM=$(ls "$SAMPLE_DIR"/*.sorted.bam "$SAMPLE_DIR"/*.final.bam 2>/dev/null | head -1 || true)
+# ── Bulletproof BAM Discovery ──
+# Find all real, physical .bam files in the sample directory while ignoring remaps
+EXISTING_BAM=""
+while IFS= read -r candidate; do
+    if [[ -f "$candidate" && ! "$candidate" =~ "remap" ]]; then
+        EXISTING_BAM="$candidate"
+        break
+    fi
+done < <(find "$SAMPLE_DIR" -maxdepth 1 -type f -name "*.bam" 2>/dev/null)
  
 if [ -n "$EXISTING_BAM" ]; then
  
@@ -181,12 +189,42 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
  
         if [ -s circularRNA_known.txt ]; then
  
-            [ -f "${BAM}.bai" ] || samtools index "$BAM"
+            # Make sure the ORIGINAL BAM is indexed (the one holding the linear reads)
+            [ -f "${STAR_BAM}.bai" ] || samtools index "${STAR_BAM}"
  
-            python3 "/home/${TARGET_USER}/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py" \
-                "$SAMPLE_DIR/circularRNA_known.txt" && \
+            # ------------------------------------------------------------------
+            # 5a. Generate the 1nt splice boundaries BED dynamically
+            # ------------------------------------------------------------------
+            echo "[STEP 5a] Extracting 2-point splice boundary coordinates..."
+            awk 'BEGIN {FS="\t"; OFS="\t"} {
+                circ_id=$1"_" $2"_" $3;
+                print $1, $2, $2+1, circ_id, 0, $6;
+                print $1, $3-1, $3, circ_id, 0, $6;
+            }' circularRNA_known.txt | sortBed -i stdin -faidx "$GENOME_FAI" > temp.ends.bed
+
+            # ------------------------------------------------------------------
+            # 5b. Run bedtools coverage against the ORIGINAL STAR_BAM 
+            # ------------------------------------------------------------------
+            echo "[STEP 5b] Calculating local boundary linear coverage from original BAM..."
+            bedtools coverage -split -b "${STAR_BAM}" -a temp.ends.bed -sorted -counts -g "$GENOME_FAI" > temp.ends.counts
+
+            # ------------------------------------------------------------------
+            # 5c. Execute python percentage calculation synchronously
+            # ------------------------------------------------------------------
+            echo "[STEP 5c] Computing final circularization ratios..."
+            python3 "/home/zw529/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py" \
+                "circularRNA_known.txt" \
+                "temp.ends.counts" \
+                "circularRNA_known.calculated.txt"
+
+            # Replace original file with newly calculated version
+            mv "circularRNA_known.calculated.txt" "circularRNA_known.txt"
+
+            # Clean up temporary run files
+            rm -f temp.ends.bed temp.ends.counts
+            # ------------------------------------------------------------------
  
-            { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
+            { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron\tcirc_reads\tlinear_reads\tcirc_percent"; \
             cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
             mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
  
