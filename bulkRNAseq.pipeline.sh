@@ -48,7 +48,7 @@ SCRIPT="$PIPELINE_DIR/_RNAseq.sh"
 
 # ── Target experiments ────────────────────────────────────────────────────────
 # Format: "EXPERIMENT_NAME|raw"   --> discover from RNAseq/Raw/, output to RNAseq/Processed/
-#         "EXPERIMENT_NAME|processed" --> discover from RNAseq/Processed/ (BAM already present)
+#          "EXPERIMENT_NAME|processed" --> discover from RNAseq/Processed/ (BAM already present)
 EXPERIMENTS=(
 #    "AMPALS_GSE124439|raw"
 #    "AMPALS_GSE219281|raw"
@@ -144,26 +144,38 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
         echo "Output : $OUTDIR"
         echo "=============================="
 
-        # Find the existing BAM (*.sorted.bam or *.final.bam)
-        EXISTING_BAM=$(ls "$OUTDIR"/*.sorted.bam "$OUTDIR"/*.final.bam 2>/dev/null | head -1 || true)
+        # ── Bulletproof BAM Discovery ──
+        # Scan folder for genuine, physical .bam files while filtering out remaps or symlink debris
+        EXISTING_BAM=""
+        while IFS= read -r candidate; do
+            if [[ -f "$candidate" && ! "$candidate" =~ "remap" ]]; then
+                EXISTING_BAM="$candidate"
+                break
+            fi
+        done < <(find "$OUTDIR" -maxdepth 1 -type f -name "*.bam" 2>/dev/null)
+
         if [[ -z "$EXISTING_BAM" ]]; then
-            echo "ERROR: No .sorted.bam or .final.bam found in $OUTDIR — skipping."
+            echo "ERROR: No valid, non-remapped BAM found in $OUTDIR — skipping." >&2
             exit 1
         fi
 
-        # Symlink BAM and BAI to the names _RNAseq.sh expects
-        if [[ ! -f "$EXPECTED_BAM" ]]; then
-            ln -s "$EXISTING_BAM" "$EXPECTED_BAM"
-            echo "Symlinked: $(basename "$EXISTING_BAM") -> STAR.Aligned.sortedByCoord.out.bam"
-        fi
-        if [[ ! -f "${EXPECTED_BAM}.bai" ]]; then
+        # Force overwrite (-sf) to resolve double-nested or broken link states safely
+        ln -sf "$EXISTING_BAM" "$EXPECTED_BAM"
+        echo "Symlinked: $(basename "$EXISTING_BAM") -> STAR.Aligned.sortedByCoord.out.bam"
+
+        # Resolve BAI indexes supporting both sample.bam.bai and sample.bai extensions
+        EXISTING_BAI=""
+        if [[ -f "${EXISTING_BAM}.bai" ]]; then
             EXISTING_BAI="${EXISTING_BAM}.bai"
-            if [[ -f "$EXISTING_BAI" ]]; then
-                ln -s "$EXISTING_BAI" "${EXPECTED_BAM}.bai"
-                echo "Symlinked: $(basename "$EXISTING_BAI") -> STAR.Aligned.sortedByCoord.out.bam.bai"
-            else
-                echo "WARNING: No .bai found — samtools index will run in step 5."
-            fi
+        elif [[ -f "${EXISTING_BAM%.bam}.bai" ]]; then
+            EXISTING_BAI="${EXISTING_BAM%.bam}.bai"
+        fi
+
+        if [[ -n "$EXISTING_BAI" ]]; then
+            ln -sf "$EXISTING_BAI" "${EXPECTED_BAM}.bai"
+            echo "Symlinked: $(basename "$EXISTING_BAI") -> STAR.Aligned.sortedByCoord.out.bam.bai"
+        else
+            echo "WARNING: No .bai found — samtools index will run in step 5."
         fi
 
         # Pre-touch status files for steps 1-4 so _RNAseq.sh skips them
@@ -172,7 +184,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
         done
         echo "Pre-touched status files for steps 1-4 (fastqc, trim, kpal, mapping)."
 
-        # Call _RNAseq.sh with dummy FASTQ args (steps 1-4 will be skipped) and the username argument ($4)
+        # Call _RNAseq.sh with dummy FASTQ args (steps 1-4 will be skipped) and username argument
         cd "$PIPELINE_DIR"
         bash "$SCRIPT" "SKIP" "SKIP" "$OUTDIR" "$TARGET_USER" \
             > "$OUTDIR/output.out" \
