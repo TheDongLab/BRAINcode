@@ -276,6 +276,10 @@ if (nrow(outliers_p2_tot) > 0) {
     outliers_p2_tot$label_text <- paste0(outliers_p2_tot$circ_id, " (", outliers_p2_tot$gene_name, ")")
 }
 
+# Extra headroom past the rightmost outlier so rotated labels near the edge (e.g. circHOMER1)
+# have room to render instead of getting clipped by the panel/canvas boundary.
+xlim_p2_upper <- max(df_metrics$total_reads, na.rm=TRUE) * 1.15
+
 build_panel1_totals <- function(bar_color) {
     ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
         geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
@@ -292,10 +296,11 @@ build_panel2_totals <- function(bar_color) {
         geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
         scale_y_log10(limits=c(1, 1e5)) +
         scale_x_continuous(breaks=c(10000, 40000, 70000), labels=c("10k", "40k", "70k")) +
-        coord_cartesian(xlim=c(10000, 80000)) +
+        coord_cartesian(xlim=c(10000, xlim_p2_upper), clip="off") +
         labs(x=NULL, y=NULL) +
         theme_classic(base_size=13) +
-        theme(axis.line.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+        theme(axis.line.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(),
+              plot.margin=margin(t=5.5, r=35, b=5.5, l=5.5))
 
     if (nrow(outliers_p2_tot) > 0) {
         p <- p +
@@ -311,8 +316,8 @@ build_panel2_totals <- function(bar_color) {
 # GRAPH 1a: UNANNOTATED TOTAL DISTRIBUTION (plain red4 split-axis plot)
 # =========================================================================
 print("Generating unannotated cohort total split-axis distribution plot...")
-plot_totals_unannotated <- build_panel1_totals("red4") + build_panel2_totals("red4") + plot_layout(widths=c(0.80, 0.20))
-save_ggplot(plot_totals_unannotated, "circ_abundance_distribution_unannotated")
+plot_totals_unannotated <- build_panel1_totals("red4") + build_panel2_totals("red4") + plot_layout(widths=c(0.76, 0.24))
+save_ggplot(plot_totals_unannotated, "circ_abundance_distribution_unannotated", width_in=12.5)
 
 # =========================================================================
 # GRAPH 1b: ANNOTATED TOTAL DISTRIBUTION (gray85, gene-labeled split-axis plot)
@@ -352,13 +357,14 @@ if (nrow(panel2_targets) > 0) {
     )
 }
 
-# Shared legend for gene category: fill drives the visible legend (from the point markers),
-# color (used for arrows/labels) stays unlabeled so it doesn't duplicate the same legend.
+# Gene category colors are explained via a subtitle instead of a side legend
+# (a legend was pushing in from the right and clipping the outlier panel).
 cat_labels <- c("ALS" = "ALS-associated", "SYN" = "Synapse-associated")
-fill_scale  <- scale_fill_manual(values=cat_colors, name="Gene category", labels=cat_labels)
+fill_scale  <- scale_fill_manual(values=cat_colors, guide="none")
 color_scale <- scale_color_manual(values=cat_colors, guide="none")
 
-p1_annot <- build_panel1_totals("gray85")
+p1_annot <- build_panel1_totals("gray85") +
+    labs(subtitle="Red = ALS-associated genes   |   Blue = Synapse-associated genes")
 if (nrow(panel1_targets) > 0) {
     p1_annot <- p1_annot +
         geom_segment(data=panel1_targets, aes(x=total_reads, xend=total_reads, y=y_arrow_start, yend=y_arrow_end, color=cat),
@@ -382,10 +388,8 @@ if (nrow(panel2_targets) > 0) {
         fill_scale + color_scale
 }
 
-plot_totals_annotated <- p1_annot + p2_annot +
-    plot_layout(widths=c(0.80, 0.20), guides="collect") &
-    theme(legend.position="right")
-save_ggplot(plot_totals_annotated, "circ_abundance_distribution")
+plot_totals_annotated <- p1_annot + p2_annot + plot_layout(widths=c(0.76, 0.24))
+save_ggplot(plot_totals_annotated, "circ_abundance_distribution", width_in=12.5)
 
 # =========================================================================
 # GRAPH 2: CROSS-SUBJECT AVERAGES DISTRIBUTION (unannotated, darkorange2)
