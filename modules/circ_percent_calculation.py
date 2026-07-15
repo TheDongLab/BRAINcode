@@ -1,79 +1,52 @@
 #!/usr/bin/env python3
-# ~/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py
-#
-# circ_reads:   parsed from circular_RNA/N in col 4 (name) of circularRNA_known.txt
-#               (authoritative — this is what CIRCexplorer2 used internally)
-# linear_reads: summed from exonSizes col 11 of circularRNA_known.txt
-#               (reads spanning internal splice junctions flanking the circRNA)
-#               single-exon circs (exonCount==1) get linear=0 by definition
-# BAM file not needed
-
 import pandas as pd
 import sys
 
-if len(sys.argv) != 2:
-    print("Usage: python circ_percent_calculation.py <circularRNA_known.txt>")
+if len(sys.argv) != 4:
+    print("Usage: python circ_percent_calculation.py <circularRNA_known.txt> <ends_counts_file> <output_percentage.txt>")
     sys.exit(1)
 
 circ_file = sys.argv[1]
-out_file  = circ_file.replace(".txt", "_circ_percentage.txt")
+counts_file = sys.argv[2]
+out_file = sys.argv[3]
 
-# -------------------------------------------------------------------------
-# Column names for circularRNA_known.txt (official CIRCexplorer2 names)
-# -------------------------------------------------------------------------
-circ_columns = [
+# 1. Read boundary coverage counts (original bed format + count in column 6)
+counts_df = pd.read_csv(counts_file, sep="\t", header=None, 
+                        names=["chrom", "start", "end", "circ_id", "score", "strand", "linear_count"])
+
+# Sum start and end boundary count values per circ_id
+linear_summed = counts_df.groupby("circ_id")["linear_count"].sum().to_dict()
+
+# 2. Load the circularRNA annotations (no header in this raw output step)
+circ_cols = [
     "chrom", "start", "end", "name", "score", "strand",
     "thickStart", "thickEnd", "itemRgb",
     "exonCount", "exonSizes", "exonOffsets", "readNumber",
     "circType", "geneName", "isoformName", "index", "flankIntron"
 ]
-circ = pd.read_csv(circ_file, sep="\t", header=None, names=circ_columns, dtype=str)
+circ = pd.read_csv(circ_file, sep="\t", header=None, names=circ_cols, dtype=str)
 
-# -------------------------------------------------------------------------
-# circ_reads from name col: circular_RNA/N -> N
-# This is the authoritative back-splice read count from CIRCexplorer2
-# -------------------------------------------------------------------------
-circ["circ_exon"] = circ["name"].apply(
+# Map dynamic index keys
+circ["circ_id"] = circ["chrom"] + "_" + circ["start"] + "_" + circ["end"]
+
+# Parse the target circ reads from the standard name format (e.g. circ_id/counts)
+circ["circ_reads"] = circ["name"].apply(
     lambda x: int(x.split("/")[1]) if isinstance(x, str) and "/" in x else 0
 )
 
-# -------------------------------------------------------------------------
-# linear_reads from exonSizes col: sum comma-separated junction read counts
-# single-exon circs (exonCount==1): exonSizes is exon size not read count
-# so set linear=0 for these
-# -------------------------------------------------------------------------
-def sum_junction_reads(row):
-    if str(row["exonCount"]).strip() == "1":
-        return 0
-    s = row["exonSizes"]
-    if pd.isna(s) or str(s).strip() in ("", "0"):
-        return 0
-    try:
-        return sum(int(x) for x in str(s).split(","))
-    except ValueError:
-        return 0
+# Align the mapped linear counts
+circ["linear_reads"] = circ["circ_id"].map(linear_summed).fillna(0).astype(int)
 
-circ["linear_exon"] = circ.apply(sum_junction_reads, axis=1)
-
-# -------------------------------------------------------------------------
-# circ_percent = circ_reads / (circ_reads + linear_reads)
-# If both are 0, set to 1.0
-# -------------------------------------------------------------------------
+# 3. Calculate: circ / (circ + linear)
 circ["circ_percent"] = circ.apply(
     lambda row: (
-        row["circ_exon"] / (row["circ_exon"] + row["linear_exon"])
-        if (row["circ_exon"] + row["linear_exon"]) > 0
-        else 1.0
+        row["circ_reads"] / (row["circ_reads"] + row["linear_reads"])
+        if (row["circ_reads"] + row["linear_reads"]) > 0
+        else 0.0
     ),
     axis=1
 )
 
-# -------------------------------------------------------------------------
-# Write output
-# -------------------------------------------------------------------------
-circ.to_csv(out_file, sep="\t", index=False)
-print(f"[DONE] circRNA percentage written to {out_file}")
-print(f"[INFO] Total circRNAs: {len(circ)}")
-print(f"[INFO] circRNAs with circ reads > 0: {(circ['circ_exon'] > 0).sum()}")
-print(f"[INFO] circRNAs with linear support: {(circ['linear_exon'] > 0).sum()}")
-print(f"[INFO] Mean circ_percent: {circ['circ_percent'].mean():.3f}")
+# 4. Save calculations without the ID helper column (header will be cleanly added by parent pipeline)
+circ.drop(columns=["circ_id"], inplace=True)
+circ.to_csv(out_file, sep="\t", header=False, index=False)
