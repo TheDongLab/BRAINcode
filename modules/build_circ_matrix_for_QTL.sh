@@ -36,7 +36,6 @@ def norm_id(x):
 # STEP 1: LOAD GENOMIC ANNOTATIONS (BED6)
 # =========================================================================
 print("Loading GENCODE v49 gene annotations...")
-# BED6 columns: chrom, start, end, gene_name, score, strand
 genes_by_chrom = defaultdict(list)
 if GENE_BED.exists():
     with open(GENE_BED, "r") as f:
@@ -52,13 +51,9 @@ if GENE_BED.exists():
                 genes_by_chrom[chrom].append((start, end, gene_name))
     print(f"Loaded annotations for {len(genes_by_chrom)} chromosomes.")
 else:
-    print(f"Warning: Gene annotation BED6 file not found at {GENE_BED}. Tables will use 'NA' for gene names.")
+    print(f"Warning: Gene annotation BED6 file not found at {GENE_BED}. Table will use 'NA' for gene names.")
 
 def find_overlapping_genes(circ_id):
-    """
-    Parses a circ_id (format 'chrom:start-end:strand') and finds overlapping 
-    genes on the same chromosome interval.
-    """
     try:
         parts = circ_id.split(":")
         chrom = parts[0]
@@ -73,7 +68,6 @@ def find_overlapping_genes(circ_id):
     
     overlapping = []
     for g_start, g_end, g_name in genes_by_chrom[chrom]:
-        # Overlap logic: standard interval intersection
         if max(c_start, g_start) < min(c_end, g_end):
             overlapping.append(g_name)
             
@@ -82,7 +76,7 @@ def find_overlapping_genes(circ_id):
     return "NA"
 
 # =========================================================================
-# STEP 2: BUILD MATRICES AND SUMMARIES
+# STEP 2: MATRIX GENERATION & VARIANCE FILTERING
 # =========================================================================
 # Load Metadata
 rna = pd.read_csv(BASE / "targetALS_rnaseq_metadata.csv")
@@ -103,7 +97,7 @@ def find_circ(sample_id):
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
 
-# Drop true duplicated metadata entries to ensure clean 1:1 matrix headers
+# Drop duplicate metadata entries
 rna_found = rna_found.drop_duplicates(subset=["externalsampleid"], keep="first")
 print(f"Cleaned unique RNA samples for matrix processing: {len(rna_found)}")
 
@@ -153,10 +147,6 @@ for next_df in reads_list[1:]:
     reads_master = reads_master.merge(next_df, on="circ_id", how="outer")
 reads_master = reads_master.fillna(0)
 
-# Total Cohort Sums
-total_reads_per_circ = reads_master.drop(columns=["circ_id"]).sum(axis=1)
-reads_summary = pd.DataFrame({"circ_id": reads_master["circ_id"], "total_reads": total_reads_per_circ})
-
 # Variance-Based Filtering
 circ_ids = expr['circ_id']
 numeric_data = expr.drop('circ_id', axis=1)
@@ -169,41 +159,23 @@ filtered_numeric = numeric_data[variant_mask].copy()
 filtered_circ_ids = circ_ids[variant_mask]
 expr_final = pd.concat([filtered_circ_ids.reset_index(drop=True), filtered_numeric.reset_index(drop=True)], axis=1)
 
-# --- TRACK PER-SAMPLE AVERAGES & EXTRA NON-ZERO STATS SAFELY ---
+# =========================================================================
+# STEP 3: CALCULATE DETAILED ABUNDANCE METRICS (SINGLE UNIFIED TABLE)
+# =========================================================================
+print("Calculating read metrics and mapping host genes...")
 reads_filtered = reads_master[reads_master["circ_id"].isin(filtered_circ_ids)].copy()
 numeric_reads_filtered = reads_filtered.drop(columns=["circ_id"])
 
-# 1. Total Reads
+# 1. Total reads per circRNA across cohort
 total_reads_filtered = numeric_reads_filtered.sum(axis=1)
 
-# 2. Average Reads (all samples)
+# 2. Average reads per circRNA across all samples (including zeros)
 mean_reads_filtered = numeric_reads_filtered.mean(axis=1)
 
-# 3. Average Reads (excluding zero-read samples)
-# To avoid division-by-zero where all samples are 0, we mask 0 to NaN, calculate mean, and fill NaN with 0
+# 3. Average reads per circRNA across only active samples (excluding zeros)
 mean_reads_nonzero_only = numeric_reads_filtered.replace(0, np.nan).mean(axis=1).fillna(0)
 
-averages_summary = pd.DataFrame({
-    "circ_id": reads_filtered["circ_id"],
-    "avg_reads": mean_reads_filtered
-})
-
-# Save Expression Matrix and Metadata
-expr_final.to_csv(OUT / "circ_matrix.txt", sep="\t", index=False)
-rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
-    OUT / "circ_sample_metadata.csv", index=False
-)
-
-# Export intermediate summaries for the plotting script limits
-reads_summary[reads_summary["circ_id"].isin(filtered_circ_ids)].to_csv(OUT / "filtered_reads_summary.tmp", sep="\t", index=False)
-averages_summary.to_csv(OUT / "filtered_averages_summary.tmp", sep="\t", index=False)
-
-# =========================================================================
-# STEP 3: CREATE DETAILED PLOTTING COORDINATE TABLES WITH GENE ANNOTATIONS
-# =========================================================================
-print("Creating customized coordinate data tables with gene mappings...")
-
-# Merge metrics into a single master summary dataframe for the filtered circRNAs
+# Build unified dataframe
 master_metrics = pd.DataFrame({
     "circ_id": reads_filtered["circ_id"],
     "total_reads": total_reads_filtered,
@@ -211,22 +183,55 @@ master_metrics = pd.DataFrame({
     "avg_reads_nonzero_only": mean_reads_nonzero_only
 })
 
-print("Annotating host gene symbols...")
 master_metrics["gene_name"] = master_metrics["circ_id"].apply(find_overlapping_genes)
 
-# Reorder columns to group biological descriptors first, then numeric metrics
+# Order and filter to keep only circRNAs supported by active transcription (reads > 0)
 col_order = ["circ_id", "gene_name", "total_reads", "avg_reads", "avg_reads_nonzero_only"]
 master_metrics = master_metrics[col_order]
+master_metrics_filtered = master_metrics[master_metrics["total_reads"] > 0].copy()
 
-# Exclude absolute zero cases (matching R plotting thresholds where raw back-spliced reads > 0)
-master_totals_table = master_metrics[master_metrics["total_reads"] > 0].copy()
-master_averages_table = master_metrics[master_metrics["avg_reads"] > 0].copy()
+# Save Outputs
+expr_final.to_csv(OUT / "circ_matrix.txt", sep="\t", index=False)
+rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
+    OUT / "circ_sample_metadata.csv", index=False
+)
 
-# Save final requested tables
-master_totals_table.to_csv(OUT / "circ_abundance_distribution_table.txt", sep="\t", index=False)
-master_averages_table.to_csv(OUT / "circ_abundance_averages_table.txt", sep="\t", index=False)
+# Export the single metrics table
+master_metrics_filtered.to_csv(OUT / "circ_abundance_metrics_table.txt", sep="\t", index=False)
 
-print(f"Detailed coordinate tables successfully saved to {OUT}")
+# Keep the lightweight temporary summary outputs for backwards-compatibility or downstream processes
+reads_summary = pd.DataFrame({"circ_id": reads_master["circ_id"], "total_reads": total_reads_per_circ = reads_master.drop(columns=["circ_id"]).sum(axis=1)})
+reads_summary[reads_summary["circ_id"].isin(filtered_circ_ids)].to_csv(OUT / "filtered_reads_summary.tmp", sep="\t", index=False)
+pd.DataFrame({"circ_id": reads_filtered["circ_id"], "avg_reads": mean_reads_filtered}).to_csv(OUT / "filtered_averages_summary.tmp", sep="\t", index=False)
+
+# GENERATE RUN STATISTICS
+num_circs, num_samples = filtered_numeric.shape
+total_cells = filtered_numeric.size
+nonzero_cells = (filtered_numeric > 0).sum().sum()
+
+print("\n" + "="*40)
+print("        === MATRIX STATS ===")
+print("="*40)
+print(f"Total circRNAs: {num_circs:,}")
+print(f"Total Samples: {num_samples:,}")
+print(f"Global Avg: {filtered_numeric.values.mean():.6f}")
+if nonzero_cells > 0:
+    print(f"Detected Avg (>0): {filtered_numeric.values[filtered_numeric.values > 0].mean():.6f}")
+print(f"Sparsity: {(1 - (nonzero_cells / total_cells)) * 100:.2f}%")
+
+active_counts = (filtered_numeric > 0).sum(axis=0)
+top_sample = active_counts.idxmax()
+print(f"Top Subject (>0%): {top_sample} ({active_counts[top_sample]:,} circs)")
+
+print("\n" + "="*40)
+print("        === CHROMOSOMES ===")
+print("="*40)
+chrs_series = filtered_circ_ids.reset_index(drop=True).str.split(':').str[0]
+chr_counts = chrs_series.value_counts()
+chr_order = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY", "chrM"]
+for c in chr_order:
+    if c in chr_counts:
+        print(f"{c}: {chr_counts[c]:,}")
 EOF
 
 # 2. Purge Python and load R cleanly to generate plots
@@ -236,24 +241,24 @@ module load R
 Rscript - <<'EOF'
 y_ticks <- 10^(0:5)
 out_dir <- "/home/zw529/donglab/data/target_ALS/QTL/"
+table_path <- paste0(out_dir, "circ_abundance_metrics_table.txt")
+
+# Load the single unified table
+print("Loading unified metrics table...")
+df_metrics <- read.delim(table_path, header=TRUE, sep="\t")
 
 # =========================================================================
 # GRAPH 1: COHORT TOTAL DISTRIBUTION (SUMMED SPLIT-AXIS PLOT)
 # =========================================================================
 print("Generating original cohort total split-axis distribution plot...")
 
-# Load the customized annotated table
-data_path <- paste0(out_dir, "circ_abundance_distribution_table.txt")
-df_tot_annotated <- read.delim(data_path, header=TRUE, sep="\t")
-
-# Aggregate counts of identical values to build the distribution heights
-counts_table_tot <- table(df_tot_annotated$total_reads)
+counts_table_tot <- table(df_metrics$total_reads)
 plot_data_tot <- data.frame(
     reads = as.numeric(names(counts_table_tot)),
     circ_count = as.numeric(counts_table_tot)
 )
 
-df_tot_sorted <- df_tot_annotated[order(-df_tot_annotated$total_reads), ]
+df_tot_sorted <- df_metrics[order(-df_metrics$total_reads), ]
 top_outliers_tot <- head(df_tot_sorted, 5)
 
 png_out_tot <- paste0(out_dir, "circ_abundance_distribution.png")
@@ -295,20 +300,16 @@ dev.off()
 # =========================================================================
 print("Generating new cohort average split-axis distribution plot...")
 
-# Load the customized annotated table
-avg_path <- paste0(out_dir, "circ_abundance_averages_table.txt")
-df_avg_annotated <- read.delim(avg_path, header=TRUE, sep="\t")
-
 bin_width <- 0.05
-breaks_seq <- seq(0, max(df_avg_annotated$avg_reads) + bin_width, by=bin_width)
-h <- hist(df_avg_annotated$avg_reads, breaks=breaks_seq, plot=FALSE)
+breaks_seq <- seq(0, max(df_metrics$avg_reads) + bin_width, by=bin_width)
+h <- hist(df_metrics$avg_reads, breaks=breaks_seq, plot=FALSE)
 
 plot_data_avg <- data.frame(
     reads_bin_center = h$mids[h$counts > 0],
     circ_count = h$counts[h$counts > 0]
 )
 
-df_avg_sorted <- df_avg_annotated[order(-df_avg_annotated$avg_reads), ]
+df_avg_sorted <- df_metrics[order(-df_metrics$avg_reads), ]
 top_outliers_avg <- head(df_avg_sorted, 5)
 
 png_out_avg <- paste0(out_dir, "circ_abundance_averages.png")
@@ -349,5 +350,5 @@ for(i in 1:nrow(top_outliers_avg)) {
 text(xlim_p2_avg[1] - (xlim_p2_avg[1] * 0.18), 0.5, "//", cex=1.2) 
 dev.off()
 
-print("SUCCESS: Graphs and detailed mapping tables are processed.")
+print("SUCCESS: Unified table saved and split-axis plots updated.")
 EOF
