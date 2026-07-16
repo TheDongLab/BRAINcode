@@ -24,7 +24,6 @@ library(GenomicRanges)
 output_dir <- "/home/zw529/donglab/data/target_ALS"
 
 # --- Steps 1-5 (Metadata, Parsing, Matrix, DESeq2) ---
-# [Metadata and DESeq2 logic remains as established]
 meta_raw <- read_csv("~/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv", show_col_types = FALSE)
 meta_clean <- meta_raw %>%
   mutate(externalsampleid = gsub("-", "_", externalsampleid)) %>%
@@ -76,6 +75,9 @@ dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + pmi + mapped_
 dds <- DESeq(dds[rowSums(counts(dds) >= 5) >= 10,])
 res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) %>% rownames_to_column("circRNA_ID")
 
+# --- ADDED: Re-inserted CSV generation ---
+write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
+
 # --- Step 6: Robust Annotation & Plotting ---
 bed_file <- "~/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 bed_df <- read.table(bed_file, sep = "\t", header = FALSE)
@@ -103,7 +105,7 @@ plot_data <- as.data.frame(circ_gr) %>%
 top_labels <- plot_data %>% 
   filter(Significance != "Not Significant") %>% 
   group_by(Significance) %>% 
-  slice_max(abs(log2FoldChange), n = 3) # Reduced to top 3
+  slice_max(abs(log2FoldChange), n = 3)
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
   geom_point(alpha = 0.5) +
@@ -113,12 +115,12 @@ volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color =
     data = top_labels, 
     aes(label = label), 
     size = 2, 
-    nudge_y = 2.0,            # Vertical push
-    nudge_x = 0.1,            # Added X jitter
-    direction = "both",       # Allow movement in both axes to avoid overlap
-    max.overlaps = Inf,       # Ensure all labels show
-    force = 3,                # Increase repulsion force between labels
-    segment.curvature = 0,    # Straight lines
+    nudge_y = 2.0,            
+    nudge_x = 0.1,            
+    direction = "both",       
+    max.overlaps = Inf,       
+    force = 3,                
+    segment.curvature = 0,    
     segment.linetype = 1,
     arrow = arrow(length = unit(0.02, "npc"), type = "closed")
   ) +
