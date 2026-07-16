@@ -18,18 +18,17 @@ library(tibble)
 library(stringr)
 library(ggplot2)
 library(readr)
+library(ggrepel) # For better label placement
 
 output_dir <- "/home/zw529/donglab/data/target_ALS"
 
 # --- Step 1 & 2: Metadata and Mapping ---
 meta_raw <- read_csv("~/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv", show_col_types = FALSE)
-
 meta_clean <- meta_raw %>%
   mutate(externalsampleid = gsub("-", "_", externalsampleid)) %>%
   filter(grepl("CGND_HRA", externalsampleid)) %>%
   distinct(externalsampleid, .keep_all = TRUE) %>%
   mutate(condition = if_else(grepl("ALS", subject_group), "ALS", "Control")) %>%
-  # Use exact names from your CSV: ensure these columns exist
   rename(age = age_at_death, pmi = post_mortem_interval_in_hours) %>%
   filter(!is.na(age), !is.na(pmi))
 
@@ -66,25 +65,42 @@ for (s_id in names(circ_list)) {
   count_mat[df$circ_id, s_id] <- df$readNumber
 }
 
-# --- Step 5: DESeq2 with Diagnostic Check ---
+# --- Step 5: DESeq2 ---
 common_samples <- intersect(colnames(count_mat), meta_clean$externalsampleid)
 count_mat <- count_mat[, common_samples]
 colData_df <- as.data.frame(meta_clean %>% filter(externalsampleid %in% common_samples))
 rownames(colData_df) <- colData_df$externalsampleid
 
-# Diagnostic: Print columns so you can verify the design formula
-message("Available columns in colData: ", paste(colnames(colData_df), collapse=", "))
-
-# Updated formula using renamed columns 'age' and 'pmi'
 dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + pmi + mapped_tissue + condition)
-
 dds <- DESeq(dds[rowSums(counts(dds) >= 5) >= 10,])
 res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) %>% rownames_to_column("circRNA_ID")
 
 write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
 
-# Volcano Plot
-plot <- ggplot(res, aes(x = log2FoldChange, y = -log10(padj + 1e-300), color = padj < 0.05)) +
-  geom_point(alpha = 0.4) + theme_minimal() + labs(title="Differential circRNA Expression (ALS vs Control)")
-ggsave(file.path(output_dir, "volcano.png"), plot)
+# --- Step 6: Volcano Plot ---
+plot_data <- res %>%
+  filter(!is.na(padj)) %>%
+  mutate(Significance = case_when(
+    padj < 0.05 & log2FoldChange > 0  ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < 0  ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+
+# Identify top 5 up and down
+top_labels <- plot_data %>%
+  filter(Significance != "Not Significant") %>%
+  group_by(Significance) %>%
+  slice_max(order_by = abs(log2FoldChange), n = 5)
+
+volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("Upregulated" = "#E41A1C", "Downregulated" = "#377EB8", "Not Significant" = "grey70")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_text_repel(data = top_labels, aes(label = circRNA_ID), size = 3, show.legend = FALSE) +
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title="Differential circRNA Expression (ALS vs Control)", y = "-log10(padj)")
+
+ggsave(file.path(output_dir, "circRNA_volcano.png"), volcano_p, width = 8, height = 6, dpi = 300)
+ggsave(file.path(output_dir, "circRNA_volcano.svg"), volcano_p, width = 8, height = 6)
 EOF
