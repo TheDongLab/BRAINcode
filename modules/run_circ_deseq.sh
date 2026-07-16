@@ -100,17 +100,34 @@ plot_data <- as.data.frame(circ_gr) %>%
                                  padj < 0.05 & log2FoldChange < 0 ~ "Downregulated",
                                  TRUE ~ "Not Significant"))
 
-top_labels <- plot_data %>% filter(Significance != "Not Significant") %>% group_by(Significance) %>% slice_max(abs(log2FoldChange), n = 4)
+top_labels <- plot_data %>% 
+  filter(Significance != "Not Significant") %>% 
+  group_by(Significance) %>% 
+  slice_max(abs(log2FoldChange), n = 3) # Reduced to top 3
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
   geom_point(alpha = 0.5) +
   scale_color_manual(values = c("Upregulated" = "#E41A1C", "Downregulated" = "#377EB8", "Not Significant" = "grey70")) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
-  geom_text_repel(data = top_labels, aes(label = label), size = 2.5, nudge_y = 2.5, direction = "y", 
-                  segment.curvature = 0, segment.linetype = 1, arrow = arrow(length = unit(0.02, "npc"), type = "closed")) +
+  geom_text_repel(
+    data = top_labels, 
+    aes(label = label), 
+    size = 2.5, 
+    nudge_y = 2.0,            # Vertical push
+    nudge_x = 0.1,            # Added X jitter
+    direction = "both",       # Allow movement in both axes to avoid overlap
+    max.overlaps = Inf,       # Ensure all labels show
+    force = 2,                # Increase repulsion force between labels
+    segment.curvature = 0,    # Straight lines
+    segment.linetype = 1,
+    arrow = arrow(length = unit(0.02, "npc"), type = "closed")
+  ) +
   theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-  labs(title="Differential circRNA Expression (ALS vs Control)", color = "ALS-associated expression", y = "-log10(padj)") +
-  coord_cartesian(clip = "off") + theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))
+  labs(title="Differential circRNA Expression (ALS vs Control)", 
+       color = "ALS-associated expression", 
+       y = "-log10(padj)") +
+  coord_cartesian(clip = "off") + 
+  theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))
 
 ggsave(file.path(output_dir, "circRNA_volcano.png"), volcano_p, width = 8, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "circRNA_volcano.svg"), volcano_p, width = 8, height = 6)
