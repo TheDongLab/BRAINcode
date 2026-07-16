@@ -112,12 +112,12 @@ volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color =
   geom_text_repel(
     data = top_labels, 
     aes(label = label), 
-    size = 2.2, 
+    size = 2, 
     nudge_y = 2.0,            # Vertical push
-    nudge_x = 0.3,            # Added X jitter
+    nudge_x = 0.1,            # Added X jitter
     direction = "both",       # Allow movement in both axes to avoid overlap
     max.overlaps = Inf,       # Ensure all labels show
-    force = 2,                # Increase repulsion force between labels
+    force = 3,                # Increase repulsion force between labels
     segment.curvature = 0,    # Straight lines
     segment.linetype = 1,
     arrow = arrow(length = unit(0.02, "npc"), type = "closed")
