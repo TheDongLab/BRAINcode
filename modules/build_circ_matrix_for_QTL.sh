@@ -294,7 +294,6 @@ build_panel1_totals <- function(bar_color) {
 
 build_panel2_totals <- function(bar_color) {
     p <- ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
-        geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
         scale_y_log10(limits=c(1, 1e5)) +
         scale_x_continuous(breaks=c(10000, 40000, 70000), labels=c("10k", "40k", "70k")) +
         coord_cartesian(xlim=c(10000, xlim_p2_upper), clip="off") +
