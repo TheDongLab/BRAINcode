@@ -215,25 +215,24 @@ if [ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]; then
             python3 "/home/zw529/donglab/pipelines/scripts/rnaseq/circ_percent_calculation.py" \
                 "circularRNA_known.txt" \
                 "temp.ends.counts" \
-                "circularRNA_known.calculated.txt"
-
-            # Replace original file with newly calculated version
-            mv "circularRNA_known.calculated.txt" "circularRNA_known.txt"
+                "circularRNA_known_circ_percentage.txt"
 
             # Clean up temporary run files
             rm -f temp.ends.bed temp.ends.counts
             # ------------------------------------------------------------------
  
+            # Add headers to the newly created percentage output file
             { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron\tcirc_reads\tlinear_reads\tcirc_percent"; \
-            cat "$SAMPLE_DIR/circularRNA_known.txt"; } > "$SAMPLE_DIR/circularRNA_known.tmp" && \
-            mv "$SAMPLE_DIR/circularRNA_known.tmp" "$SAMPLE_DIR/circularRNA_known.txt" && \
+            cat "$SAMPLE_DIR/circularRNA_known_circ_percentage.txt"; } > "$SAMPLE_DIR/circularRNA_known_circ_percentage.tmp" && \
+            mv "$SAMPLE_DIR/circularRNA_known_circ_percentage.tmp" "$SAMPLE_DIR/circularRNA_known_circ_percentage.txt" && \
  
+            # Add headers to the low confidence annotations
             { echo -e "chrom\tstart\tend\tname\tscore\tstrand\tthickStart\tthickEnd\titemRgb\texonCount\texonSizes\texonOffsets\treadNumber\tcircType\tgeneName\tisoformName\tindex\tflankIntron"; \
             cat "$SAMPLE_DIR/low_conf_circularRNA_known.txt"; } > "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" && \
             mv "$SAMPLE_DIR/low_conf_circularRNA_known.tmp" "$SAMPLE_DIR/low_conf_circularRNA_known.txt" && \
  
             touch "$SAMPLE_DIR/.status.RNAseq.circRNA" && \
-            echo "[STEP 5] SUCCESS: Found $(wc -l < "$SAMPLE_DIR/circularRNA_known.txt") circRNAs." && \
+            echo "[STEP 5] SUCCESS: Found $(tail -n +2 "$SAMPLE_DIR/circularRNA_known_circ_percentage.txt" | wc -l) circRNAs." && \
             echo "[STEP 5] circRNA calling completed successfully."
  
         else
