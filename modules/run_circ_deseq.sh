@@ -103,7 +103,7 @@ plot_data <- as.data.frame(circ_gr) %>%
 top_labels <- plot_data %>% 
   filter(Significance != "Not Significant") %>% 
   group_by(Significance) %>% 
-  slice_max(abs(log2FoldChange), n = 3) # Reduced to top 3
+  slice_max(abs(log2FoldChange), n = 3)
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
   geom_point(alpha = 0.5) +
@@ -113,12 +113,11 @@ volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color =
     data = top_labels, 
     aes(label = label), 
     size = 2.5, 
-    nudge_y = 2.0,            # Vertical push
-    nudge_x = 0.1,            # Added X jitter
-    direction = "both",       # Allow movement in both axes to avoid overlap
-    max.overlaps = Inf,       # Ensure all labels show
-    force = 2,                # Increase repulsion force between labels
-    segment.curvature = 0,    # Straight lines
+    # Removed fixed nudge_y/nudge_x to allow ggrepel to find optimal positions (up/down)
+    direction = "both",       
+    max.overlaps = Inf,       
+    force = 5,                # Increased force to push labels away from dots
+    segment.curvature = 0,    
     segment.linetype = 1,
     arrow = arrow(length = unit(0.02, "npc"), type = "closed")
   ) +
@@ -129,6 +128,7 @@ volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color =
   coord_cartesian(clip = "off") + 
   theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))
 
+# Save
 ggsave(file.path(output_dir, "circRNA_volcano.png"), volcano_p, width = 8, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "circRNA_volcano.svg"), volcano_p, width = 8, height = 6)
 EOF
