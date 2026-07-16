@@ -78,21 +78,23 @@ res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) 
 write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
 
 # --- Step 6: Annotation & Volcano Plot ---
-# Load and parse BED for gene names
 bed_file <- "~/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 gene_anno <- read.table(bed_file, sep = "\t", header = FALSE) %>%
   select(chrom = V1, start = V2, end = V3, info = V4) %>%
-  mutate(gene_name = str_split_fixed(info, "___", 3)[,3]) %>%
-  select(chrom, start, end, gene_name)
+  mutate(gene_name = str_split_fixed(info, "___", 3)[,3])
 
+# Create consistent matching IDs: ensure "chr" prefix exists
 res_annotated <- res %>%
   mutate(
-    temp_chr = str_remove(circRNA_ID, ":.*"),
-    start = as.numeric(str_extract(str_remove(circRNA_ID, ".*:"), "\\d+")),
-    chrom = paste0("chr", str_remove(temp_chr, "chr"))
+    # Extract coordinates from "chr10:100-200:+" format
+    parts = str_split(circRNA_ID, ":"),
+    chrom = if_else(str_starts(sapply(parts, `[`, 1), "chr"), sapply(parts, `[`, 1), paste0("chr", sapply(parts, `[`, 1))),
+    coord_range = sapply(parts, `[`, 2),
+    start = as.numeric(str_split_fixed(coord_range, "-", 2)[,1])
   ) %>%
   left_join(gene_anno, by = c("chrom", "start")) %>%
-  mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(chr", circRNA_ID, ")"), paste0("chr", circRNA_ID)))
+  mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(", str_replace(circRNA_ID, "^([^:]+)", "chr\\1"), ")"), 
+                                          paste0("chr", circRNA_ID)))
 
 plot_data <- res_annotated %>%
   filter(!is.na(padj)) %>%
@@ -111,7 +113,16 @@ volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color =
   geom_point(alpha = 0.5) +
   scale_color_manual(values = c("Upregulated" = "#E41A1C", "Downregulated" = "#377EB8", "Not Significant" = "grey70")) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
-  geom_text_repel(data = top_labels, aes(label = label), size = 2.5, box.padding = 1, arrow = arrow(length = unit(0.02, "npc"))) +
+  geom_text_repel(
+    data = top_labels, 
+    aes(label = label), 
+    size = 2.5, 
+    nudge_y = 2,           # Push labels 2 units up
+    direction = "y",       # Force vertical alignment
+    segment.curvature = 0.1,
+    segment.ncp = 3,
+    arrow = arrow(length = unit(0.015, "npc"))
+  ) +
   theme_bw() + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
   labs(title="Differential circRNA Expression (ALS vs Control)", 
