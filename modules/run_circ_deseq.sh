@@ -19,10 +19,12 @@ library(stringr)
 library(ggplot2)
 library(readr)
 library(ggrepel)
+library(GenomicRanges)
 
 output_dir <- "/home/zw529/donglab/data/target_ALS"
 
-# --- Step 1 & 2: Metadata and Mapping ---
+# --- Steps 1-5 (Metadata, Parsing, Matrix, DESeq2) ---
+# [Metadata and DESeq2 logic remains as established]
 meta_raw <- read_csv("~/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv", show_col_types = FALSE)
 meta_clean <- meta_raw %>%
   mutate(externalsampleid = gsub("-", "_", externalsampleid)) %>%
@@ -42,7 +44,7 @@ map_tissue <- function(t) {
 }
 meta_clean <- meta_clean %>% mutate(mapped_tissue = map_tissue(tissue)) %>% filter(mapped_tissue != "Other")
 
-# --- Step 3 & 4: Parsing and Matrix ---
+# Parsing Logic
 circ_list <- list()
 for (i in 1:nrow(meta_clean)) {
   s_id <- meta_clean$externalsampleid[i]
@@ -65,7 +67,6 @@ for (s_id in names(circ_list)) {
   count_mat[df$circ_id, s_id] <- df$readNumber
 }
 
-# --- Step 5: DESeq2 ---
 common_samples <- intersect(colnames(count_mat), meta_clean$externalsampleid)
 count_mat <- count_mat[, common_samples]
 colData_df <- as.data.frame(meta_clean %>% filter(externalsampleid %in% common_samples))
@@ -75,59 +76,41 @@ dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + pmi + mapped_
 dds <- DESeq(dds[rowSums(counts(dds) >= 5) >= 10,])
 res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) %>% rownames_to_column("circRNA_ID")
 
-write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
-
-# --- Step 6: Annotation & Volcano Plot ---
+# --- Step 6: Robust Annotation & Plotting ---
 bed_file <- "~/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
-gene_anno <- read.table(bed_file, sep = "\t", header = FALSE) %>%
-  select(chrom = V1, start = V2, end = V3, info = V4) %>%
-  mutate(gene_name = str_split_fixed(info, "___", 3)[,3])
+bed_df <- read.table(bed_file, sep = "\t", header = FALSE)
+gene_gr <- GRanges(seqnames = bed_df$V1, ranges = IRanges(start = bed_df$V2, end = bed_df$V3), 
+                   gene_name = str_split_fixed(bed_df$V4, "___", 3)[,3])
 
-# Create consistent matching IDs: ensure "chr" prefix exists
-res_annotated <- res %>%
-  mutate(
-    # Extract coordinates from "chr10:100-200:+" format
-    parts = str_split(circRNA_ID, ":"),
-    chrom = if_else(str_starts(sapply(parts, `[`, 1), "chr"), sapply(parts, `[`, 1), paste0("chr", sapply(parts, `[`, 1))),
-    coord_range = sapply(parts, `[`, 2),
-    start = as.numeric(str_split_fixed(coord_range, "-", 2)[,1])
-  ) %>%
-  left_join(gene_anno, by = c("chrom", "start")) %>%
-  mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(", str_replace(circRNA_ID, "^([^:]+)", "chr\\1"), ")"), 
-                                          paste0("chr", circRNA_ID)))
+circ_gr <- res %>%
+  mutate(parts = str_split(circRNA_ID, ":"),
+         chrom = paste0("chr", str_remove(sapply(parts, `[`, 1), "chr")),
+         coords = sapply(parts, `[`, 2),
+         start = as.numeric(str_split_fixed(coords, "-", 2)[,1]),
+         end = as.numeric(str_split_fixed(coords, "-", 2)[,2])) %>%
+  makeGRangesFromDataFrame(keep.extra.columns = TRUE)
 
-plot_data <- res_annotated %>%
-  filter(!is.na(padj)) %>%
-  mutate(Significance = case_when(
-    padj < 0.05 & log2FoldChange > 0  ~ "Upregulated",
-    padj < 0.05 & log2FoldChange < 0  ~ "Downregulated",
-    TRUE ~ "Not Significant"
-  ))
+# Genomic Overlap
+hits <- findOverlaps(circ_gr, gene_gr)
+mcols(circ_gr)$gene_name[queryHits(hits)] <- mcols(gene_gr)$gene_name[subjectHits(hits)]
 
-top_labels <- plot_data %>%
-  filter(Significance != "Not Significant") %>%
-  group_by(Significance) %>%
-  slice_max(order_by = abs(log2FoldChange), n = 4)
+plot_data <- as.data.frame(circ_gr) %>%
+  mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(chr", circRNA_ID, ")"), paste0("chr", circRNA_ID)),
+         Significance = case_when(padj < 0.05 & log2FoldChange > 0 ~ "Upregulated",
+                                 padj < 0.05 & log2FoldChange < 0 ~ "Downregulated",
+                                 TRUE ~ "Not Significant"))
+
+top_labels <- plot_data %>% filter(Significance != "Not Significant") %>% group_by(Significance) %>% slice_max(abs(log2FoldChange), n = 4)
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
   geom_point(alpha = 0.5) +
   scale_color_manual(values = c("Upregulated" = "#E41A1C", "Downregulated" = "#377EB8", "Not Significant" = "grey70")) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
-  geom_text_repel(
-    data = top_labels, 
-    aes(label = label), 
-    size = 2.5, 
-    nudge_y = 2,           # Push labels 2 units up
-    direction = "y",       # Force vertical alignment
-    segment.curvature = 0.1,
-    segment.ncp = 3,
-    arrow = arrow(length = unit(0.015, "npc"))
-  ) +
-  theme_bw() + 
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-  labs(title="Differential circRNA Expression (ALS vs Control)", 
-       color = "ALS-associated expression",
-       y = "-log10(padj)")
+  geom_text_repel(data = top_labels, aes(label = label), size = 2.5, nudge_y = 2.5, direction = "y", 
+                  segment.curvature = 0, segment.linetype = 1, arrow = arrow(length = unit(0.02, "npc"), type = "closed")) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title="Differential circRNA Expression (ALS vs Control)", color = "ALS-associated expression", y = "-log10(padj)") +
+  coord_cartesian(clip = "off") + theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))
 
 ggsave(file.path(output_dir, "circRNA_volcano.png"), volcano_p, width = 8, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "circRNA_volcano.svg"), volcano_p, width = 8, height = 6)
