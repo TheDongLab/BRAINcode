@@ -18,7 +18,7 @@ library(tibble)
 library(stringr)
 library(ggplot2)
 library(readr)
-library(ggrepel) # For better label placement
+library(ggrepel)
 
 output_dir <- "/home/zw529/donglab/data/target_ALS"
 
@@ -77,8 +77,24 @@ res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) 
 
 write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
 
-# --- Step 6: Volcano Plot ---
-plot_data <- res %>%
+# --- Step 6: Annotation & Volcano Plot ---
+# Load and parse BED for gene names
+bed_file <- "~/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
+gene_anno <- read.table(bed_file, sep = "\t", header = FALSE) %>%
+  select(chrom = V1, start = V2, end = V3, info = V4) %>%
+  mutate(gene_name = str_split_fixed(info, "___", 3)[,3]) %>%
+  select(chrom, start, end, gene_name)
+
+res_annotated <- res %>%
+  mutate(
+    temp_chr = str_remove(circRNA_ID, ":.*"),
+    start = as.numeric(str_extract(str_remove(circRNA_ID, ".*:"), "\\d+")),
+    chrom = paste0("chr", str_remove(temp_chr, "chr"))
+  ) %>%
+  left_join(gene_anno, by = c("chrom", "start")) %>%
+  mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(chr", circRNA_ID, ")"), paste0("chr", circRNA_ID)))
+
+plot_data <- res_annotated %>%
   filter(!is.na(padj)) %>%
   mutate(Significance = case_when(
     padj < 0.05 & log2FoldChange > 0  ~ "Upregulated",
@@ -86,20 +102,21 @@ plot_data <- res %>%
     TRUE ~ "Not Significant"
   ))
 
-# Identify top 5 up and down
 top_labels <- plot_data %>%
   filter(Significance != "Not Significant") %>%
   group_by(Significance) %>%
-  slice_max(order_by = abs(log2FoldChange), n = 5)
+  slice_max(order_by = abs(log2FoldChange), n = 4)
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
-  geom_point(alpha = 0.6) +
+  geom_point(alpha = 0.5) +
   scale_color_manual(values = c("Upregulated" = "#E41A1C", "Downregulated" = "#377EB8", "Not Significant" = "grey70")) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", alpha = 0.5) +
-  geom_text_repel(data = top_labels, aes(label = circRNA_ID), size = 3, show.legend = FALSE) +
+  geom_text_repel(data = top_labels, aes(label = label), size = 2.5, box.padding = 1, arrow = arrow(length = unit(0.02, "npc"))) +
   theme_bw() + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-  labs(title="Differential circRNA Expression (ALS vs Control)", y = "-log10(padj)")
+  labs(title="Differential circRNA Expression (ALS vs Control)", 
+       color = "ALS-associated expression",
+       y = "-log10(padj)")
 
 ggsave(file.path(output_dir, "circRNA_volcano.png"), volcano_p, width = 8, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "circRNA_volcano.svg"), volcano_p, width = 8, height = 6)
