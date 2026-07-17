@@ -238,22 +238,23 @@ df_metrics <- read.delim(table_path, header=TRUE, sep="\t")
 y_ticks <- 10^(0:5)
 
 # =========================================================================
-# IDENTIFY TARGET GENES
+# IDENTIFY TARGET GENES & FILTER (Min 3 reads)
 # =========================================================================
-als_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "TARDBP", "TBK1")
+als_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "STMN2", "TARDBP", "TBK1", "UNC13A")
 syn_genes <- c("RIMS1", "RIMS2")
 target_genes <- c(als_genes, syn_genes)
 
 df_metrics$cat <- ifelse(grepl(paste(als_genes, collapse="|"), df_metrics$gene_name), "ALS",
                   ifelse(grepl(paste(syn_genes, collapse="|"), df_metrics$gene_name), "SYN", NA))
 
-df_targets <- df_metrics[!is.na(df_metrics$cat) & df_metrics$total_reads >= 10, ]
+# Threshold updated to >= 3
+df_targets <- df_metrics[!is.na(df_metrics$cat) & df_metrics$total_reads >= 3, ]
 cat_colors <- c("ALS" = "#E41A1C", "SYN" = "#377EB8")
 
-print(paste("Found", nrow(df_targets), "target circRNAs with total reads >= 10 for annotation."))
+print(paste("Found", nrow(df_targets), "target circRNAs with total reads >= 3 for annotation."))
 
 # =========================================================================
-# HELPER: save a ggplot/patchwork object as PNG + SVG (svglite backend -- no Cairo needed)
+# HELPER: save a ggplot/patchwork object as PNG + SVG
 # =========================================================================
 save_ggplot <- function(plot_obj, basename, width_in = 11.33, height_in = 5.33, dpi = 300) {
     ggsave(paste0(out_dir, basename, ".png"), plot=plot_obj, width=width_in, height=height_in, dpi=dpi, units="in")
@@ -269,23 +270,19 @@ plot_data_tot <- data.frame(
     circ_count = as.numeric(counts_table_tot)
 )
 
+# Outlier logic updated to 5k-75k range
 df_tot_sorted <- df_metrics[order(-df_metrics$total_reads), ]
 top_outliers_tot <- head(df_tot_sorted, 5)
-outliers_p2_tot <- top_outliers_tot[top_outliers_tot$total_reads >= 10000 & top_outliers_tot$total_reads <= 80000, ]
+outliers_p2_tot <- top_outliers_tot[top_outliers_tot$total_reads >= 5000 & top_outliers_tot$total_reads <= 75000, ]
 if (nrow(outliers_p2_tot) > 0) {
     outliers_p2_tot$label_text <- paste0(outliers_p2_tot$circ_id, " (", outliers_p2_tot$gene_name, ")")
 }
-
-# Extra headroom past the rightmost outlier so rotated labels near the edge (e.g. circHOMER1)
-# have room to render instead of getting clipped -- kept close to the original fixed limit,
-# just nudged a touch higher rather than scaling dynamically off the data max.
-xlim_p2_upper <- 85000
 
 build_panel1_totals <- function(bar_color) {
     ggplot(plot_data_tot, aes(x=reads, y=circ_count)) +
         geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
         scale_y_log10(limits=c(1, 1e5), breaks=y_ticks, labels=comma) +
-        coord_cartesian(xlim=c(0, 300)) +
+        coord_cartesian(xlim=c(0, 250)) +
         labs(x="Number of back-spliced reads", y="Number of circular RNAs",
              title="Distribution of circRNA Expression by Back-spliced Read Support (Totals)") +
         theme_classic(base_size=13) +
@@ -293,15 +290,14 @@ build_panel1_totals <- function(bar_color) {
 }
 
 build_panel2_totals <- function(bar_color) {
-    # Hard rule: panel 2 only ever plots bars for reads >= 10000 -- this is a real data
-    # filter, not just a visual crop, so nothing from the 320-to-10k gap can leak in.
-    plot_data_tot_p2 <- plot_data_tot[plot_data_tot$reads >= 10000, ]
+    # Panel 2 filter updated to >= 5000
+    plot_data_tot_p2 <- plot_data_tot[plot_data_tot$reads >= 5000, ]
 
     p <- ggplot(plot_data_tot_p2, aes(x=reads, y=circ_count)) +
         geom_segment(aes(xend=reads, y=0, yend=circ_count), color=bar_color, linewidth=1.1, lineend="square") +
         scale_y_log10(limits=c(1, 1e5)) +
-        scale_x_continuous(breaks=c(10000, 40000, 70000), labels=c("10k", "40k", "70k")) +
-        coord_cartesian(xlim=c(10000, xlim_p2_upper), clip="off") +
+        scale_x_continuous(breaks=c(5000, 35000, 70000), labels=c("5k", "35k", "70k")) +
+        coord_cartesian(xlim=c(5000, 75000), clip="off") +
         labs(x=NULL, y=NULL) +
         theme_classic(base_size=13) +
         theme(axis.line.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(),
@@ -316,6 +312,10 @@ build_panel2_totals <- function(bar_color) {
     }
     p
 }
+
+# --- ANNOTATION TARGETS UPDATED FOR NEW RANGES ---
+panel1_targets <- df_targets[df_targets$total_reads <= 250, ]
+panel2_targets <- df_targets[df_targets$total_reads >= 5000 & df_targets$total_reads <= 75000, ]
 
 # =========================================================================
 # GRAPH 1a: UNANNOTATED TOTAL DISTRIBUTION (plain red4 split-axis plot)
