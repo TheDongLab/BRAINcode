@@ -3,8 +3,8 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/circ_deseq_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/circ_deseq_%j.err
 #SBATCH --time=02:00:00
-#SBATCH --mem=32G
-#SBATCH --cpus-per-task=4
+#SBATCH --mem=30G
+#SBATCH --cpus-per-task=2
 
 module load R
 
@@ -33,6 +33,7 @@ meta_clean <- meta_raw %>%
   rename(age = age_at_death, pmi = post_mortem_interval_in_hours) %>%
   filter(!is.na(age), !is.na(pmi))
 
+# ... (rest of metadata and parsing logic remains the same) ...
 map_tissue <- function(t) {
   case_when(str_detect(t, "(?i)Motor Cortex|BA4") ~ "Motor_Cortex",
             str_detect(t, "(?i)Cervical") ~ "Cervical_Spinal_Cord",
@@ -75,10 +76,7 @@ dds <- DESeqDataSetFromMatrix(count_mat, colData_df, ~ sex + age + pmi + mapped_
 dds <- DESeq(dds[rowSums(counts(dds) >= 5) >= 10,])
 res <- as.data.frame(results(dds, contrast = c("condition", "ALS", "Control"))) %>% rownames_to_column("circRNA_ID")
 
-# --- ADDED: Re-inserted CSV generation ---
-write.csv(res, file.path(output_dir, "DE_circRNAs.csv"), row.names = FALSE)
-
-# --- Step 6: Robust Annotation & Plotting ---
+# --- Step 6: Annotation & Export ---
 bed_file <- "~/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gene.bed6"
 bed_df <- read.table(bed_file, sep = "\t", header = FALSE)
 gene_gr <- GRanges(seqnames = bed_df$V1, ranges = IRanges(start = bed_df$V2, end = bed_df$V3), 
@@ -92,20 +90,25 @@ circ_gr <- res %>%
          end = as.numeric(str_split_fixed(coords, "-", 2)[,2])) %>%
   makeGRangesFromDataFrame(keep.extra.columns = TRUE)
 
-# Genomic Overlap
 hits <- findOverlaps(circ_gr, gene_gr)
 mcols(circ_gr)$gene_name[queryHits(hits)] <- mcols(gene_gr)$gene_name[subjectHits(hits)]
 
-plot_data <- as.data.frame(circ_gr) %>%
+# Save fully annotated results
+res_annotated <- as.data.frame(circ_gr)
+write.csv(res_annotated, file.path(output_dir, "DE_circRNAs_annotated.csv"), row.names = FALSE)
+
+# --- Plotting with Specific Targets ---
+target_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "STMN2", "TARDBP", "TBK1", "UNC13A", "RIMS1", "RIMS2")
+
+plot_data <- res_annotated %>%
   mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(chr", circRNA_ID, ")"), paste0("chr", circRNA_ID)),
          Significance = case_when(padj < 0.05 & log2FoldChange > 0 ~ "Upregulated",
                                  padj < 0.05 & log2FoldChange < 0 ~ "Downregulated",
                                  TRUE ~ "Not Significant"))
 
 top_labels <- plot_data %>% 
-  filter(Significance != "Not Significant") %>% 
-  group_by(Significance) %>% 
-  slice_max(abs(log2FoldChange), n = 3)
+  filter(gene_name %in% target_genes) %>%
+  filter(padj < 0.05)
 
 volcano_p <- ggplot(plot_data, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
   geom_point(alpha = 0.5) +
