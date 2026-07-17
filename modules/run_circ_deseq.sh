@@ -95,7 +95,17 @@ mcols(circ_gr)$gene_name[queryHits(hits)] <- mcols(gene_gr)$gene_name[subjectHit
 
 # Save fully annotated results
 res_annotated <- as.data.frame(circ_gr)
-write.csv(res_annotated, file.path(output_dir, "DE_circRNAs_annotated.csv"), row.names = FALSE)
+
+# 1. Convert to a standard data frame and drop list columns
+res_for_csv <- as.data.frame(circ_gr) %>%
+  select(-parts) # Remove list-type columns that cause the write error
+
+# 2. Ensure chromosome names are consistent (e.g., all lowercase to match your parsing)
+res_for_csv <- res_for_csv %>%
+  mutate(seqnames = str_to_lower(as.character(seqnames)))
+
+# 3. Write the CSV
+write.csv(res_for_csv, file.path(output_dir, "DE_circRNAs_annotated.csv"), row.names = FALSE)
 
 # --- Plotting with Specific Targets ---
 target_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "STMN2", "TARDBP", "TBK1", "UNC13A", "RIMS1", "RIMS2")
