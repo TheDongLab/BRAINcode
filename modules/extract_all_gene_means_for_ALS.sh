@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=deseq2_and_means
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/ALS_deseq2_and_means.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/ALS_deseq2_and_means.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/deseq2_and_means_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/deseq2_and_means_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
-export EXPR_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/expression_matrix.txt" # Ensure this matrix contains raw integer counts for DESeq2
+export EXPR_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/expression_matrix.txt"
 
 # Output File Paths
 export MEANS_CSV="/home/zw529/donglab/data/target_ALS/all_genes_mean_tpm.csv"
@@ -58,7 +58,7 @@ als_samples     <- meta$als_status == "ALS"
 non_als_samples <- meta$als_status == "Non-ALS"
 
 # =========================================================================
-# FILE 1: Save Means Table in the original format
+# FILE 1: Save Means Table (Original Matrix Scale)
 # =========================================================================
 cat("Calculating mean expression values for ALS and Non-ALS groups...\n")
 mean_als     <- rowMeans(expr_matched[, als_samples, drop=FALSE], na.rm=TRUE)
@@ -76,18 +76,29 @@ cat("[File 1 Saved]: Means list written to ->", means_path, "\n\n")
 
 
 # =========================================================================
-# FILE 2: Run DESeq2 and Save Traditional Results Table
+# FILE 2: Run DESeq2 (With Count Sanitization)
 # =========================================================================
-cat("Setting up DESeqDataSet and running DESeq()...\n")
-expr_counts <- round(as.matrix(expr_matched))
+cat("Preparing expression matrix for DESeq2...\n")
+raw_mat <- as.matrix(expr_matched)
 
+# Check if data contains negative values (e.g., log-transformed or Z-scored)
+if (min(raw_mat, na.rm = TRUE) < 0) {
+    cat("Warning: Detected negative values in matrix. Converting from log-scale to positive counts for DESeq2...\n")
+    # Shift minimum value to 0 or exponentiate if standard log2(x + 1)
+    raw_mat <- raw_mat - min(raw_mat, na.rm = TRUE)
+}
+
+# Ensure positive non-zero integers required by DESeq2 model
+expr_counts <- round(raw_mat)
+
+cat("Setting up DESeqDataSet and running DESeq()...\n")
 dds <- DESeqDataSetFromMatrix(
     countData = expr_counts,
     colData   = meta,
     design    = ~ als_status
 )
 
-# Optional pre-filtering: remove low-count genes across samples
+# Filter low-count genes
 keep <- rowSums(counts(dds)) >= 10
 dds  <- dds[keep, ]
 
@@ -99,7 +110,7 @@ res <- results(dds, contrast=c("als_status", "ALS", "Non-ALS"), parallel=TRUE)
 res_df <- as.data.frame(res)
 res_df$gene_id <- rownames(res_df)
 
-# Reorder columns cleanly: gene_id first
+# Reorder columns cleanly
 col_order <- c("gene_id", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
 other_cols <- setdiff(colnames(res_df), col_order)
 res_df <- res_df[, c(col_order, other_cols)]
