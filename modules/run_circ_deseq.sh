@@ -108,7 +108,7 @@ res_for_csv <- res_for_csv %>%
 write.csv(res_for_csv, file.path(output_dir, "DE_circRNAs_annotated.csv"), row.names = FALSE)
 
 # --- Plotting with Specific Targets ---
-target_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "STMN2", "TARDBP", "TBK1", "UNC13A", "RIMS1", "RIMS2")
+target_genes <- c("ATXN1", "ATXN2", "HOMER1", "C9orf72", "SOD1", "FUS", "STMN2", "TARDBP", "TBK1", "UNC13A", "ERC1", "CNTN1", "SLC8A1", "UCHL1", "MAP7", "PICALM", "ARFGEF3", "UTRN")
 
 plot_data <- res_annotated %>%
   mutate(label = ifelse(!is.na(gene_name), paste0(gene_name, "\n(chr", circRNA_ID, ")"), paste0("chr", circRNA_ID)),
