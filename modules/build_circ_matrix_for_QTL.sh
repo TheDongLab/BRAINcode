@@ -108,7 +108,8 @@ for _, row in rna_found.iterrows():
         continue
         
     try:
-        circ = pd.read_csv(circ_file, sep=r"\s+")
+        # FIXED: Explicit tab delimiter for circularRNA_known_circ_percentage.txt
+        circ = pd.read_csv(circ_file, sep="\t")
     except Exception:
         continue
     
@@ -363,8 +364,6 @@ if (nrow(panel2_targets) > 0) {
     )
 }
 
-# Gene category colors are explained via a subtitle instead of a side legend
-# (a legend was pushing in from the right and clipping the outlier panel).
 cat_labels <- c("ALS" = "ALS-associated", "SYN" = "Synapse-associated")
 fill_scale  <- scale_fill_manual(values=cat_colors, guide="none")
 color_scale <- scale_color_manual(values=cat_colors, guide="none")
