@@ -4,7 +4,7 @@
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/deseq2_and_means_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=80G
 
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export EXPR_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/expression_matrix.txt"
