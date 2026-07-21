@@ -16,7 +16,7 @@ export DESEQ2_CSV="/home/zw529/donglab/data/target_ALS/deseq2_als_vs_non_als_res
 module load R
 
 echo "Job started at: $(date)"
-echo "Building matrices directly from normalization.tab files (handling NAs & duplicate IDs)..."
+echo "Building matrices directly from normalization.tab files (poscounts size factor fix)..."
 echo "----------------------------------------"
 
 Rscript -e '
@@ -78,15 +78,11 @@ rownames(raw_matrix) <- gene_ids
 rownames(tpm_matrix) <- gene_ids
 
 # 3. Handle NA / NaN values in matrices
-na_count_raw <- sum(is.na(raw_matrix))
-if (na_count_raw > 0) {
-    cat("Notice: Found", na_count_raw, "NA values in raw count matrix. Replacing NAs with 0...\n")
+if (sum(is.na(raw_matrix)) > 0) {
     raw_matrix[is.na(raw_matrix)] <- 0
 }
 
-na_count_tpm <- sum(is.na(tpm_matrix))
-if (na_count_tpm > 0) {
-    cat("Notice: Found", na_count_tpm, "NA values in TPM matrix. Replacing NAs with 0...\n")
+if (sum(is.na(tpm_matrix)) > 0) {
     tpm_matrix[is.na(tpm_matrix)] <- 0
 }
 
@@ -100,16 +96,16 @@ meta <- meta[meta$clean_id %in% colnames(raw_matrix), ]
 
 # --- DEDUPLICATION STEP ---
 if (any(duplicated(meta$clean_id))) {
-    dup_count <- sum(duplicated(meta$clean_id))
-    cat("Notice: Found and removed", dup_count, "duplicate metadata entries.\n")
     meta <- meta[!duplicated(meta$clean_id), ]
 }
 
 # Categorize ALS vs Non-ALS
 meta$subject_group <- trimws(gsub("[\r\n\t]+", " ", meta$subject_group))
 als_keywords <- "ALS|MND|Amyotrophic|Motor Neuron"
-meta$als_status <- ifelse(grepl(als_keywords, meta$subject_group, ignore.case=TRUE), "ALS", "Non-ALS")
-meta$als_status <- factor(meta$als_status, levels = c("Non-ALS", "ALS"))
+
+# Clean factor levels to ensure pure alphanumerics for DESeq2 design
+status_vec <- ifelse(grepl(als_keywords, meta$subject_group, ignore.case=TRUE), "ALS", "NonALS")
+meta$als_status <- factor(status_vec, levels = c("NonALS", "ALS"))
 
 # Set unique row names
 rownames(meta) <- meta$clean_id
@@ -124,7 +120,7 @@ stopifnot(all(colnames(raw_matrix) == rownames(meta)))
 
 # Define sample logical vectors
 als_samples     <- meta$als_status == "ALS"
-non_als_samples <- meta$als_status == "Non-ALS"
+non_als_samples <- meta$als_status == "NonALS"
 
 # =========================================================================
 # FILE 1: Save Group TPM Means Output
@@ -144,13 +140,13 @@ write.csv(final_means_list, means_path, row.names = FALSE)
 cat("[File 1 Saved]: Means list written to ->", means_path, "\n\n")
 
 # =========================================================================
-# FILE 2: Run True DESeq2 using Raw Count Matrix
+# FILE 2: Run True DESeq2 using Raw Count Matrix (with poscounts)
 # =========================================================================
 cat("Running standard DESeq2 analysis on true raw counts...\n")
 
 count_data <- round(as.matrix(raw_matrix))
 
-# Remove any genes where count data is completely unmapped / all zeros across samples
+# Remove genes with 0 total counts
 keep_genes <- rowSums(count_data) > 0
 count_data <- count_data[keep_genes, ]
 
@@ -160,15 +156,19 @@ dds <- DESeqDataSetFromMatrix(
     design    = ~ als_status
 )
 
-# Filter low-expression genes across samples
+# Pre-filter low count genes across samples
 keep <- rowSums(counts(dds)) >= 10
 dds  <- dds[keep, ]
+
+# FIX: Use poscounts type to handle zeroes across all gene rows
+cat("Estimating size factors using poscounts method...\n")
+dds <- estimateSizeFactors(dds, type = "poscounts")
 
 # Execute DESeq2 pipeline
 dds <- DESeq(dds, parallel = TRUE)
 
-# Extract standard results table (ALS vs Non-ALS)
-res <- results(dds, contrast=c("als_status", "ALS", "Non-ALS"), parallel=TRUE)
+# Extract standard results table (ALS vs NonALS)
+res <- results(dds, contrast=c("als_status", "ALS", "NonALS"), parallel=TRUE)
 res_df <- as.data.frame(res)
 res_df$gene_id <- rownames(res_df)
 
