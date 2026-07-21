@@ -3,8 +3,8 @@
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/target_als_deseq.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/target_als_deseq.err
 #SBATCH --time=02:00:00
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=80G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=70G
 
 # TOP-LEVEL directory containing all tissue subfolders
 export BASE_DIR="/home/zw529/donglab/data/target_ALS"
@@ -28,7 +28,7 @@ register(MulticoreParam(16))
 
 base_dir    <- Sys.getenv("BASE_DIR")
 meta_path   <- Sys.getenv("METADATA")
-means_path  <- Sys.getenv("MEANS_CSV")
+means_path    <- Sys.getenv("MEANS_CSV")
 deseq2_path <- Sys.getenv("DESEQ2_CSV")
 
 # 1. Search recursively across ALL tissue folders for normalization.tab files
@@ -44,7 +44,6 @@ clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", raw_sample_ids))
 # Extract Tissue Type from path (e.g., Target_ALS/Cerebellum/... -> Cerebellum)
 extract_tissue <- function(path) {
     parts <- unlist(strsplit(path, "/"))
-    # Find the folder right after target_ALS
     idx <- which(tolower(parts) == "target_als")
     if (length(idx) > 0 && (idx[1] + 1) <= length(parts)) {
         return(parts[idx[1] + 1])
@@ -175,8 +174,9 @@ geo_means <- apply(cts, 1, function(row) {
     exp(mean(log(non_zero)))
 })
 
+# Estimate size factors manually and pass directly to DESeq() without sfType
 dds <- estimateSizeFactors(dds, geoMeans = geo_means)
-dds <- DESeq(dds, sfType = "user", parallel = TRUE)
+dds <- DESeq(dds, parallel = TRUE)
 
 # Extract ALS vs NonALS results
 res <- results(dds, contrast=c("als_status", "ALS", "NonALS"), parallel=TRUE)
