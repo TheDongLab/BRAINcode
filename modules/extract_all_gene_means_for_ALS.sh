@@ -16,7 +16,7 @@ export DESEQ2_CSV="/home/zw529/donglab/data/target_ALS/deseq2_als_vs_non_als_res
 module load R
 
 echo "Job started at: $(date)"
-echo "Building matrices directly from normalization.tab files..."
+echo "Building matrices directly from normalization.tab files (handling duplicate IDs)..."
 echo "----------------------------------------"
 
 Rscript -e '
@@ -39,7 +39,18 @@ if (length(tab_files) == 0) {
 }
 
 # Extract sample IDs from parent directory names (e.g., CGND_HRA_00618)
-sample_ids <- basename(dirname(tab_files))
+raw_sample_ids <- basename(dirname(tab_files))
+
+# Clean sample IDs for matrix columns
+clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", raw_sample_ids))
+
+# Check for duplicate directory names
+if (any(duplicated(clean_expr_ids))) {
+    cat("Warning: Duplicate directories detected. Keeping first occurrence of each sample ID.\n")
+    keep_idx       <- !duplicated(clean_expr_ids)
+    tab_files      <- tab_files[keep_idx]
+    clean_expr_ids <- clean_expr_ids[keep_idx]
+}
 
 # 2. Read all files into memory and assemble raw_count and TPM matrices
 cat("Assembling Raw Count and TPM matrices...\n")
@@ -50,7 +61,7 @@ raw_counts_list <- list()
 tpm_list        <- list()
 
 for (i in seq_along(tab_files)) {
-    s_id <- sample_ids[i]
+    s_id <- clean_expr_ids[i]
     df   <- read.delim(tab_files[i], sep="\t", header=TRUE, stringsAsFactors=FALSE)
     
     # Ensure genes are in the exact same order
@@ -66,28 +77,38 @@ tpm_matrix <- do.call(cbind, tpm_list)
 rownames(raw_matrix) <- gene_ids
 rownames(tpm_matrix) <- gene_ids
 
-# 3. Load & Sanitize Metadata
+# 3. Load & Sanitize Metadata with DUPLICATE REMOVAL
 meta <- read.delim(meta_path, sep=",", header=TRUE, quote="\"", fill=TRUE, check.names=FALSE, stringsAsFactors=FALSE)
 
-clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
-clean_expr_ids <- gsub("[_-]", ".", gsub(" ", "", colnames(raw_matrix)))
+meta$clean_id <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 
-colnames(raw_matrix) <- clean_expr_ids
-colnames(tpm_matrix) <- clean_expr_ids
+# Filter metadata to matched expression samples
+meta <- meta[meta$clean_id %in% colnames(raw_matrix), ]
 
-# Match metadata rows to matrix columns
-meta <- meta[clean_meta_ids %in% clean_expr_ids, ]
-clean_meta_ids <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
-
-raw_matrix <- raw_matrix[, clean_meta_ids, drop=FALSE]
-tpm_matrix <- tpm_matrix[, clean_meta_ids, drop=FALSE]
+# --- DEDUPLICATION STEP ---
+# Keep only the first entry for any duplicate sample IDs in metadata
+if (any(duplicated(meta$clean_id))) {
+    dup_count <- sum(duplicated(meta$clean_id))
+    cat("Notice: Found and removed", dup_count, "duplicate metadata entries.\n")
+    meta <- meta[!duplicated(meta$clean_id), ]
+}
 
 # Categorize ALS vs Non-ALS
 meta$subject_group <- trimws(gsub("[\r\n\t]+", " ", meta$subject_group))
 als_keywords <- "ALS|MND|Amyotrophic|Motor Neuron"
 meta$als_status <- ifelse(grepl(als_keywords, meta$subject_group, ignore.case=TRUE), "ALS", "Non-ALS")
 meta$als_status <- factor(meta$als_status, levels = c("Non-ALS", "ALS"))
-rownames(meta)  <- clean_meta_ids
+
+# Now safely set row names since meta$clean_id is guaranteed unique!
+rownames(meta) <- meta$clean_id
+
+# Align matrix columns strictly to metadata row order
+common_ids <- intersect(meta$clean_id, colnames(raw_matrix))
+meta       <- meta[common_ids, ]
+raw_matrix <- raw_matrix[, common_ids, drop=FALSE]
+tpm_matrix <- tpm_matrix[, common_ids, drop=FALSE]
+
+stopifnot(all(colnames(raw_matrix) == rownames(meta)))
 
 # Define sample logical vectors
 als_samples     <- meta$als_status == "ALS"
@@ -115,7 +136,6 @@ cat("[File 1 Saved]: Means list written to ->", means_path, "\n\n")
 # =========================================================================
 cat("Running standard DESeq2 analysis on true raw counts...\n")
 
-# Ensure count matrix is integer
 count_data <- round(as.matrix(raw_matrix))
 
 dds <- DESeqDataSetFromMatrix(
