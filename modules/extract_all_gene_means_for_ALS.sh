@@ -16,7 +16,7 @@ export DESEQ2_CSV="/home/zw529/donglab/data/target_ALS/deseq2_als_vs_non_als_res
 module load R
 
 echo "Job started at: $(date)"
-echo "Building matrices directly from normalization.tab files (handling duplicate IDs)..."
+echo "Building matrices directly from normalization.tab files (handling NAs & duplicate IDs)..."
 echo "----------------------------------------"
 
 Rscript -e '
@@ -77,7 +77,20 @@ tpm_matrix <- do.call(cbind, tpm_list)
 rownames(raw_matrix) <- gene_ids
 rownames(tpm_matrix) <- gene_ids
 
-# 3. Load & Sanitize Metadata with DUPLICATE REMOVAL
+# 3. Handle NA / NaN values in matrices
+na_count_raw <- sum(is.na(raw_matrix))
+if (na_count_raw > 0) {
+    cat("Notice: Found", na_count_raw, "NA values in raw count matrix. Replacing NAs with 0...\n")
+    raw_matrix[is.na(raw_matrix)] <- 0
+}
+
+na_count_tpm <- sum(is.na(tpm_matrix))
+if (na_count_tpm > 0) {
+    cat("Notice: Found", na_count_tpm, "NA values in TPM matrix. Replacing NAs with 0...\n")
+    tpm_matrix[is.na(tpm_matrix)] <- 0
+}
+
+# 4. Load & Sanitize Metadata with DUPLICATE REMOVAL
 meta <- read.delim(meta_path, sep=",", header=TRUE, quote="\"", fill=TRUE, check.names=FALSE, stringsAsFactors=FALSE)
 
 meta$clean_id <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
@@ -86,7 +99,6 @@ meta$clean_id <- gsub("[_-]", ".", gsub(" ", "", meta[["externalsampleid"]]))
 meta <- meta[meta$clean_id %in% colnames(raw_matrix), ]
 
 # --- DEDUPLICATION STEP ---
-# Keep only the first entry for any duplicate sample IDs in metadata
 if (any(duplicated(meta$clean_id))) {
     dup_count <- sum(duplicated(meta$clean_id))
     cat("Notice: Found and removed", dup_count, "duplicate metadata entries.\n")
@@ -99,7 +111,7 @@ als_keywords <- "ALS|MND|Amyotrophic|Motor Neuron"
 meta$als_status <- ifelse(grepl(als_keywords, meta$subject_group, ignore.case=TRUE), "ALS", "Non-ALS")
 meta$als_status <- factor(meta$als_status, levels = c("Non-ALS", "ALS"))
 
-# Now safely set row names since meta$clean_id is guaranteed unique!
+# Set unique row names
 rownames(meta) <- meta$clean_id
 
 # Align matrix columns strictly to metadata row order
@@ -137,6 +149,10 @@ cat("[File 1 Saved]: Means list written to ->", means_path, "\n\n")
 cat("Running standard DESeq2 analysis on true raw counts...\n")
 
 count_data <- round(as.matrix(raw_matrix))
+
+# Remove any genes where count data is completely unmapped / all zeros across samples
+keep_genes <- rowSums(count_data) > 0
+count_data <- count_data[keep_genes, ]
 
 dds <- DESeqDataSetFromMatrix(
     countData = count_data,
