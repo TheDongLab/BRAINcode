@@ -14,7 +14,7 @@ export CIRC_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/circ_matrix.txt"
 Rscript - <<'EOF'
 
 library(data.table)
-library(lme4)
+library(lmerTest)
 
 meta <- fread(Sys.getenv("METADATA"))
 circ <- fread(Sys.getenv("CIRC_MATRIX"))
@@ -35,7 +35,7 @@ cat("Matched samples:",length(samples),"\n")
 meta <- meta[match(samples,id),]
 circ <- as.data.frame(circ[,..samples])
 
-keep <- rowSums(circ > 0.001 ,na.rm=TRUE) >= 5
+keep <- rowSums(circ > 0.001,na.rm=TRUE) >= 5
 circ <- circ[keep,]
 
 cat("Remaining circRNAs:",nrow(circ),"\n")
@@ -76,19 +76,31 @@ results <- lapply(
         if(length(unique(df$is_als))<2)
             return(NULL)
 
-        fit <- lmer(
-            circ ~ is_als + age + sex + PMI + tissue + (1|subject),
-            data=df
+        fit <- tryCatch(
+            lmer(
+                circ ~ is_als + age + sex + PMI + tissue + (1|subject),
+                data=df
+            ),
+            error=function(e) NULL
         )
+
+        if(is.null(fit))
+            return(NULL)
 
         coef <- summary(fit)$coefficients
 
-        if("is_alsALS" %in% rownames(coef)){
+        als_row <- grep(
+            "^is_als",
+            rownames(coef),
+            value=TRUE
+        )
+
+        if(length(als_row)==1){
 
             data.frame(
                 circ_id=id,
-                beta_ALS=coef["is_alsALS","Estimate"],
-                pvalue=coef["is_alsALS","Pr(>|t|)"],
+                beta_ALS=coef[als_row,"Estimate"],
+                pvalue=coef[als_row,"Pr(>|t|)"],
                 n=nrow(df)
             )
 
@@ -97,6 +109,7 @@ results <- lapply(
 )
 
 results <- rbindlist(results)
+
 results$FDR <- p.adjust(
     results$pvalue,
     method="BH"
