@@ -2,7 +2,7 @@
 #SBATCH --job-name=circ_ALS_lm
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/circ_ALS_lm.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/circ_ALS_lm.err
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 
@@ -27,7 +27,14 @@ meta$id <- clean(meta$externalsampleid)
 colnames(circ) <- clean(colnames(circ))
 samples <- intersect(meta$id,colnames(circ))
 meta <- meta[match(samples,id)]
-circ <- circ[,samples,with=FALSE]
+circ <- circ[,..samples]
+circ <- as.data.frame(circ)
+
+# Filter circRNAs with < 5 non-zero samples
+keep <- rowSums(circ > 0.001, na.rm=TRUE) >= 5
+circ <- circ[keep,]
+
+cat("Remaining circRNAs after filtering:",nrow(circ),"\n")
 
 meta$ALS <- ifelse(
     grepl("ALS",meta$subject_group,ignore.case=TRUE),
@@ -121,6 +128,7 @@ for(i in seq_len(nrow(top50))){
         top50$n[i],
         "\n\n"
     )
+    
     ################################################
     # Raw group means
     ################################################
