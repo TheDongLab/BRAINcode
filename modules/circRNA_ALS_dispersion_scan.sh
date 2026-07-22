@@ -11,6 +11,15 @@ module load R
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export CIRC_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/circ_matrix.txt"
 
+meta <- fread(Sys.getenv("METADATA"))
+circ <- fread(Sys.getenv("CIRC_MATRIX"))
+
+# --- CLEAN AND MERGE CATEGORIES ---
+meta$subject_group <- trimws(gsub("[\r\n\t]+"," ",meta$subject_group))
+meta$subject_group[meta$subject_group=="Non Neurological Control"] <- "Non-Neurological Control"
+meta$subject_group[meta$subject_group=="ALS Spectrum MND, Other Neurological Diseases"] <- "ALS Spectrum MND, Other Neurological Disorders"
+meta$subject_group[meta$subject_group=="Other Neurological Disorders"] <- "Other Neurological Disorders"
+
 Rscript - <<'EOF'
 
 library(data.table)
@@ -35,7 +44,7 @@ cat("Matched samples:",length(samples),"\n")
 meta <- meta[match(samples,id),]
 circ <- as.data.frame(circ[,..samples])
 
-keep <- rowSums(circ > 0.001,na.rm=TRUE) >= 5
+keep <- rowSums(circ > 0.001,na.rm=TRUE) >= 10
 circ <- circ[keep,]
 
 cat("Remaining circRNAs:",nrow(circ),"\n")
@@ -55,8 +64,13 @@ meta$externalsubjectid <- factor(meta$externalsubjectid)
 # Run regression for every circRNA
 ####################################################
 results <- lapply(
-    rownames(circ),
-    function(id){
+    seq_along(rownames(circ)),
+    function(i){
+
+        id <- rownames(circ)[i]
+
+        if(i %% 1000 == 0)
+            cat("Completed",i,"/",nrow(circ),"LMs\n")
 
         y <- as.numeric(circ[id,])
 
