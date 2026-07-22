@@ -3,6 +3,7 @@
 # _cQTL_manhattan.R
 # UPDATED: Generates both directional and circ-colored diagnostic plots
 # ADDED: Optional interaction-mode baseline direction mapping to fix the red-wall bias
+# UPDATED: All plots strictly use FDR-based coloring for statistical significance
 ###########################################
 suppressPackageStartupMessages({
     library(data.table)
@@ -127,6 +128,11 @@ if (run_type == "interaction" && !is.null(std_path) && file.exists(std_path)) {
     lead_plot$color_beta <- ifelse(is.na(lead_plot$color_beta), lead_plot[[eff_col]], lead_plot$color_beta)
 }
 
+# Set uniform FDR-based significance conditions and subtitle across modes
+sig_cond_snp  <- snp_plot$fdr_val <= sig_thresh_fdr
+sig_cond_lead <- lead_plot$fdr_val <= sig_thresh_fdr
+sig_subtitle  <- paste("FDR <", sig_thresh_fdr)
+
 # ========================================================================
 # PLOT 1: DIRECTIONAL COLORING (MODIFIED SLOPE-BASED)
 # ========================================================================
@@ -134,16 +140,16 @@ message("## Assigning directional colors...")
 snp_plot$color_cat <- as.character(snp_plot$chr_num %% 2)
 
 # Vectorized conditional mutations targeting directional changes
-snp_plot$color_cat <- ifelse(snp_plot$fdr_val <= sig_thresh_fdr & snp_plot$color_beta > 0, "increase", snp_plot$color_cat)
-snp_plot$color_cat <- ifelse(snp_plot$fdr_val <= sig_thresh_fdr & snp_plot$color_beta < 0, "decrease", snp_plot$color_cat)
+snp_plot$color_cat <- ifelse(sig_cond_snp & snp_plot$color_beta > 0, "increase", snp_plot$color_cat)
+snp_plot$color_cat <- ifelse(sig_cond_snp & snp_plot$color_beta < 0, "decrease", snp_plot$color_cat)
 
 if("telomeric_flag" %in% names(snp_plot)) {
     snp_plot$color_cat <- ifelse(snp_plot$telomeric_flag == TRUE, "telomere", snp_plot$color_cat)
 }
 
 lead_plot$color_cat <- "none"
-lead_plot$color_cat <- ifelse(lead_plot$fdr_val <= sig_thresh_fdr & lead_plot$color_beta > 0, "inc_lead", lead_plot$color_cat)
-lead_plot$color_cat <- ifelse(lead_plot$fdr_val <= sig_thresh_fdr & lead_plot$color_beta < 0, "dec_lead", lead_plot$color_cat)
+lead_plot$color_cat <- ifelse(sig_cond_lead & lead_plot$color_beta > 0, "inc_lead", lead_plot$color_cat)
+lead_plot$color_cat <- ifelse(sig_cond_lead & lead_plot$color_beta < 0, "dec_lead", lead_plot$color_cat)
 
 message("## Creating Directional Plot...")
 p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
@@ -153,8 +159,8 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), size=2.5, colour="darkgreen", fontface="italic", box.padding = 0.5, max.overlaps = Inf) +
     scale_colour_manual(values=c("0"="#444444", "1"="#999999", "23"="#555555", "increase"="#E41A1C", "decrease"="#377EB8", "telomere"="#E69F00", "inc_lead"="#E41A1C", "dec_lead"="#377EB8", "none"="white")) +
     scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
-    scale_y_continuous(expand=c(0.02, 0.5)) +
-    labs(title=paste("cis-cQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x=x_axis_label, y=expression(-log[10](p))) +
+    scale_y_continuous(breaks=c(0, 5, 10, 20, 30), expand=c(0.02, 0.5)) +
+    labs(title=paste("cis-cQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression |", sig_subtitle), x=x_axis_label, y=expression(-log[10](p))) +
     theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
 
 out_file_png1 <- paste0(out_prefix, ".manhattan_by_SNP.png")
@@ -167,7 +173,7 @@ dev.off()
 # ========================================================================
 message("## Setting up Circ ID diagnostic colors with a randomized palette...")
 
-# Isolate significant versus background data frames to prevent scale conflicts
+# Isolate significant versus background data frames strictly by FDR
 snp_sig  <- snp_plot[fdr_val <= sig_thresh_fdr]
 snp_bg   <- snp_plot[fdr_val > sig_thresh_fdr]
 lead_sig <- lead_plot[fdr_val <= sig_thresh_fdr]
@@ -192,33 +198,20 @@ if (n_circs > 0) {
 
 message("## Creating Circ ID Diagnostic Plot...")
 p2 <- ggplot() +
-    # 1. Background non-significant points (Zebra style using shape 21 allows independent 'fill')
     geom_point(data=snp_bg, aes(x=cum_pos, y=log10p, fill=as.character(chr_num %% 2)), 
                shape=21, stroke=0, size=0.6, alpha=0.3) +
-    
-    # 2. Significant points colored dynamically by their distinct Circ ID string
     geom_point(data=snp_sig, aes(x=cum_pos, y=log10p, colour=circ_id), size=0.6, alpha=0.7) +
-    
-    # 3. Lead Diamonds mapped to the same Circ ID color scheme
     geom_point(data=lead_sig, aes(x=cum_pos, y=log10p, colour=circ_id), shape=18, size=2.2) +
-    
     geom_hline(yintercept=5, linetype="dashed", colour="grey30", linewidth=0.5) +
     geom_text_repel(data=extreme_hits, aes(x=cum_pos, y=log10p, label=circ_id), 
                     size=2.5, colour="black", fontface="bold", box.padding = 0.5, max.overlaps = Inf) +
-    
-    # Control the background layers using fill
     scale_fill_manual(values=c("0"="#CCCCCC", "1"="#E5E5E5", "23"="#CCCCCC"), guide="none") +
-    
-    # FORCE GGPLOT TO USE OUR RANDOMIZED MAPPING KEY INSTEAD OF THE ALPHABETICAL DEFAULT
     scale_colour_manual(values=circ_palette) +
-    
     scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
-    scale_y_continuous(expand=c(0.02, 0.5)) +
-    
+    scale_y_continuous(breaks=c(0, 5, 10, 20, 30), expand=c(0.02, 0.5)) +
     labs(title=paste("Diagnostic cQTL Manhattan Plot (By Circ Locus) -", basename(out_prefix)),
-         subtitle=sprintf("Unique significant Circ IDs are assigned a randomized color palette to maximize local contrast | N Significant Circs = %d", n_circs),
+         subtitle=sprintf("Unique significant Circ IDs are assigned a randomized color palette to maximize local contrast | N Significant Circs (%s) = %d", sig_subtitle, n_circs),
          x=x_axis_label, y=expression(-log[10](p))) +
-    
     theme_bw() + 
     theme(legend.position="none", 
           panel.grid.major.x = element_blank(),
