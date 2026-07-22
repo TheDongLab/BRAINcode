@@ -14,6 +14,7 @@ export CIRC_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/circ_matrix.txt"
 Rscript - <<'EOF'
 
 library(data.table)
+library(lme4)
 
 meta <- fread(Sys.getenv("METADATA"))
 circ <- fread(Sys.getenv("CIRC_MATRIX"))
@@ -32,7 +33,7 @@ samples <- intersect(meta$id,colnames(circ))
 cat("Matched samples:",length(samples),"\n")
 
 meta <- meta[match(samples,id),]
-circ <- circ[,samples,with=FALSE]
+circ <- as.data.frame(circ[,..samples])
 
 keep <- rowSums(circ > 0.001 ,na.rm=TRUE) >= 5
 circ <- circ[keep,]
@@ -45,8 +46,10 @@ meta$is_als <- factor(
     labels=c("Non_ALS","ALS")
 )
 
+meta$subject_group <- factor(meta$subject_group)
 meta$sex <- factor(meta$sex)
 meta$tissue <- factor(meta$tissue)
+meta$externalsubjectid <- factor(meta$externalsubjectid)
 
 ####################################################
 # Run regression for every circRNA
@@ -56,32 +59,36 @@ results <- lapply(
     function(id){
 
         y <- as.numeric(circ[id,])
+
         df <- data.frame(
             circ=y,
-            ALS=meta$ALS,
-            age=meta$age,
+            is_als=meta$is_als,
+            age=meta$age_at_death,
             sex=meta$sex,
-            PMI=meta$PMI,
+            PMI=meta$post_mortem_interval_in_hours,
             tissue=meta$tissue,
-            subject_group=meta$subject_group
+            subject_group=meta$subject_group,
+            subject=meta$externalsubjectid
         )
 
         df <- df[complete.cases(df),]
-        if(length(unique(df$ALS))<2)
+
+        if(length(unique(df$is_als))<2)
             return(NULL)
-            
-        fit <- lm(
-            circ ~ ALS + age + sex + PMI + tissue,
+
+        fit <- lmer(
+            circ ~ is_als + subject_group + age + sex + PMI + tissue + (1|subject),
             data=df
         )
 
         coef <- summary(fit)$coefficients
-        if("ALS" %in% rownames(coef)){
+
+        if("is_alsALS" %in% rownames(coef)){
 
             data.frame(
                 circ_id=id,
-                beta_ALS=coef["ALS","Estimate"],
-                pvalue=coef["ALS","Pr(>|t|)"],
+                beta_ALS=coef["is_alsALS","Estimate"],
+                pvalue=coef["is_alsALS","Pr(>|t|)"],
                 n=nrow(df)
             )
 
