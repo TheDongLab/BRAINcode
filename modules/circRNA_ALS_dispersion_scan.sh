@@ -17,28 +17,32 @@ library(data.table)
 
 meta <- fread(Sys.getenv("METADATA"))
 circ <- fread(Sys.getenv("CIRC_MATRIX"))
+
 rownames(circ) <- circ$circ_id
 circ$circ_id <- NULL
 
 clean <- function(x)
-    gsub("[_-]","\\.",gsub(" ","",x))
+    gsub("-","_",gsub(" ","",x))
 
 meta$id <- clean(meta$externalsampleid)
 colnames(circ) <- clean(colnames(circ))
-samples <- intersect(meta$id,colnames(circ))
-meta <- meta[match(samples,id)]
-circ <- circ[,..samples]
-circ <- as.data.frame(circ)
 
-# Filter circRNAs with < 5 non-zero samples
-keep <- rowSums(circ > 0.001, na.rm=TRUE) >= 5
+samples <- intersect(meta$id,colnames(circ))
+
+cat("Matched samples:",length(samples),"\n")
+
+meta <- meta[match(samples,id),]
+circ <- circ[,samples,with=FALSE]
+
+keep <- rowSums(circ > 0.001 ,na.rm=TRUE) >= 5
 circ <- circ[keep,]
 
-cat("Remaining circRNAs after filtering:",nrow(circ),"\n")
+cat("Remaining circRNAs:",nrow(circ),"\n")
 
-meta$ALS <- ifelse(
+meta$is_als <- factor(
     grepl("ALS",meta$subject_group,ignore.case=TRUE),
-    1,0
+    levels=c(FALSE,TRUE),
+    labels=c("Non_ALS","ALS")
 )
 
 meta$sex <- factor(meta$sex)
