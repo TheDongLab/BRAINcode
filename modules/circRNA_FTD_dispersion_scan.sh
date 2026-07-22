@@ -11,6 +11,11 @@ module load R
 export METADATA="/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv"
 export CIRC_MATRIX="/home/zw529/donglab/data/target_ALS/QTL/circ_matrix.txt"
 
+Rscript - <<'EOF'
+
+library(data.table)
+library(lmerTest)
+
 meta <- fread(Sys.getenv("METADATA"))
 circ <- fread(Sys.getenv("CIRC_MATRIX"))
 
@@ -19,14 +24,6 @@ meta$subject_group <- trimws(gsub("[\r\n\t]+"," ",meta$subject_group))
 meta$subject_group[meta$subject_group=="Non Neurological Control"] <- "Non-Neurological Control"
 meta$subject_group[meta$subject_group=="ALS Spectrum MND, Other Neurological Diseases"] <- "ALS Spectrum MND, Other Neurological Disorders"
 meta$subject_group[meta$subject_group=="Other Neurological Disorders"] <- "Other Neurological Disorders"
-
-Rscript - <<'EOF'
-
-library(data.table)
-library(lmerTest)
-
-meta <- fread(Sys.getenv("METADATA"))
-circ <- fread(Sys.getenv("CIRC_MATRIX"))
 
 rownames(circ) <- circ$circ_id
 circ$circ_id <- NULL
