@@ -77,7 +77,7 @@ results <- lapply(
             return(NULL)
 
         fit <- lmer(
-            circ ~ is_als + subject_group + age + sex + PMI + tissue + (1|subject),
+            circ ~ is_als + age + sex + PMI + tissue + (1|subject),
             data=df
         )
 
