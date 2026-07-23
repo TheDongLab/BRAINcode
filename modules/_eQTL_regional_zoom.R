@@ -19,10 +19,15 @@ if (length(args) >= 2) {
 
 message(paste("## Running dynamic regional zoom plots for tissue:", tissue, paste0("(", run_type, " mode)")))
 
-# Hardcoded target window for Plot 1 & Plot 2
+# Target window setup for Plot 1 & Plot 2
 target_chr <- "17"
 start_pos  <- 45465000
 end_pos    <- 47055000
+
+# Derive clean chromosome and position labels dynamically
+chr_num_clean   <- gsub("chr", "", as.character(target_chr), ignore.case = TRUE)
+chr_label_full  <- paste0("chr", chr_num_clean)
+x_label_dynamic <- sprintf("Chromosome %s Position (Mb)", chr_num_clean)
 
 # Base directory path setup
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/")
@@ -53,7 +58,7 @@ lead_raw[, log10p := -log10(`p-value`)]
 
 # Filter location reference map first to save memory overhead
 snp_loc[, chr_clean := gsub("chr", "", as.character(chr), ignore.case = TRUE)]
-snp_loc_sub <- snp_loc[chr_clean == target_chr & pos >= start_pos & pos <= end_pos]
+snp_loc_sub <- snp_loc[chr_clean == chr_num_clean & pos >= start_pos & pos <= end_pos]
 
 # Keyed join
 setkey(snp_raw, snpid); setkey(lead_raw, snpid); setkey(snp_loc_sub, snpid)
@@ -68,7 +73,7 @@ message(paste("## Top signal gene identified in this window:", top_gene))
 
 
 # ========================================================================
-# PLOT 1: THE EXISTING ZOOM PLOT (ALL VARIANTS)
+# PLOT 1: THE REGIONAL ZOOM PLOT (ALL VARIANTS)
 # ========================================================================
 message("## Building Plot 1: Full variant zoom...")
 snp_zoom[, color_cat := ifelse(geneid == top_gene & `p-value` <= 0.05, "Top Gene Locus", "Other/Background")]
@@ -86,8 +91,8 @@ p1 <- ggplot() +
                     size = 3.5, colour = "black", fontface = "bold", box.padding = 0.5) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.01, 0.01)) +
     labs(title = sprintf("%s Regional cis-eQTL Zoom (All Variants)", gsub("_", " ", tissue)),
-         subtitle = sprintf("Region: chr17:45.47-47.05 Mb | Highlighted: %s", top_gene),
-         x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+         subtitle = sprintf("Region: %s:%.2f-%.2f Mb | Highlighted: %s", chr_label_full, start_pos/1e6, end_pos/1e6, top_gene),
+         x = x_label_dynamic, y = expression(-log[10](p-value))) +
     theme_bw() + theme(panel.grid.minor = element_blank(), legend.position = "none")
 
 out_file1 <- paste0(results_dir, tissue, "_eQTL.simple_zoom.png")
@@ -99,7 +104,7 @@ dev.off()
 # ========================================================================
 # PLOT 2: LEAD SNPS ONLY - PRUNED VIEW
 # ========================================================================
-message("## Building Plot 2: Option A (Lead variants summary structure)...")
+message("## Building Plot 2: Lead variants summary structure...")
 
 lead_snps_per_gene <- snp_zoom[order(geneid, -log10p), head(.SD, 1), by = geneid]
 lead_snps_per_gene[, status := ifelse(geneid == top_gene, "Primary Locus Driver", "Secondary Target Gene")]
@@ -112,8 +117,8 @@ p2 <- ggplot(data = lead_snps_per_gene, aes(x = pos / 1e6, y = log10p)) +
                     box.padding = 0.4, max.overlaps = 20, cluster_groups = FALSE) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.02, 0.02)) +
     labs(title = sprintf("%s Lead eQTL Variant Summary", gsub("_", " ", tissue)),
-         subtitle = "Pruned view: Showing only the top peak variant per unique gene structure",
-         x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+         subtitle = sprintf("Pruned view: Showing top peak variants per unique gene structure | Region: %s:%.2f-%.2f Mb", chr_label_full, start_pos/1e6, end_pos/1e6),
+         x = x_label_dynamic, y = expression(-log[10](p-value))) +
     theme_bw() + 
     theme(panel.grid.minor = element_blank(), 
           legend.position = "top", 
@@ -138,7 +143,7 @@ if (nrow(anchor_lookup) > 0) {
     diag_start <- anchor_pos - 500000
     diag_end   <- anchor_pos + 500000
     
-    snp_diag <- snp_raw[snpid %in% snp_loc[chr_clean == target_chr & pos >= diag_start & pos <= diag_end, snpid]]
+    snp_diag <- snp_raw[snpid %in% snp_loc[chr_clean == chr_num_clean & pos >= diag_start & pos <= diag_end, snpid]]
     setkey(snp_diag, snpid)
     snp_diag <- snp_diag[snp_loc, nomatch = NULL]
     
@@ -166,9 +171,9 @@ if (nrow(anchor_lookup) > 0) {
         scale_colour_manual(values = color_palette) +
         scale_x_continuous(limits = c(diag_start / 1e6, diag_end / 1e6), expand = c(0.01, 0.01)) +
         labs(title = sprintf("Gene Diagnostic Regional Zoom - %s eQTL", gsub("_", " ", tissue)),
-             subtitle = sprintf("Region: Locus window around %s (chr%s:%.2f-%.2f Mb) | Colored by unique significant target gene structure", 
-                                anchor_snp, target_chr, diag_start/1e6, diag_end/1e6),
-             x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+             subtitle = sprintf("Region: Locus window around %s (%s:%.2f-%.2f Mb) | Colored by unique significant target gene structure", 
+                                anchor_snp, chr_label_full, diag_start/1e6, diag_end/1e6),
+             x = x_label_dynamic, y = expression(-log[10](p-value))) +
         theme_bw() +
         theme(panel.grid.minor = element_blank(),
               legend.position = "bottom",
@@ -182,7 +187,7 @@ if (nrow(anchor_lookup) > 0) {
     dev.off()
     message(paste("## Saved Layout 3:", out_file3))
 } else {
-    message(sprintf("## Warning: Anchor SNP rs62056809 not found in location maps. Skipping Plot 3."))
+    message(sprintf("## Warning: Anchor SNP %s not found in location maps. Skipping Plot 3.", anchor_snp))
 }
 
 message("## Execution completed cleanly!")
