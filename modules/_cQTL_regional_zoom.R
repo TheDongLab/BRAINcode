@@ -19,10 +19,14 @@ if (length(args) >= 2) {
 
 message(paste("## Running dynamic regional zoom plots for tissue:", tissue, paste0("(", run_type, " mode)")))
 
-# Hardcoded target window for Plot 1 & Plot 2
+# Target window setup for Plot 1 & Plot 2
 target_chr <- "chr5"
 start_pos  <- 80050000
 end_pos    <- 83500000
+
+# Derive clean chromosome label and position labels dynamically
+chr_num_clean <- gsub("chr", "", target_chr, ignore.case = TRUE)
+x_label_dynamic <- sprintf("Chromosome %s Position (Mb)", chr_num_clean)
 
 # Base directory path setup
 base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/cQTL/")
@@ -82,8 +86,8 @@ p1 <- ggplot() +
                     size = 3.5, colour = "black", fontface = "bold", box.padding = 0.5) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.01, 0.01)) +
     labs(title = sprintf("%s Regional cis-cQTL Zoom (All Variants)", gsub("_", " ", tissue)),
-         subtitle = sprintf("Region: %s:45.47-47.05 Mb | Highlighted: %s", target_chr, top_circ),
-         x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+         subtitle = sprintf("Region: %s:%.2f-%.2f Mb | Highlighted: %s", target_chr, start_pos/1e6, end_pos/1e6, top_circ),
+         x = x_label_dynamic, y = expression(-log[10](p-value))) +
     theme_bw() + theme(panel.grid.minor = element_blank(), legend.position = "none")
 
 out_file1 <- paste0(results_dir, tissue, "_cQTL.simple_zoom.png")
@@ -105,11 +109,11 @@ p2 <- ggplot(data = lead_snps_per_circ, aes(x = pos / 1e6, y = log10p)) +
     geom_point(aes(colour = status), size = 4.0, alpha = 0.9) +
     scale_colour_manual(values = c("Primary Locus Driver" = "#E41A1C", "Secondary Target circRNA" = "#377EB8")) +
     geom_text_repel(aes(label = circ_id), size = 3.2, fontface = "bold", 
-                box.padding = 0.4, max.overlaps = 50) +
+                    box.padding = 0.4, max.overlaps = 50) +
     scale_x_continuous(limits = c(start_pos/1e6, end_pos/1e6), expand = c(0.02, 0.02)) +
     labs(title = sprintf("%s Lead cQTL Variant Summary", gsub("_", " ", tissue)),
-         subtitle = "Pruned view: Showing only the top peak variant per unique circRNA structure",
-         x = "Chromosome 17 Position (Mb)", y = expression(-log[10](p-value))) +
+         subtitle = sprintf("Pruned view: Showing top peak variants per unique circRNA structure | Region: %s:%.2f-%.2f Mb", target_chr, start_pos/1e6, end_pos/1e6),
+         x = x_label_dynamic, y = expression(-log[10](p-value))) +
     theme_bw() + 
     theme(panel.grid.minor = element_blank(), 
           legend.position = "top", 
@@ -164,7 +168,7 @@ if (nrow(anchor_lookup) > 0) {
         labs(title = sprintf("circRNA Diagnostic Regional Zoom - %s cQTL", gsub("_", " ", tissue)),
              subtitle = sprintf("Region: Locus window around %s (%s:%.2f-%.2f Mb) | Colored by unique significant circular RNA structural locus", 
                                 anchor_snp, target_chr, diag_start/1e6, diag_end/1e6),
-             x = "Chromosome 5 Position (Mb)", y = expression(-log[10](p-value))) +
+             x = x_label_dynamic, y = expression(-log[10](p-value))) +
         theme_bw() +
         theme(panel.grid.minor = element_blank(),
               legend.position = "bottom",
@@ -178,7 +182,7 @@ if (nrow(anchor_lookup) > 0) {
     dev.off()
     message(paste("## Saved Layout 3:", out_file3))
 } else {
-    message(sprintf("## Warning: Anchor SNP rs430943 not found in location maps. Skipping Plot 3."))
+    message(sprintf("## Warning: Anchor SNP %s not found in location maps. Skipping Plot 3.", anchor_snp))
 }
 
 message("## Execution completed cleanly!")
