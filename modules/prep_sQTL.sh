@@ -11,6 +11,8 @@ set -euo pipefail
 module load BCFtools
 
 TISSUE="$1" 
+RUN_TYPE="${2:-standard}" # Optional $2: "standard" (default) or "interaction"
+
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/sQTL
 mkdir -p $OUTDIR
@@ -35,7 +37,7 @@ MAP_FILE=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation
 DBSNP_VCF=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/GCF_000001405.40.gz
 
 echo "============================================"
-echo "  sQTL Prep for $TISSUE"
+echo "  sQTL Prep for $TISSUE (Mode: $RUN_TYPE)"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
@@ -234,7 +236,7 @@ try:
     snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
     snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
 
-    # 6. COVARIATE MERGE
+    # 6. COVARIATE MERGE & ENCODING
     cov_full = pd.read_csv("$COV_FILE", sep='\t')
     cov = cov_full[['externalsampleid'] + [c for c in cov_full.columns if c not in meta.columns]].drop_duplicates(subset='externalsampleid')
     meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)].copy()
@@ -243,13 +245,16 @@ try:
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     
-    cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']].T
+    # Always keep is_als as the last row for MatrixEQTL interaction compatibility
+    cov_cols = ['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']
+
+    cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
 
     # 7. SAVE OUTPUTS
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
     snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
-    cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples.")
+    cov_final.to_csv(out_cov_name, sep='\t', index=True, index_label="id", quoting=0)
+    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: $RUN_TYPE).")
 except Exception as e:
     import traceback; traceback.print_exc(); sys.exit(1)
 EOF
