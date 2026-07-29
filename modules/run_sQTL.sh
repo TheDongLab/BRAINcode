@@ -12,15 +12,18 @@ module load R
 # ── Arguments ─────────────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
-    echo "Usage: sbatch run_sQTL.sh \"Cerebellum\""
+    echo "Usage: sbatch run_sQTL.sh \"Cerebellum\" [standard|interaction]"
     exit 1
 fi
 
 TISSUE="$1"
+RUN_TYPE="${2:-standard}" # Optional $2: "standard" (default) or "interaction"
+
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
 echo "============================================"
 echo "  Matrix sQTL run for tissue : $TISSUE"
+echo "  Mode                      : $RUN_TYPE"
 echo "  $(date)"
 echo "============================================"
 
@@ -34,7 +37,7 @@ INDIR=$BASE/$TISSUE_DIR/sQTL
 OUTDIR=$INDIR/results
 mkdir -p $OUTDIR
 
-# Match the file names from your successful prep_sQTL outputs
+# Input matrices (using the unified single covariate file where is_als is hardcoded as last)
 SNP_FILE=$INDIR/snp_${TISSUE_DIR}.txt
 SPLICING_FILE=$INDIR/splicing_${TISSUE_DIR}.txt
 COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
@@ -42,8 +45,13 @@ SPLICING_LOC=$INDIR/splicing_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 
-# Output naming (Keeping files flat in $OUTDIR)
-OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL
+# Output naming handling
+if [ "$RUN_TYPE" == "interaction" ]; then
+    OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL_interaction
+else
+    OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL
+fi
+
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
 TOP_N=1000000
@@ -58,17 +66,13 @@ for f in "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SPLICING_LOC" "$SNP_LOC"; do
 done
 
 # Harmonization Guard: Clean chromosome suffixes from splicing locations
-# This strips trailing strandedness signs (e.g., 'chr10:+' or 'chr10:-' -> 'chr10')
-# so the chromosomes perfectly align with the structural map in snp_location.txt
 echo "[0.1] Standardizing chromosome labels in splicing location file..."
 SPLICING_LOC_BAK="${SPLICING_LOC}.bak"
 
-# Only make a fresh backup if it doesn't already exist to preserve the pristine original raw files
 if [ ! -f "$SPLICING_LOC_BAK" ]; then
     cp "$SPLICING_LOC" "$SPLICING_LOC_BAK"
 fi
 
-# Clean ONLY column 2 by targeting the tab boundary, leaving column 1 untouched
 sed -E 's/\t(chr[0-9XY]+):[\+\-]\t/\t\1\t/g' "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
 echo "      -> Chromosome strings cleaned in $SPLICING_LOC"
 
@@ -87,7 +91,7 @@ fi
 # ── Step 1: Run Matrix sQTL ───────────────────────────────────────────
 echo "[1] Running Matrix sQTL..."
 Rscript $PIPELINE/_sQTL.R \
-    "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$SPLICING_LOC" "$SNP_LOC"
+    "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$SPLICING_LOC" "$SNP_LOC" "$RUN_TYPE"
 
 # ── Step 2: Post-processing ──────────────────────────────────────────
 echo "[2] Post-processing..."
@@ -109,7 +113,6 @@ Rscript $PIPELINE/_sQTL_boxplot.R \
     "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
-# If a folder was created with the prefix name, move contents up and delete it
 if [ -d "${OUTPUT_PREFIX}" ]; then
     echo "[5] Cleaning up redundant subdirectories..."
     mv "${OUTPUT_PREFIX}"/* "$OUTDIR/" 2>/dev/null || true
@@ -118,7 +121,7 @@ fi
 
 # ── Final summary ─────────────────────────────────────────────────────
 echo "============================================"
-echo "  Run complete for : $TISSUE"
+echo "  Run complete for : $TISSUE (Mode: $RUN_TYPE)"
 echo "  All outputs saved to: $OUTDIR"
 echo "  $(date)"
 echo "============================================"
