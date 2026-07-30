@@ -245,16 +245,22 @@ try:
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     
+    # Define outputs and covariate layout conditionally
+    run_type = "$RUN_TYPE"
+    if run_type in ["interaction", "linear_cross"]:
+        out_cov_name = "$OUTDIR/splicing_covariates_interaction.txt"
+    else:
+        out_cov_name = "$OUTDIR/splicing_covariates.txt"
+
     # Always keep is_als as the last row for MatrixEQTL interaction compatibility
     cov_cols = ['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']
-
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
 
     # 7. SAVE OUTPUTS
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
     snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
     cov_final.to_csv(out_cov_name, sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: $RUN_TYPE).")
+    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: {run_type}).")
 except Exception as e:
     import traceback; traceback.print_exc(); sys.exit(1)
 EOF
