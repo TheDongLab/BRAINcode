@@ -1,11 +1,8 @@
 ###########################################
 # Rscript to run sQTL analysis using Matrix eQTL
-# Matrix eQTL by Andrey A. Shabalin
+# Matrix eQTL by Andrey A. Shabalin, adapted for Dong Lab pipeline
 # http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/
-# Usage: Rscript $PIPELINE_PATH/_sQTL.R snp.txt splicing.txt cov.txt output.prefix splicingloc.txt snploc.txt
-# Adapted from eQTL engine v1.2 (Xianjun Dong / Zachery Wolfe)
-# Version: 1.0
-# Date: 2026-05-20
+# Usage: Rscript $PIPELINE_PATH/_sQTL.R snp.txt splicing.txt cov.txt output.prefix splicingloc.txt snploc.txt [standard|interaction]
 ###########################################
 
 .libPaths(c("~/R/libs", .libPaths()))
@@ -19,8 +16,16 @@ covariates_file_name   <- args[3]
 output_file_name       <- args[4] # Output prefix from bash script
 gene_location_file_name = args[5] # Splicing location map
 snp_location_file_name  = args[6]
+run_type                = ifelse(length(args) >= 7, args[7], "standard")
 
-useModel = modelLINEAR
+# Toggling MatrixEQTL model type
+if (run_type == "interaction") {
+    message("## Running Matrix eQTL in INTERACTION mode (modelLINEAR_CROSS)...")
+    useModel = modelLINEAR_CROSS
+} else {
+    message("## Running Matrix eQTL in STANDARD mode (modelLINEAR)...")
+    useModel = modelLINEAR
+}
 
 ## Settings
 pvOutputThreshold_cis = 2e-2; # Matches eQTL cutoff exactly
