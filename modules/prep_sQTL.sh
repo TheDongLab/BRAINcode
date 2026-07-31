@@ -246,10 +246,10 @@ try:
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 
-    # MatrixEQTL expects the interaction variable as the VERY LAST row for modelLINEAR_CROSS
+    # MatrixEQTL expects the interaction variable as the VERY LAST row
     cov_cols = ['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']
 
-    out_cov_name = "$INDIR/covariates_${TISSUE_DIR}_encoded.txt"
+    out_cov_name = "$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt"
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
     cov_final.to_csv(out_cov_name, sep='\t')
 
