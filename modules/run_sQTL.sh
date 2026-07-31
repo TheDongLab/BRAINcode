@@ -23,7 +23,7 @@ TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
 echo "============================================"
 echo "  Matrix sQTL run for tissue : $TISSUE"
-echo "  Mode                      : $RUN_TYPE"
+echo "  Mode                       : $RUN_TYPE"
 echo "  $(date)"
 echo "============================================"
 
@@ -32,25 +32,26 @@ BASE=/home/zw529/donglab/data/target_ALS
 PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
 PLINK=$BASE/QTL/plink
 
-# Working directory is the tissue's sQTL folder
+# Working directory
 INDIR=$BASE/$TISSUE_DIR/sQTL
-OUTDIR=$INDIR/results
-mkdir -p $OUTDIR
+COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 
-# Input matrices (using the unified single covariate file where is_als is hardcoded as last)
+if [ "$RUN_TYPE" == "interaction" ]; then
+    OUTDIR=$INDIR/interaction_results
+else
+    OUTDIR=$INDIR/results
+fi
+mkdir -p "$OUTDIR"
+
+# Input matrices
 SNP_FILE=$INDIR/snp_${TISSUE_DIR}.txt
 SPLICING_FILE=$INDIR/splicing_${TISSUE_DIR}.txt
-COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 SPLICING_LOC=$INDIR/splicing_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 
 # Output naming handling
-if [ "$RUN_TYPE" == "interaction" ]; then
-    OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL_interaction
-else
-    OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL
-fi
+OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL
 
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
 FDR_THRESH=0.05
@@ -112,12 +113,8 @@ echo "[4] Generating boxplots for all sig. SNPs..."
 Rscript $PIPELINE/_sQTL_boxplot.R \
     "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 
-# ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
-if [ -d "${OUTPUT_PREFIX}" ]; then
-    echo "[5] Cleaning up redundant subdirectories..."
-    mv "${OUTPUT_PREFIX}"/* "$OUTDIR/" 2>/dev/null || true
-    rmdir "${OUTPUT_PREFIX}" 2>/dev/null || true
-fi
+# 2. FIX: Remove step 5 directory flattened hack that was collapsing folders
+# ──────────────────────────────────────────────────────────────────────
 
 # ── Final summary ─────────────────────────────────────────────────────
 echo "============================================"
