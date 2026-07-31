@@ -236,25 +236,22 @@ try:
     snp_final.index = [convert_to_rsid(idx) for idx in snp_final.index]
     snp_final = snp_final[~snp_final.index.duplicated(keep='first')]
 
-    # 6. COVARIATE MERGE & ENCODING
+    # 6. SINGLE COVARIATE FILE GENERATION
     cov_full = pd.read_csv("$COV_FILE", sep='\t')
     cov = cov_full[['externalsampleid'] + [c for c in cov_full.columns if c not in meta.columns]].drop_duplicates(subset='externalsampleid')
     meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)].copy()
     cov_merged = pd.merge(pd.merge(meta_aligned, cov, on='externalsampleid'), pca, left_on='externalsubjectid', right_on='IID')
     cov_merged = cov_merged.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
-    cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
-    cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     
-    # Define outputs and covariate layout conditionally
-    run_type = "$RUN_TYPE"
-    if run_type in ["interaction", "linear_cross"]:
-        out_cov_name = "$OUTDIR/splicing_covariates_interaction.txt"
-    else:
-        out_cov_name = "$OUTDIR/splicing_covariates.txt"
+    cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
+    cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 
-    # Always keep is_als as the last row for MatrixEQTL interaction compatibility
+    # MatrixEQTL expects the interaction variable as the VERY LAST row for modelLINEAR_CROSS
     cov_cols = ['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']
+
+    out_cov_name = "$INDIR/covariates_${TISSUE_DIR}_encoded.txt"
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
+    cov_final.to_csv(out_cov_name, sep='\t')
 
     # 7. SAVE OUTPUTS
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
