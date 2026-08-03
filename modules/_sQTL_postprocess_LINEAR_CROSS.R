@@ -24,28 +24,6 @@ TELOMERE_DIST <- 500000
 message("## Reading cis-interaction-sQTL results...")
 sqtl <- fread(cis_file, sep="\t", header=TRUE)
 
-# Standardize feature IDs across data frames up front
-if("SNP" %in% names(sqtl)) setnames(sqtl, "SNP", "snpid")
-if("gene" %in% names(sqtl)) setnames(sqtl, "gene", "junction_id")
-
-########################################################################
-# PURGE NUMERICAL SINGULARITIES (FLOATING POINT CEILING ARTIFACTS)
-########################################################################
-message("## Filtering out mathematical singularities (SE ~ 0 / floating point hits)...")
-n_before <- nrow(sqtl)
-
-# Filter out pairs with extreme t-statistics or machine-underflow p-values (p < 1e-250)
-sqtl <- sqtl[abs(`t-stat`) < 1000 & `p-value` > 1e-250]
-
-# Recalculate FDR across valid tests
-sqtl[, FDR := p.adjust(`p-value`, method = "BH")]
-
-n_after <- nrow(sqtl)
-message(sprintf("## Singularities Filter Complete: Dropped %d artifacts. Retained %d clean pairs.", 
-                n_before - n_after, n_after))
-
-########################################################################
-
 message("## Reading SNP location file...")
 snploc <- fread(snp_loc_file, sep="\t", header=TRUE)
 setnames(snploc, c("snpid","chr","pos"))
@@ -54,6 +32,10 @@ message("## Reading splicing location file...")
 geneloc <- fread(gene_loc_file, sep="\t", header=TRUE)
 setnames(geneloc, c("junction_id","junction_chr","junction_start","junction_end"))
 
+# Standardize feature IDs across data frames
+if("SNP" %in% names(sqtl)) setnames(sqtl, "SNP", "snpid")
+if("gene" %in% names(sqtl)) setnames(sqtl, "gene", "junction_id")
+
 message("## Joining Coordinates...")
 sqtl <- merge(sqtl, snploc, by="snpid", all.x=TRUE)
 sqtl <- merge(sqtl, geneloc, by="junction_id", all.x=TRUE)
@@ -61,7 +43,8 @@ sqtl <- merge(sqtl, geneloc, by="junction_id", all.x=TRUE)
 # Flag SNPs near telomeres
 sqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
 
-# Filter for significant interaction effects based on recalculated FDR
+# Matrix eQTL LINEAR_CROSS outputs columns for the interaction term directly
+# Filter for significant interaction effects
 sqtl_fdr <- sqtl[FDR < fdr_thresh]
 
 # Fallback mechanism: If FDR filters out everything but raw p-values are strong
