@@ -82,28 +82,51 @@ ctrl_idx <- which(is_als_vec == 0)
 case_idx <- which(is_als_vec == 1)
 
 # ------------------------------------------------------------------------------
-# STEP 1: Filter Splicing/Gene Matrix for Per-Group Variance
+# STEP 1: Aggressive Phenotype Filtering (Purge 0/1 Boundary Saturation)
 # ------------------------------------------------------------------------------
+message("## Filtering splicing phenotype matrix for per-group variance & continuous spread...")
+
 keep_gene_vector <- c()
 
 for (gl in 1:length(gene)) {
     gene_mat <- gene[[gl]]
     
-    # Calculate phenotype variance separately in Controls and Cases
-    ctrl_gene_var <- apply(gene_mat[, ctrl_idx, drop = FALSE], 1, var, na.rm = TRUE)
-    case_gene_var <- apply(gene_mat[, case_idx, drop = FALSE], 1, var, na.rm = TRUE)
+    ctrl_psi <- gene_mat[, ctrl_idx, drop = FALSE]
+    case_psi <- gene_mat[, case_idx, drop = FALSE]
     
-    # Require non-zero, realistic variance in BOTH cohorts (var > 1e-4)
-    slice_gene_keep <- (!is.na(ctrl_gene_var) & ctrl_gene_var > 1e-4) & 
-                       (!is.na(case_gene_var) & case_gene_var > 1e-4)
+    # 1. Require >= 15% of samples in BOTH groups to be non-boundary (0.05 < PSI < 0.95)
+    #    Rejects introns where 85%+ of cohort is locked at 0.000 or 1.000
+    ctrl_non_boundary <- apply(ctrl_psi, 1, function(x) mean(x > 0.05 & x < 0.95, na.rm = TRUE) >= 0.15)
+    case_non_boundary <- apply(case_psi, 1, function(x) mean(x > 0.05 & x < 0.95, na.rm = TRUE) >= 0.15)
+    
+    # 2. Dynamic Range (P90 - P10) must be >= 0.10 in BOTH groups
+    #    Ensures realistic spread rather than single-sample outliers driving variance
+    ctrl_span <- apply(ctrl_psi, 1, function(x) {
+        qs <- quantile(x, probs = c(0.10, 0.90), na.rm = TRUE)
+        return((qs[2] - qs[1]) >= 0.10)
+    })
+    
+    case_span <- apply(case_psi, 1, function(x) {
+        qs <- quantile(x, probs = c(0.10, 0.90), na.rm = TRUE)
+        return((qs[2] - qs[1]) >= 0.10)
+    })
+    
+    # 3. Standard deviation cutoffs per subgroup (SD >= 0.05 -> Var >= 0.0025)
+    ctrl_sd <- apply(ctrl_psi, 1, sd, na.rm = TRUE) >= 0.05
+    case_sd <- apply(case_psi, 1, sd, na.rm = TRUE) >= 0.05
+
+    # Combine all guardrails
+    slice_gene_keep <- ctrl_non_boundary & case_non_boundary & 
+                       ctrl_span & case_span & 
+                       ctrl_sd & case_sd
     
     keep_gene_vector <- c(keep_gene_vector, slice_gene_keep)
 }
 
 gene$RowReorder(which(keep_gene_vector))
 
-message(paste("## Phenotype Filter Complete: Dropped", sum(!keep_gene_vector), "flatline/invariant introns."))
-message(paste("## Retained", sum(keep_gene_vector), "introns with sufficient within-group variance."))
+message(paste("## Phenotype Filter Complete: Dropped", sum(!keep_gene_vector), "boundary-saturated/invariant introns."))
+message(paste("## Retained", sum(keep_gene_vector), "introns with robust within-group PSI distributions."))
 
 # ------------------------------------------------------------------------------
 # STEP 2: Filter SNP Matrix for Per-Group Genotype Spread
