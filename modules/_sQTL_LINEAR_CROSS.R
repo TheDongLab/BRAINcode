@@ -82,7 +82,7 @@ ctrl_idx <- which(is_als_vec == 0)
 case_idx <- which(is_als_vec == 1)
 
 # ------------------------------------------------------------------------------
-# STEP 1: Aggressive Phenotype Filtering (Purge 0/1 Boundary Saturation)
+# STEP 1: Aggressive Phenotype Filtering
 # ------------------------------------------------------------------------------
 message("## Filtering splicing phenotype matrix for per-group variance & continuous spread...")
 
@@ -94,31 +94,15 @@ for (gl in 1:length(gene)) {
     ctrl_psi <- gene_mat[, ctrl_idx, drop = FALSE]
     case_psi <- gene_mat[, case_idx, drop = FALSE]
     
-    # 1. Require >= 15% of samples in BOTH groups to be non-boundary (0.05 < PSI < 0.95)
-    #    Rejects introns where 85%+ of cohort is locked at 0.000 or 1.000
-    ctrl_non_boundary <- apply(ctrl_psi, 1, function(x) mean(x > 0.05 & x < 0.95, na.rm = TRUE) >= 0.15)
-    case_non_boundary <- apply(case_psi, 1, function(x) mean(x > 0.05 & x < 0.95, na.rm = TRUE) >= 0.15)
-    
-    # 2. Dynamic Range (P90 - P10) must be >= 0.10 in BOTH groups
-    #    Ensures realistic spread rather than single-sample outliers driving variance
-    ctrl_span <- apply(ctrl_psi, 1, function(x) {
-        qs <- quantile(x, probs = c(0.10, 0.90), na.rm = TRUE)
-        return((qs[2] - qs[1]) >= 0.10)
-    })
-    
-    case_span <- apply(case_psi, 1, function(x) {
-        qs <- quantile(x, probs = c(0.10, 0.90), na.rm = TRUE)
-        return((qs[2] - qs[1]) >= 0.10)
-    })
-    
-    # 3. Standard deviation cutoffs per subgroup (SD >= 0.05 -> Var >= 0.0025)
-    ctrl_sd <- apply(ctrl_psi, 1, sd, na.rm = TRUE) >= 0.05
-    case_sd <- apply(case_psi, 1, sd, na.rm = TRUE) >= 0.05
+    # Reject introns where > 80% of samples in EITHER cohort are locked at 0 or 1
+    ctrl_is_saturated <- apply(ctrl_psi, 1, function(x) mean(x <= 0.01 | x >= 0.99, na.rm=TRUE) > 0.80)
+    case_is_saturated <- apply(case_psi, 1, function(x) mean(x <= 0.01 | x >= 0.99, na.rm=TRUE) > 0.80)
 
-    # Combine all guardrails
-    slice_gene_keep <- ctrl_non_boundary & case_non_boundary & 
-                       ctrl_span & case_span & 
-                       ctrl_sd & case_sd
+    # Require non-negligible standard deviation (SD > 0.02) in both groups
+    ctrl_sd <- apply(ctrl_psi, 1, sd, na.rm = TRUE) > 0.02
+    case_sd <- apply(case_psi, 1, sd, na.rm = TRUE) > 0.02
+
+    slice_gene_keep <- !ctrl_is_saturated & !case_is_saturated & ctrl_sd & case_sd
     
     keep_gene_vector <- c(keep_gene_vector, slice_gene_keep)
 }
