@@ -248,16 +248,14 @@ try:
 
     # MatrixEQTL expects the interaction variable as the VERY LAST row
     cov_cols = ['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']
-
     out_cov_name = "$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt"
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
-    cov_final.to_csv(out_cov_name, sep='\t')
 
     # 7. SAVE OUTPUTS
     splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
     snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
     cov_final.to_csv(out_cov_name, sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: {run_type}).")
+    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: $RUN_TYPE).")
 except Exception as e:
     import traceback; traceback.print_exc(); sys.exit(1)
 EOF
