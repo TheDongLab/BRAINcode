@@ -61,70 +61,34 @@ if(length(covariates_file_name)>0) {
 }
 
 # ==============================================================================
-# CASE-CONTROL INTERACTION STABILITY FILTER (PREVENT CEILING / SEPARATION ARTIFACTS)
+# CASE-CONTROL MINOR ALLELE CARRIER FILTER (PREVENT PERFECT SEPARATION CRASHES)
 # ==============================================================================
-# Verifies that:
-#   1. Both Controls and Cases have >= 5 individuals in at least 2 genotype buckets.
-#   2. Both Controls and Cases have non-zero phenotype variance (var > 1e-4) to prevent flatline baseline slices (e.g. all PSI = 0) from driving SE -> 0.
+# Filter out SNPs that do not have at least 3 minor allele carriers (genotype > 0)
+# in BOTH the control and the ALS case group.
 # ==============================================================================
-message("## Evaluating genotype distributions and per-group phenotype variance across case/control splits...")
+message("## Evaluating minor allele carrier distributions across case/control splits...")
 
 full_cov_matrix <- as.matrix(cvrt)
-cov_names <- rownames(full_cov_matrix)
-interaction_idx <- which(cov_names == "is_als")
+cov_names = rownames(full_cov_matrix)
+interaction_idx = which(cov_names == "is_als")
 
-if (length(interaction_idx) == 0) {
+if(length(interaction_idx) == 0) {
     stop("Error: Could not find 'is_als' in the row headers of your covariate file!")
 }
 
 is_als_vec <- as.numeric(full_cov_matrix[interaction_idx, ])
-ctrl_idx <- which(is_als_vec == 0)
-case_idx <- which(is_als_vec == 1)
 
-# ------------------------------------------------------------------------------
-# STEP 1: Aggressive Phenotype Filtering
-# ------------------------------------------------------------------------------
-message("## Filtering splicing phenotype matrix for per-group variance & continuous spread...")
-
-keep_gene_vector <- c()
-
-for (gl in 1:length(gene)) {
-    gene_mat <- gene[[gl]]
-    
-    ctrl_psi <- gene_mat[, ctrl_idx, drop = FALSE]
-    case_psi <- gene_mat[, case_idx, drop = FALSE]
-    
-    # Reject introns where > 80% of samples in EITHER cohort are locked at 0 or 1
-    ctrl_is_saturated <- apply(ctrl_psi, 1, function(x) mean(x <= 0.01 | x >= 0.99, na.rm=TRUE) > 0.80)
-    case_is_saturated <- apply(case_psi, 1, function(x) mean(x <= 0.01 | x >= 0.99, na.rm=TRUE) > 0.80)
-
-    # Require non-negligible standard deviation (SD > 0.02) in both groups
-    ctrl_sd <- apply(ctrl_psi, 1, sd, na.rm = TRUE) > 0.02
-    case_sd <- apply(case_psi, 1, sd, na.rm = TRUE) > 0.02
-
-    slice_gene_keep <- !ctrl_is_saturated & !case_is_saturated & ctrl_sd & case_sd
-    
-    keep_gene_vector <- c(keep_gene_vector, slice_gene_keep)
-}
-
-gene$RowReorder(which(keep_gene_vector))
-
-message(paste("## Phenotype Filter Complete: Dropped", sum(!keep_gene_vector), "boundary-saturated/invariant introns."))
-message(paste("## Retained", sum(keep_gene_vector), "introns with robust within-group PSI distributions."))
-
-# ------------------------------------------------------------------------------
-# STEP 2: Filter SNP Matrix for Per-Group Genotype Spread
-# ------------------------------------------------------------------------------
+# Scan through Slices of the Genotype matrix to flag valid SNPs efficiently
 keep_snps_vector <- c()
 
-for (sl in 1:length(snps)) {
+for(sl in 1:length(snps)) {
     slice_mat <- snps[[sl]]
     
-    # Split the genotype matrix into cases and controls up front
-    ctrl_mat <- slice_mat[, ctrl_idx, drop = FALSE]
-    case_mat <- slice_mat[, case_idx, drop = FALSE]
+    # Split the matrix into cases and controls up front
+    ctrl_mat <- slice_mat[, is_als_vec == 0, drop = FALSE]
+    case_mat <- slice_mat[, is_als_vec == 1, drop = FALSE]
     
-    # Count subjects falling into each genotype bucket (0, 1, 2)
+    # Calculate how many subjects fall into each genotype group (0, 1, 2) per row
     ctrl_0 <- rowSums(abs(ctrl_mat - 0) < 0.1, na.rm = TRUE)
     ctrl_1 <- rowSums(abs(ctrl_mat - 1) < 0.1, na.rm = TRUE)
     ctrl_2 <- rowSums(abs(ctrl_mat - 2) < 0.1, na.rm = TRUE)
@@ -133,25 +97,21 @@ for (sl in 1:length(snps)) {
     case_1 <- rowSums(abs(case_mat - 1) < 0.1, na.rm = TRUE)
     case_2 <- rowSums(abs(case_mat - 2) < 0.1, na.rm = TRUE)
     
-    # Require at least 2 distinct genotype buckets with >= 5 subjects in both groups
+    # Verify that at least 2 distinct genotype buckets have >= 5 individuals
     ctrl_valid_boxes <- (ctrl_0 >= 5) + (ctrl_1 >= 5) + (ctrl_2 >= 5)
     case_valid_boxes <- (case_0 >= 5) + (case_1 >= 5) + (case_2 >= 5)
     
-    # Extra safety: Ensure non-zero genotype variance per subgroup
-    ctrl_snp_var <- apply(ctrl_mat, 1, var, na.rm = TRUE)
-    case_snp_var <- apply(case_mat, 1, var, na.rm = TRUE)
-    
-    slice_snp_keep <- (ctrl_valid_boxes >= 2) & (case_valid_boxes >= 2) & 
-                       (!is.na(ctrl_snp_var) & ctrl_snp_var > 1e-4) & 
-                       (!is.na(case_snp_var) & case_snp_var > 1e-4)
-                       
-    keep_snps_vector <- c(keep_snps_vector, slice_snp_keep)
+    # Keep only SNPs that meet this baseline layout requirement in both cohorts
+    slice_keep <- (ctrl_valid_boxes >= 2) & (case_valid_boxes >= 2)
+    keep_snps_vector <- c(keep_snps_vector, slice_keep)
 }
 
+# Apply the filtered structural mask directly across Schedulers of SlicedData
 snps$RowReorder(which(keep_snps_vector))
 
-message(paste("## Genotype Filter Complete: Dropped", sum(!keep_snps_vector), "volatile/unbalanced SNPs."))
+message(paste("## Filter Complete: Dropped", sum(!keep_snps_vector), "volatile SNPs."))
 message(paste("## Retained", sum(keep_snps_vector), "statistically stable SNPs for interaction engines."))
+
 
 # ==============================================================================
 # INTERACTION SEPARATION STEP
