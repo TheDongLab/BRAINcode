@@ -165,91 +165,54 @@ cvrt_combined <- SlicedData$new()
 cvrt_combined$CreateFromMatrix(mat_combined)
 
 # ==============================================================================
-# NEAR-PERFECT CIS INTERACTION PRE-FILTER
+# TWO-PASS NEAR-PERFECT INTERACTION FILTER
 # ==============================================================================
 if(gene_location_file_name != "" && snp_location_file_name != "") {
     message("## Load splicing/SNP location data...")
     snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE)
     genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE)
 
-    message("## Screening cis SNP-intron pairs for near-perfect interaction fits...")
+    message("## Screening for numerically perfect cis interaction fits...")
 
-    r2_max <- 1 - 1e-10
-    B <- cbind(Intercept = 1, t(mat_combined))
-    qr_B <- qr(B)
-    Q <- qr.Q(qr_B)[, seq_len(qr_B$rank), drop = FALSE]
+    screen_file <- tempfile(fileext = ".cis.txt")
+    screen = Matrix_eQTL_main(
+        snps = snps,
+        gene = gene,
+        cvrt = cvrt_combined,
+        output_file_name = NULL,
+        pvOutputThreshold = 0,
+        useModel = useModel,
+        errorCovariance = errorCovariance,
+        verbose = FALSE,
+        output_file_name.cis = screen_file,
+        pvOutputThreshold.cis = 1e-100,
+        snpspos = snpspos,
+        genepos = genepos,
+        cisDist = cisDist,
+        pvalue.hist = FALSE,
+        min.pv.by.genesnp = FALSE,
+        noFDRsaveMemory = FALSE
+    )
 
-    impute_rows <- function(x) {
-        x[!is.finite(x)] <- NA_real_
-        if(anyNA(x)) {
-            row_means <- rowMeans(x, na.rm = TRUE)
-            missing <- is.na(x)
-            x[missing] <- row_means[row(x)[missing]]
-        }
-        x
-    }
-
+    screen_hits <- screen$cis$eqtls
     bad_snp_ids <- character()
 
-    for(snp_sl in seq_len(length(snps))) {
-        G <- impute_rows(snps[[snp_sl]])
-        snp_ids <- rownames(G)
-        snp_pos <- snpspos[match(snp_ids, snpspos[, 1]), , drop = FALSE]
-
-        G0 <- G - (G %*% Q) %*% t(Q)
-        Z <- sweep(G, 2, is_als_vec, "*")
-        Z0 <- Z - (Z %*% Q) %*% t(Q)
-
-        gg <- rowSums(G0^2)
-        zg <- rowSums(Z0 * G0)
-        z_ss <- rowSums(Z0^2) - zg^2 / gg
-
-        bad_in_slice <- !is.finite(gg) | gg <= 1e-12 |
-                        !is.finite(z_ss) | z_ss <= 1e-12
-
-        for(gene_sl in seq_len(length(gene))) {
-            gene_ids <- rownames(gene[[gene_sl]])
-            gene_pos <- genepos[match(gene_ids, genepos[, 1]), , drop = FALSE]
-
-            cis_pair <- outer(as.character(snp_pos[, 2]), as.character(gene_pos[, 2]), "==") &
-                        outer(as.numeric(snp_pos[, 3]), as.numeric(gene_pos[, 3]) - cisDist, ">=") &
-                        outer(as.numeric(snp_pos[, 3]), as.numeric(gene_pos[, 4]) + cisDist, "<=")
-
-            if(!any(cis_pair, na.rm = TRUE)) next
-
-            Y <- impute_rows(gene[[gene_sl]])
-            Y0 <- Y - (Y %*% Q) %*% t(Q)
-
-            gy <- G0 %*% t(Y0)
-            zy <- Z0 %*% t(Y0)
-
-            numerator <- zy - sweep(gy, 1, zg / gg, "*")
-            y_ss <- sweep(gy^2, 1, gg, "/")
-            y_ss <- sweep(y_ss, 2, rowSums(Y0^2), function(x, y) y - x)
-            denominator <- sweep(y_ss, 1, z_ss, "*")
-            partial_r2 <- numerator^2 / denominator
-
-            bad_pair <- cis_pair & (!is.finite(partial_r2) | partial_r2 >= r2_max)
-            bad_in_slice <- bad_in_slice |
-                            apply(bad_pair, 1, function(x) any(x, na.rm = TRUE))
-        }
-
-        bad_snp_ids <- c(bad_snp_ids, snp_ids[bad_in_slice])
-        message("## Screened SNP slice ", snp_sl, " of ", length(snps))
+    if(!is.null(screen_hits) && nrow(screen_hits) > 0) {
+        r2_max <- 1 - 1e-10
+        t_limit <- sqrt(screen$param$dfFull * r2_max / (1 - r2_max))
+        bad_snp_ids <- unique(screen_hits$snps[
+            !is.finite(screen_hits$statistic) |
+            abs(screen_hits$statistic) >= t_limit
+        ])
     }
 
-    bad_snp_ids <- unique(bad_snp_ids)
+    unlink(screen_file)
+
     all_snp_ids <- snps$GetAllRowNames()
     snps$RowReorder(which(!all_snp_ids %in% bad_snp_ids))
 
-    retained_snp_ids <- snps$GetAllRowNames()
-
-    if(any(bad_snp_ids %in% retained_snp_ids)) {
-        stop("Error: One or more SNPs flagged by the interaction R2 filter were not removed.")
-    }
-
-    message(paste("## Interaction R2 Filter Complete: Dropped", length(bad_snp_ids), "SNPs producing near-perfect cis interaction fits."))
-    message(paste("## Retained", length(retained_snp_ids), "SNPs for MatrixEQTL."))
+    message("## Interaction Filter Complete: Dropped ", length(bad_snp_ids), " artifact-producing SNPs.")
+    message("## Retained ", length(snps$GetAllRowNames()), " SNPs for final MatrixEQTL analysis.")
 }
 
 if(gene_location_file_name != "" && snp_location_file_name != "")
