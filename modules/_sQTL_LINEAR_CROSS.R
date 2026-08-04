@@ -152,72 +152,83 @@ additive_indices = setdiff(1:nrow(full_cov_matrix), interaction_idx)
 cvrt_additive = SlicedData$new()
 cvrt_additive$CreateFromMatrix(full_cov_matrix[additive_indices, , drop=FALSE])
 
-cvrt_to_cross = cvrt_interaction
-cvrt_to_adjust = cvrt_additive
-
 message("## Combining background covariates and setting 'is_als' as the last row...")
 
-mat_adjust <- as.matrix(cvrt_to_adjust)
-mat_cross <- as.matrix(cvrt_to_cross)
+mat_adjust <- as.matrix(cvrt_additive)
+mat_cross <- as.matrix(cvrt_interaction)
 mat_combined <- rbind(mat_adjust, mat_cross)
 
 cvrt_combined <- SlicedData$new()
 cvrt_combined$CreateFromMatrix(mat_combined)
 
 # ==============================================================================
-# TWO-PASS NEAR-PERFECT INTERACTION FILTER
+# NUMERICAL ARTIFACT OUTPUT FILTER
 # ==============================================================================
-if(gene_location_file_name != "" && snp_location_file_name != "") {
-    message("## Load splicing/SNP location data...")
-    snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE)
-    genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE)
+# Remove MatrixEQTL results with p-values below the numerical cutoff.
+# These include the artificial p-value floor near 2.225074e-308.
+# ==============================================================================
 
-    message("## Screening for numerically perfect cis interaction fits...")
+artifact_p_cutoff <- 1e-307
 
-    screen_file <- tempfile(fileext = ".cis.txt")
-    screen = Matrix_eQTL_main(
-        snps = snps,
-        gene = gene,
-        cvrt = cvrt_combined,
-        output_file_name = NULL,
-        pvOutputThreshold = 0,
-        useModel = useModel,
-        errorCovariance = errorCovariance,
-        verbose = FALSE,
-        output_file_name.cis = screen_file,
-        pvOutputThreshold.cis = 1e-100,
-        snpspos = snpspos,
-        genepos = genepos,
-        cisDist = cisDist,
-        pvalue.hist = FALSE,
-        min.pv.by.genesnp = FALSE,
-        noFDRsaveMemory = FALSE
+filter_artifact_results <- function(result_file, total_tests) {
+    results <- read.table(
+        result_file,
+        header = TRUE,
+        sep = "\t",
+        stringsAsFactors = FALSE,
+        check.names = FALSE
     )
 
-    screen_hits <- screen$cis$eqtls
-    bad_snp_ids <- character()
+    pvalues <- as.numeric(results[["p-value"]])
+    keep <- is.finite(pvalues) & pvalues >= artifact_p_cutoff
+    removed <- sum(!keep)
 
-    if(!is.null(screen_hits) && nrow(screen_hits) > 0) {
-        r2_max <- 1 - 1e-10
-        t_limit <- sqrt(screen$param$dfFull * r2_max / (1 - r2_max))
-        bad_snp_ids <- unique(screen_hits$snps[
-            !is.finite(screen_hits$statistic) |
-            abs(screen_hits$statistic) >= t_limit
-        ])
+    results <- results[keep, , drop=FALSE]
+
+    if(nrow(results) > 0) {
+        results[["p-value"]] <- as.numeric(results[["p-value"]])
+        results[["FDR"]] <- p.adjust(
+            results[["p-value"]],
+            method = "BH",
+            n = total_tests
+        )
     }
 
-    unlink(screen_file)
+    write.table(
+        results,
+        file = result_file,
+        sep = "\t",
+        quote = FALSE,
+        row.names = FALSE
+    )
 
-    all_snp_ids <- snps$GetAllRowNames()
-    snps$RowReorder(which(!all_snp_ids %in% bad_snp_ids))
+    message(
+        "## Removed ", removed,
+        " numerical artifact rows with p-value < ",
+        format(artifact_p_cutoff, scientific = TRUE),
+        " from ", result_file
+    )
 
-    message("## Interaction Filter Complete: Dropped ", length(bad_snp_ids), " artifact-producing SNPs.")
-    message("## Retained ", length(snps$GetAllRowNames()), " SNPs for final MatrixEQTL analysis.")
+    return(results)
 }
 
 if(gene_location_file_name != "" && snp_location_file_name != "")
 {
+    message("## Load splicing/SNP location data...")
+    snpspos = read.table(
+        snp_location_file_name,
+        header = TRUE,
+        stringsAsFactors = FALSE
+    )
+    genepos = read.table(
+        gene_location_file_name,
+        header = TRUE,
+        stringsAsFactors = FALSE
+    )
+
     message("## Run the cis-/trans-interaction sQTL analysis...")
+
+    cis_file <- paste(output_file_name, "cis.txt", sep=".")
 
     me = Matrix_eQTL_main(
         snps = snps,
@@ -228,7 +239,7 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         useModel = useModel,
         errorCovariance = errorCovariance,
         verbose = TRUE,
-        output_file_name.cis = paste(output_file_name, "cis.txt", sep="."),
+        output_file_name.cis = cis_file,
         pvOutputThreshold.cis = pvOutputThreshold_cis,
         snpspos = snpspos,
         genepos = genepos,
@@ -236,21 +247,29 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         pvalue.hist = "qqplot",
         min.pv.by.genesnp = FALSE,
         noFDRsaveMemory = FALSE
-    );
+    )
 
-    cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
-    cat('Detected local interaction sQTLs:', '\n');
-    show(me$cis$eqtls)
-    cat('Detected distant interaction sQTLs:', '\n');
-    show(me$trans$eqtls);
+    cis_results <- filter_artifact_results(
+        result_file = cis_file,
+        total_tests = me$cis$ntests
+    )
+
+    cat("Analysis done in: ", me$time.in.sec, " seconds", "\n")
+    cat("Detected local interaction sQTLs after artifact filtering:", "\n")
+    print(head(cis_results))
+    cat("Detected distant interaction sQTLs:", "\n")
+    show(me$trans$eqtls)
+
 } else {
     message("## Run the standard engine interaction sQTL analysis...")
+
+    result_file <- paste(output_file_name, "txt", sep=".")
 
     me = Matrix_eQTL_engine(
         snps = snps,
         gene = gene,
         cvrt = cvrt_combined,
-        output_file_name = paste(output_file_name, "txt", sep="."),
+        output_file_name = result_file,
         pvOutputThreshold = pvOutputThreshold,
         useModel = useModel,
         errorCovariance = errorCovariance,
@@ -258,14 +277,19 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         pvalue.hist = FALSE,
         min.pv.by.genesnp = FALSE,
         noFDRsaveMemory = FALSE
-    );
+    )
+
+    filtered_results <- filter_artifact_results(
+        result_file = result_file,
+        total_tests = me$all$ntests
+    )
 
     message("## Getting results ...")
-    cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
-    cat('Detected interaction sQTLs:', '\n');
-    show(me$all$eqtls);
+    cat("Analysis done in: ", me$time.in.sec, " seconds", "\n")
+    cat("Detected interaction sQTLs after artifact filtering:", "\n")
+    print(head(filtered_results))
 }
 
-pdf(paste(output_file_name, "pdf", sep="."));
-plot(me);
-dev.off();
+pdf(paste(output_file_name, "pdf", sep="."))
+plot(me)
+dev.off()
