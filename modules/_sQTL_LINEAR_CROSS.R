@@ -180,17 +180,18 @@ if(gene_location_file_name != "" && snp_location_file_name != "") {
     Q <- qr.Q(qr_B)[, seq_len(qr_B$rank), drop = FALSE]
 
     impute_rows <- function(x) {
-        missing <- !is.finite(x)
-        if(any(missing)) {
+        x[!is.finite(x)] <- NA_real_
+        if(anyNA(x)) {
             row_means <- rowMeans(x, na.rm = TRUE)
+            missing <- is.na(x)
             x[missing] <- row_means[row(x)[missing]]
         }
         x
     }
 
-    bad_snps_vector <- c()
+    bad_snp_ids <- character()
 
-    for(snp_sl in 1:length(snps)) {
+    for(snp_sl in seq_len(length(snps))) {
         G <- impute_rows(snps[[snp_sl]])
         snp_ids <- rownames(G)
         snp_pos <- snpspos[match(snp_ids, snpspos[, 1]), , drop = FALSE]
@@ -206,7 +207,7 @@ if(gene_location_file_name != "" && snp_location_file_name != "") {
         bad_in_slice <- !is.finite(gg) | gg <= 1e-12 |
                         !is.finite(z_ss) | z_ss <= 1e-12
 
-        for(gene_sl in 1:length(gene)) {
+        for(gene_sl in seq_len(length(gene))) {
             gene_ids <- rownames(gene[[gene_sl]])
             gene_pos <- genepos[match(gene_ids, genepos[, 1]), , drop = FALSE]
 
@@ -229,17 +230,26 @@ if(gene_location_file_name != "" && snp_location_file_name != "") {
             partial_r2 <- numerator^2 / denominator
 
             bad_pair <- cis_pair & (!is.finite(partial_r2) | partial_r2 >= r2_max)
-            bad_in_slice <- bad_in_slice | apply(bad_pair, 1, any)
+            bad_in_slice <- bad_in_slice |
+                            apply(bad_pair, 1, function(x) any(x, na.rm = TRUE))
         }
 
-        bad_snps_vector <- c(bad_snps_vector, bad_in_slice)
+        bad_snp_ids <- c(bad_snp_ids, snp_ids[bad_in_slice])
         message("## Screened SNP slice ", snp_sl, " of ", length(snps))
     }
 
-    snps$RowReorder(which(!bad_snps_vector))
+    bad_snp_ids <- unique(bad_snp_ids)
+    all_snp_ids <- snps$GetAllRowNames()
+    snps$RowReorder(which(!all_snp_ids %in% bad_snp_ids))
 
-    message(paste("## Interaction R2 Filter Complete: Dropped", sum(bad_snps_vector), "SNPs producing near-perfect cis interaction fits."))
-    message(paste("## Retained", sum(!bad_snps_vector), "SNPs for MatrixEQTL."))
+    retained_snp_ids <- snps$GetAllRowNames()
+
+    if(any(bad_snp_ids %in% retained_snp_ids)) {
+        stop("Error: One or more SNPs flagged by the interaction R2 filter were not removed.")
+    }
+
+    message(paste("## Interaction R2 Filter Complete: Dropped", length(bad_snp_ids), "SNPs producing near-perfect cis interaction fits."))
+    message(paste("## Retained", length(retained_snp_ids), "SNPs for MatrixEQTL."))
 }
 
 if(gene_location_file_name != "" && snp_location_file_name != "")
