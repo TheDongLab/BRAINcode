@@ -63,9 +63,6 @@ if(length(covariates_file_name)>0) {
 # ==============================================================================
 # WITHIN-GROUP INVARIANT & BOUNDARY INTRON PRE-FILTERING
 # ==============================================================================
-# Filter out PSI junctions that are invariant within cases OR controls.
-# Prevents subgroup residual variance collapsing to zero in modelLINEAR_CROSS.
-# ==============================================================================
 message("## Evaluating group-stratified PSI variability across cases and controls...")
 
 full_cov_matrix <- as.matrix(cvrt)
@@ -84,38 +81,34 @@ keep_introns_vector <- c()
 
 for(sl in 1:length(gene)) {
     slice_mat <- gene[[sl]]
-    
+
     ctrl_mat <- slice_mat[, ctrl_mask, drop = FALSE]
     case_mat <- slice_mat[, case_mask, drop = FALSE]
-    
-    # Calculate group-specific variances and means
+
     var_ctrl  <- apply(ctrl_mat, 1, var, na.rm = TRUE)
     var_case  <- apply(case_mat, 1, var, na.rm = TRUE)
     mean_ctrl <- apply(ctrl_mat, 1, mean, na.rm = TRUE)
     mean_case <- apply(case_mat, 1, mean, na.rm = TRUE)
-    
-    # Proportion of non-boundary (0.001 to 0.999) values per subgroup
+
     ctrl_non_bnd <- rowSums(ctrl_mat > 0.001 & ctrl_mat < 0.999, na.rm = TRUE) / ncol(ctrl_mat)
     case_non_bnd <- rowSums(case_mat > 0.001 & case_mat < 0.999, na.rm = TRUE) / ncol(case_mat)
-    
-    # Intron MUST have non-zero variance and non-saturated values in BOTH subgroups
-    slice_keep <- (!is.na(var_ctrl) & var_ctrl > 1e-4) & 
-                  (!is.na(var_case) & var_case > 1e-4) & 
-                  (!is.na(mean_ctrl) & mean_ctrl >= 0.02 & mean_ctrl <= 0.98) & 
-                  (!is.na(mean_case) & mean_case >= 0.02 & mean_case <= 0.98) & 
+
+    slice_keep <- (!is.na(var_ctrl) & var_ctrl > 1e-4) &
+                  (!is.na(var_case) & var_case > 1e-4) &
+                  (!is.na(mean_ctrl) & mean_ctrl >= 0.02 & mean_ctrl <= 0.98) &
+                  (!is.na(mean_case) & mean_case >= 0.02 & mean_case <= 0.98) &
                   (ctrl_non_bnd >= 0.05) & (case_non_bnd >= 0.05)
-    
+
     keep_introns_vector <- c(keep_introns_vector, slice_keep)
 }
 
-# Reorder SlicedData rows to retain only subgroup-informative introns
 gene$RowReorder(which(keep_introns_vector))
 
 message(paste("## PSI Filter Complete: Dropped", sum(!keep_introns_vector), "group-monomorphic/saturated introns."))
 message(paste("## Retained", sum(keep_introns_vector), "variable introns for sQTL interaction modeling."))
 
 # ==============================================================================
-# CASE-CONTROL MINOR ALLELE CARRIER FILTER (PREVENT PERFECT SEPARATION CRASHES)
+# CASE-CONTROL MINOR ALLELE CARRIER FILTER
 # ==============================================================================
 message("## Evaluating minor allele carrier distributions across case/control splits...")
 
@@ -123,21 +116,21 @@ keep_snps_vector <- c()
 
 for(sl in 1:length(snps)) {
     slice_mat <- snps[[sl]]
-    
+
     ctrl_mat <- slice_mat[, ctrl_mask, drop = FALSE]
     case_mat <- slice_mat[, case_mask, drop = FALSE]
-    
+
     ctrl_0 <- rowSums(abs(ctrl_mat - 0) < 0.1, na.rm = TRUE)
     ctrl_1 <- rowSums(abs(ctrl_mat - 1) < 0.1, na.rm = TRUE)
     ctrl_2 <- rowSums(abs(ctrl_mat - 2) < 0.1, na.rm = TRUE)
-    
+
     case_0 <- rowSums(abs(case_mat - 0) < 0.1, na.rm = TRUE)
     case_1 <- rowSums(abs(case_mat - 1) < 0.1, na.rm = TRUE)
     case_2 <- rowSums(abs(case_mat - 2) < 0.1, na.rm = TRUE)
-    
+
     ctrl_valid_boxes <- (ctrl_0 >= 5) + (ctrl_1 >= 5) + (ctrl_2 >= 5)
     case_valid_boxes <- (case_0 >= 5) + (case_1 >= 5) + (case_2 >= 5)
-    
+
     slice_keep <- (ctrl_valid_boxes >= 2) & (case_valid_boxes >= 2)
     keep_snps_vector <- c(keep_snps_vector, slice_keep)
 }
@@ -171,36 +164,100 @@ mat_combined <- rbind(mat_adjust, mat_cross)
 cvrt_combined <- SlicedData$new()
 cvrt_combined$CreateFromMatrix(mat_combined)
 
-# Remove numerically perfect interaction fits
-r2_max <- 1 - 0.01
-df_cross <- ncol(mat_combined) - nrow(mat_combined) - 2
+# ==============================================================================
+# NEAR-PERFECT CIS INTERACTION PRE-FILTER
+# ==============================================================================
+if(gene_location_file_name != "" && snp_location_file_name != "") {
+    message("## Load splicing/SNP location data...")
+    snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE)
+    genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE)
 
-filter_r2 <- function(results) {
-    if(is.null(results) || nrow(results) == 0) return(results)
-    r2 <- results$statistic^2 / (results$statistic^2 + df_cross)
-    results[is.finite(r2) & r2 < r2_max, , drop=FALSE]
+    message("## Screening cis SNP-intron pairs for near-perfect interaction fits...")
+
+    r2_max <- 1 - 1e-10
+    B <- cbind(Intercept = 1, t(mat_combined))
+    qr_B <- qr(B)
+    Q <- qr.Q(qr_B)[, seq_len(qr_B$rank), drop = FALSE]
+
+    impute_rows <- function(x) {
+        missing <- !is.finite(x)
+        if(any(missing)) {
+            row_means <- rowMeans(x, na.rm = TRUE)
+            x[missing] <- row_means[row(x)[missing]]
+        }
+        x
+    }
+
+    bad_snps_vector <- c()
+
+    for(snp_sl in 1:length(snps)) {
+        G <- impute_rows(snps[[snp_sl]])
+        snp_ids <- rownames(G)
+        snp_pos <- snpspos[match(snp_ids, snpspos[, 1]), , drop = FALSE]
+
+        G0 <- G - (G %*% Q) %*% t(Q)
+        Z <- sweep(G, 2, is_als_vec, "*")
+        Z0 <- Z - (Z %*% Q) %*% t(Q)
+
+        gg <- rowSums(G0^2)
+        zg <- rowSums(Z0 * G0)
+        z_ss <- rowSums(Z0^2) - zg^2 / gg
+
+        bad_in_slice <- !is.finite(gg) | gg <= 1e-12 |
+                        !is.finite(z_ss) | z_ss <= 1e-12
+
+        for(gene_sl in 1:length(gene)) {
+            gene_ids <- rownames(gene[[gene_sl]])
+            gene_pos <- genepos[match(gene_ids, genepos[, 1]), , drop = FALSE]
+
+            cis_pair <- outer(as.character(snp_pos[, 2]), as.character(gene_pos[, 2]), "==") &
+                        outer(as.numeric(snp_pos[, 3]), as.numeric(gene_pos[, 3]) - cisDist, ">=") &
+                        outer(as.numeric(snp_pos[, 3]), as.numeric(gene_pos[, 4]) + cisDist, "<=")
+
+            if(!any(cis_pair, na.rm = TRUE)) next
+
+            Y <- impute_rows(gene[[gene_sl]])
+            Y0 <- Y - (Y %*% Q) %*% t(Q)
+
+            gy <- G0 %*% t(Y0)
+            zy <- Z0 %*% t(Y0)
+
+            numerator <- zy - sweep(gy, 1, zg / gg, "*")
+            y_ss <- sweep(gy^2, 1, gg, "/")
+            y_ss <- sweep(y_ss, 2, rowSums(Y0^2), function(x, y) y - x)
+            denominator <- sweep(y_ss, 1, z_ss, "*")
+            partial_r2 <- numerator^2 / denominator
+
+            bad_pair <- cis_pair & (!is.finite(partial_r2) | partial_r2 >= r2_max)
+            bad_in_slice <- bad_in_slice | apply(bad_pair, 1, any)
+        }
+
+        bad_snps_vector <- c(bad_snps_vector, bad_in_slice)
+        message("## Screened SNP slice ", snp_sl, " of ", length(snps))
+    }
+
+    snps$RowReorder(which(!bad_snps_vector))
+
+    message(paste("## Interaction R2 Filter Complete: Dropped", sum(bad_snps_vector), "SNPs producing near-perfect cis interaction fits."))
+    message(paste("## Retained", sum(!bad_snps_vector), "SNPs for MatrixEQTL."))
 }
 
 if(gene_location_file_name != "" && snp_location_file_name != "")
 {
-    message("## Load splicing/SNP location data...")
-    snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE);
-    genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
-
     message("## Run the cis-/trans-interaction sQTL analysis...")
-    
+
     me = Matrix_eQTL_main(
-        snps = snps, 
-        gene = gene, 
-        cvrt = cvrt_combined, 
+        snps = snps,
+        gene = gene,
+        cvrt = cvrt_combined,
         output_file_name = paste(output_file_name, "trans.txt", sep="."),
         pvOutputThreshold = pvOutputThreshold_tra,
-        useModel = useModel, 
-        errorCovariance = errorCovariance, 
-        verbose = TRUE, 
+        useModel = useModel,
+        errorCovariance = errorCovariance,
+        verbose = TRUE,
         output_file_name.cis = paste(output_file_name, "cis.txt", sep="."),
         pvOutputThreshold.cis = pvOutputThreshold_cis,
-        snpspos = snpspos, 
+        snpspos = snpspos,
         genepos = genepos,
         cisDist = cisDist,
         pvalue.hist = "qqplot",
@@ -208,9 +265,6 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         noFDRsaveMemory = FALSE
     );
 
-    me$cis$eqtls <- filter_r2(me$cis$eqtls)
-    me$trans$eqtls <- filter_r2(me$trans$eqtls)
-    
     cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
     cat('Detected local interaction sQTLs:', '\n');
     show(me$cis$eqtls)
@@ -225,16 +279,14 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         cvrt = cvrt_combined,
         output_file_name = paste(output_file_name, "txt", sep="."),
         pvOutputThreshold = pvOutputThreshold,
-        useModel = useModel, 
-        errorCovariance = errorCovariance, 
+        useModel = useModel,
+        errorCovariance = errorCovariance,
         verbose = TRUE,
         pvalue.hist = FALSE,
         min.pv.by.genesnp = FALSE,
         noFDRsaveMemory = FALSE
     );
 
-    me$all$eqtls <- filter_r2(me$all$eqtls)
-    
     message("## Getting results ...")
     cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
     cat('Detected interaction sQTLs:', '\n');
