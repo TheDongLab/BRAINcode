@@ -153,11 +153,11 @@ message(paste("## Retained", sum(keep_snps_vector), "statistically stable SNPs f
 message("## Separating interaction variable (is_als) from main additive covariates...")
 
 cvrt_interaction = SlicedData$new()
-cvrt_interaction$CreateFromMatrix( full_cov_matrix[interaction_idx, , drop=FALSE] )
+cvrt_interaction$CreateFromMatrix(full_cov_matrix[interaction_idx, , drop=FALSE])
 
 additive_indices = setdiff(1:nrow(full_cov_matrix), interaction_idx)
 cvrt_additive = SlicedData$new()
-cvrt_additive$CreateFromMatrix( full_cov_matrix[additive_indices, , drop=FALSE] )
+cvrt_additive$CreateFromMatrix(full_cov_matrix[additive_indices, , drop=FALSE])
 
 cvrt_to_cross = cvrt_interaction
 cvrt_to_adjust = cvrt_additive
@@ -165,13 +165,21 @@ cvrt_to_adjust = cvrt_additive
 message("## Combining background covariates and setting 'is_als' as the last row...")
 
 mat_adjust <- as.matrix(cvrt_to_adjust)
-mat_cross  <- as.matrix(cvrt_to_cross)
-
+mat_cross <- as.matrix(cvrt_to_cross)
 mat_combined <- rbind(mat_adjust, mat_cross)
 
 cvrt_combined <- SlicedData$new()
 cvrt_combined$CreateFromMatrix(mat_combined)
 
+# Remove numerically perfect interaction fits
+r2_max <- 1 - 1e-10
+df_cross <- ncol(mat_combined) - nrow(mat_combined) - 2
+
+filter_r2 <- function(results) {
+    if(is.null(results) || nrow(results) == 0) return(results)
+    r2 <- results$statistic^2 / (results$statistic^2 + df_cross)
+    results[is.finite(r2) & r2 < r2_max, , drop=FALSE]
+}
 
 if(gene_location_file_name != "" && snp_location_file_name != "")
 {
@@ -185,8 +193,8 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         snps = snps, 
         gene = gene, 
         cvrt = cvrt_combined, 
-        output_file_name     = paste(output_file_name, "trans.txt", sep="."),
-        pvOutputThreshold     = pvOutputThreshold_tra,
+        output_file_name = paste(output_file_name, "trans.txt", sep="."),
+        pvOutputThreshold = pvOutputThreshold_tra,
         useModel = useModel, 
         errorCovariance = errorCovariance, 
         verbose = TRUE, 
@@ -199,6 +207,9 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         min.pv.by.genesnp = FALSE,
         noFDRsaveMemory = FALSE
     );
+
+    me$cis$eqtls <- filter_r2(me$cis$eqtls)
+    me$trans$eqtls <- filter_r2(me$trans$eqtls)
     
     cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
     cat('Detected local interaction sQTLs:', '\n');
@@ -221,6 +232,8 @@ if(gene_location_file_name != "" && snp_location_file_name != "")
         min.pv.by.genesnp = FALSE,
         noFDRsaveMemory = FALSE
     );
+
+    me$all$eqtls <- filter_r2(me$all$eqtls)
     
     message("## Getting results ...")
     cat('Analysis done in: ', me$time.in.sec, ' seconds', '\n');
