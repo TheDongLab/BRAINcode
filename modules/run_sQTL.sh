@@ -17,7 +17,12 @@ if [ $# -lt 1 ]; then
 fi
 
 TISSUE="$1"
-RUN_TYPE="${2:-standard}" # Optional $2: "standard" (default) or "interaction"
+RUN_TYPE="${2:-standard}"
+
+if [[ "$RUN_TYPE" != "standard" && "$RUN_TYPE" != "interaction" ]]; then
+    echo "ERROR: RUN_TYPE must be 'standard' or 'interaction'."
+    exit 1
+fi
 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
@@ -32,7 +37,6 @@ BASE=/home/zw529/donglab/data/target_ALS
 PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
 PLINK=$BASE/QTL/plink
 
-# Working directory
 INDIR=$BASE/$TISSUE_DIR/sQTL
 COV_FILE=$INDIR/covariates_${TISSUE_DIR}_encoded.txt
 
@@ -41,6 +45,7 @@ if [ "$RUN_TYPE" == "interaction" ]; then
 else
     OUTDIR=$INDIR/results
 fi
+
 mkdir -p "$OUTDIR"
 
 # Input matrices
@@ -50,15 +55,16 @@ SPLICING_LOC=$INDIR/splicing_location.txt
 SNP_LOC=$INDIR/snp_location.txt
 BIM=$PLINK/joint_all_chrs_filtered_bed.bim
 
-# Output naming handling
+# Output files
 OUTPUT_PREFIX=$OUTDIR/${TISSUE_DIR}_sQTL
-
 CIS_FILE="${OUTPUT_PREFIX}.cis.txt"
+
 FDR_THRESH=0.05
 TOP_N=1000000
 
-# ── Step 0: Pre-flight & Location Harmonization ──────────────────────
+# ── Step 0: Pre-flight & Location Harmonization ───────────────────────
 echo "[0] Verifying file existence and alignment..."
+
 for f in "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SPLICING_LOC" "$SNP_LOC"; do
     if [ ! -f "$f" ]; then
         echo "ERROR: File missing: $f"
@@ -66,18 +72,20 @@ for f in "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SPLICING_LOC" "$SNP_LOC"; do
     fi
 done
 
-# Harmonization Guard: Clean chromosome suffixes from splicing locations
 echo "[0.1] Standardizing chromosome labels in splicing location file..."
+
 SPLICING_LOC_BAK="${SPLICING_LOC}.bak"
 
 if [ ! -f "$SPLICING_LOC_BAK" ]; then
     cp "$SPLICING_LOC" "$SPLICING_LOC_BAK"
 fi
 
-sed -E 's/\t(chr[0-9XY]+):[\+\-]\t/\t\1\t/g' "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
+sed -E 's/\t(chr[0-9XY]+):[\+\-]\t/\t\1\t/g' \
+    "$SPLICING_LOC_BAK" > "$SPLICING_LOC"
+
 echo "      -> Chromosome strings cleaned in $SPLICING_LOC"
 
-# Alignment Guard
+# Alignment guard
 S_N=$(head -n 1 "$SNP_FILE" | awk -F'\t' '{print NF-1}')
 SPL_N=$(head -n 1 "$SPLICING_FILE" | awk -F'\t' '{print NF-1}')
 C_N=$(head -n 1 "$COV_FILE" | awk -F'\t' '{print NF-1}')
@@ -91,13 +99,45 @@ fi
 
 # ── Step 1: Run Matrix sQTL ───────────────────────────────────────────
 echo "[1] Running Matrix sQTL..."
-Rscript $PIPELINE/_sQTL.R \
-    "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$SPLICING_LOC" "$SNP_LOC" "$RUN_TYPE"
 
-# ── Step 2: Post-processing ──────────────────────────────────────────
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript "$PIPELINE/_sQTL_LINEAR_CROSS.R" \
+        "$SNP_FILE" \
+        "$SPLICING_FILE" \
+        "$COV_FILE" \
+        "$OUTPUT_PREFIX" \
+        "$SPLICING_LOC" \
+        "$SNP_LOC"
+else
+    Rscript "$PIPELINE/_sQTL.R" \
+        "$SNP_FILE" \
+        "$SPLICING_FILE" \
+        "$COV_FILE" \
+        "$OUTPUT_PREFIX" \
+        "$SPLICING_LOC" \
+        "$SNP_LOC"
+fi
+
+# ── Step 2: Post-processing ───────────────────────────────────────────
 echo "[2] Post-processing..."
-Rscript $PIPELINE/_sQTL_postprocess.R \
-    "$CIS_FILE" "$SNP_LOC" "$SPLICING_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
+
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript "$PIPELINE/_sQTL_postprocess_LINEAR_CROSS.R" \
+        "$CIS_FILE" \
+        "$SNP_LOC" \
+        "$SPLICING_LOC" \
+        "$OUTPUT_PREFIX" \
+        "$FDR_THRESH" \
+        "$TOP_N"
+else
+    Rscript "$PIPELINE/_sQTL_postprocess.R" \
+        "$CIS_FILE" \
+        "$SNP_LOC" \
+        "$SPLICING_LOC" \
+        "$OUTPUT_PREFIX" \
+        "$FDR_THRESH" \
+        "$TOP_N"
+fi
 
 ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
 LEAD_FILE="${OUTPUT_PREFIX}.lead_snps.txt"
@@ -105,24 +145,70 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 3: Manhattan Plot ────────────────────────────────────────────
 echo "[3] Generating Manhattan plot..."
-Rscript $PIPELINE/_sQTL_manhattan.R \
-    "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
+
+if [ "$RUN_TYPE" == "interaction" ]; then
+    STD_ANNOTATED="$INDIR/results/${TISSUE_DIR}_sQTL.full_annotated.txt"
+
+    if [ ! -f "$STD_ANNOTATED" ]; then
+        echo "FATAL ERROR: Interaction plotting requires baseline standard sQTL results."
+        echo "Run standard mode first:"
+        echo "sbatch $0 \"$TISSUE\" standard"
+        exit 1
+    fi
+
+    Rscript "$PIPELINE/_sQTL_manhattan.R" \
+        "$ANNOTATED_FILE" \
+        "$LEAD_FILE" \
+        "$OUTPUT_PREFIX" \
+        "$FDR_THRESH" \
+        "$RUN_TYPE" \
+        "$STD_ANNOTATED"
+else
+    Rscript "$PIPELINE/_sQTL_manhattan.R" \
+        "$ANNOTATED_FILE" \
+        "$LEAD_FILE" \
+        "$OUTPUT_PREFIX" \
+        "$FDR_THRESH"
+fi
+
+# ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
+echo "[3.5] Generating regional locus zoom plots..."
+
+Rscript "$PIPELINE/_sQTL_regional_zoom.R" \
+    "$TISSUE_DIR" \
+    "$RUN_TYPE"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
-echo "[4] Generating boxplots for all sig. SNPs..."
-Rscript $PIPELINE/_sQTL_boxplot.R \
-    "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
+echo "[4] Generating boxplots for all significant SNPs..."
 
-# ── Step 5: Clean Up & Relocate Meta Results Without Collapsing Folders ──
-echo "[5] Moving meta-analysis files into main output directory..."
+if [ "$RUN_TYPE" == "interaction" ]; then
+    Rscript "$PIPELINE/_sQTL_boxplot_LINEAR_CROSS.R" \
+        "$TOP_PAIRS" \
+        "$SNP_FILE" \
+        "$SPLICING_FILE" \
+        "$COV_FILE" \
+        "$SNP_LOC" \
+        "$OUTDIR" \
+        "$TISSUE_DIR"
+else
+    Rscript "$PIPELINE/_sQTL_boxplot.R" \
+        "$TOP_PAIRS" \
+        "$SNP_FILE" \
+        "$SPLICING_FILE" \
+        "$COV_FILE" \
+        "$SNP_LOC" \
+        "$OUTDIR" \
+        "$TISSUE_DIR"
+fi
 
-# Specifically targeted move for meta files from subdirectories to $OUTDIR
-find "${OUTDIR}" -mindepth 2 -type f \( -name "*meta*" -o -name "*Combined*" \) -exec mv {} "${OUTDIR}/" \;
+# ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
+if [ -d "${OUTPUT_PREFIX}" ]; then
+    echo "[5] Cleaning up redundant subdirectories..."
+    mv "${OUTPUT_PREFIX}"/* "$OUTDIR/" 2>/dev/null || true
+    rmdir "${OUTPUT_PREFIX}" 2>/dev/null || true
+fi
 
-# Clean up empty subdirectories left behind without wiping structural directories
-find "${OUTDIR}" -mindepth 1 -type d -empty -delete
-
-# ── Final summary ─────────────────────────────────────────────────────
+# ── Final Summary ─────────────────────────────────────────────────────
 echo "============================================"
 echo "  Run complete for : $TISSUE (Mode: $RUN_TYPE)"
 echo "  All outputs saved to: $OUTDIR"
