@@ -172,7 +172,7 @@ cvrt_combined <- SlicedData$new()
 cvrt_combined$CreateFromMatrix(mat_combined)
 
 # Remove numerically perfect interaction fits
-r2_max <- 1 - 1e-10
+r2_max <- 1 - 0.01
 df_cross <- ncol(mat_combined) - nrow(mat_combined) - 2
 
 filter_r2 <- function(results) {
