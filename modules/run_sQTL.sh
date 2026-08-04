@@ -113,8 +113,14 @@ echo "[4] Generating boxplots for all sig. SNPs..."
 Rscript $PIPELINE/_sQTL_boxplot.R \
     "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 
-# 2. FIX: Remove step 5 directory flattened hack that was collapsing folders
-# ──────────────────────────────────────────────────────────────────────
+# ── Step 5: Clean Up & Relocate Meta Results Without Collapsing Folders ──
+echo "[5] Moving meta-analysis files into main output directory..."
+
+# Specifically targeted move for meta files from subdirectories to $OUTDIR
+find "${OUTDIR}" -mindepth 2 -type f \( -name "*meta*" -o -name "*Combined*" \) -exec mv {} "${OUTDIR}/" \;
+
+# Clean up empty subdirectories left behind without wiping structural directories
+find "${OUTDIR}" -mindepth 1 -type d -empty -delete
 
 # ── Final summary ─────────────────────────────────────────────────────
 echo "============================================"
