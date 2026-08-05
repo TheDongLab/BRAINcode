@@ -102,20 +102,10 @@ echo "[1] Running Matrix sQTL..."
 
 if [ "$RUN_TYPE" == "interaction" ]; then
     Rscript "$PIPELINE/_sQTL_LINEAR_CROSS.R" \
-        "$SNP_FILE" \
-        "$SPLICING_FILE" \
-        "$COV_FILE" \
-        "$OUTPUT_PREFIX" \
-        "$SPLICING_LOC" \
-        "$SNP_LOC"
+        "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$SPLICING_LOC" "$SNP_LOC"
 else
     Rscript "$PIPELINE/_sQTL.R" \
-        "$SNP_FILE" \
-        "$SPLICING_FILE" \
-        "$COV_FILE" \
-        "$OUTPUT_PREFIX" \
-        "$SPLICING_LOC" \
-        "$SNP_LOC"
+        "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$OUTPUT_PREFIX" "$SPLICING_LOC" "$SNP_LOC"
 fi
 
 # ── Step 2: Post-processing ───────────────────────────────────────────
@@ -123,20 +113,10 @@ echo "[2] Post-processing..."
 
 if [ "$RUN_TYPE" == "interaction" ]; then
     Rscript "$PIPELINE/_sQTL_postprocess_LINEAR_CROSS.R" \
-        "$CIS_FILE" \
-        "$SNP_LOC" \
-        "$SPLICING_LOC" \
-        "$OUTPUT_PREFIX" \
-        "$FDR_THRESH" \
-        "$TOP_N"
+        "$CIS_FILE" "$SNP_LOC" "$SPLICING_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
 else
     Rscript "$PIPELINE/_sQTL_postprocess.R" \
-        "$CIS_FILE" \
-        "$SNP_LOC" \
-        "$SPLICING_LOC" \
-        "$OUTPUT_PREFIX" \
-        "$FDR_THRESH" \
-        "$TOP_N"
+        "$CIS_FILE" "$SNP_LOC" "$SPLICING_LOC" "$OUTPUT_PREFIX" "$FDR_THRESH" "$TOP_N"
 fi
 
 ANNOTATED_FILE="${OUTPUT_PREFIX}.full_annotated.txt"
@@ -157,48 +137,27 @@ if [ "$RUN_TYPE" == "interaction" ]; then
     fi
 
     Rscript "$PIPELINE/_sQTL_manhattan.R" \
-        "$ANNOTATED_FILE" \
-        "$LEAD_FILE" \
-        "$OUTPUT_PREFIX" \
-        "$FDR_THRESH" \
-        "$RUN_TYPE" \
-        "$STD_ANNOTATED"
+        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH" "$RUN_TYPE" "$STD_ANNOTATED"
 else
     Rscript "$PIPELINE/_sQTL_manhattan.R" \
-        "$ANNOTATED_FILE" \
-        "$LEAD_FILE" \
-        "$OUTPUT_PREFIX" \
-        "$FDR_THRESH"
+        "$ANNOTATED_FILE" "$LEAD_FILE" "$OUTPUT_PREFIX" "$FDR_THRESH"
 fi
 
 # ── Step 3.5: Regional Locus Zoom ─────────────────────────────────────
 echo "[3.5] Generating regional locus zoom plots..."
 
 Rscript "$PIPELINE/_sQTL_regional_zoom.R" \
-    "$TISSUE_DIR" \
-    "$RUN_TYPE"
+    "$TISSUE_DIR" "$RUN_TYPE"
 
 # ── Step 4: Boxplots ──────────────────────────────────────────────────
 echo "[4] Generating boxplots for all significant SNPs..."
 
 if [ "$RUN_TYPE" == "interaction" ]; then
     Rscript "$PIPELINE/_sQTL_boxplot_LINEAR_CROSS.R" \
-        "$TOP_PAIRS" \
-        "$SNP_FILE" \
-        "$SPLICING_FILE" \
-        "$COV_FILE" \
-        "$SNP_LOC" \
-        "$OUTDIR" \
-        "$TISSUE_DIR"
+        "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 else
     Rscript "$PIPELINE/_sQTL_boxplot.R" \
-        "$TOP_PAIRS" \
-        "$SNP_FILE" \
-        "$SPLICING_FILE" \
-        "$COV_FILE" \
-        "$SNP_LOC" \
-        "$OUTDIR" \
-        "$TISSUE_DIR"
+        "$TOP_PAIRS" "$SNP_FILE" "$SPLICING_FILE" "$COV_FILE" "$SNP_LOC" "$OUTDIR" "$TISSUE_DIR"
 fi
 
 # ── Step 5: Cleanup Directory Sprawl ──────────────────────────────────
