@@ -169,9 +169,13 @@ if (nrow(anchor_lookup) > 0) {
     diag_leads <- diag_leads[snp_loc, nomatch = NULL, on = "snpid"]
     
     unique_sig_features <- sort(setdiff(unique(snp_diag$color_group), "Background / Non-Sig"))
+
+    if (length(unique_sig_features) == 0) {
+        message("## No significant splicing features near rs62056809. Skipping Plot 3.")
+    } else {
     color_palette <- setNames(scales::hue_pal()(length(unique_sig_features)), unique_sig_features)
     color_palette["Background / Non-Sig"] <- "#B0B0B0"
-    
+
     p3 <- ggplot() +
         geom_point(data = snp_diag[color_group == "Background / Non-Sig"], aes(x = pos / 1e6, y = log10p),
                    colour = "#B0B0B0", size = 1.0, alpha = 0.3) +
