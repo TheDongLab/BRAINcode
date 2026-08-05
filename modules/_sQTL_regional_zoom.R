@@ -48,9 +48,23 @@ snp_loc  <- fread(paste0(base_dir, "snp_location.txt"), select = c("snpid", "chr
 setnames(snp_raw, "SNP", "snpid", skip_absent = TRUE)
 setnames(lead_raw, "SNP", "snpid", skip_absent = TRUE)
 
-for (col in c("gene", "geneid", "phenotype", "junction", "feature", "intron", "source_gene")) {
-  setnames(snp_raw, col, "featureid", skip_absent = TRUE)
-  setnames(lead_raw, col, "featureid", skip_absent = TRUE)
+feature_columns <- c(
+  "gene", "geneid", "junction_id", "phenotype",
+  "junction", "feature", "intron", "source_gene"
+)
+
+for (col in feature_columns) {
+  if (col %in% names(snp_raw)) {
+    setnames(snp_raw, col, "featureid")
+    break
+  }
+}
+
+for (col in feature_columns) {
+  if (col %in% names(lead_raw)) {
+    setnames(lead_raw, col, "featureid")
+    break
+  }
 }
 
 # Calculate log p-values
