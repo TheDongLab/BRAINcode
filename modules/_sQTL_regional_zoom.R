@@ -146,9 +146,9 @@ dev.off()
 
 
 # ========================================================================
-# PLOT 3: SPLICING FEATURE DIAGNOSTIC REGIONAL ZOOM (CENTERED ON rs62056809)
+# PLOT 3: SPLICING FEATURE DIAGNOSTIC REGIONAL ZOOM (Centered on anchor SNP)
 # ========================================================================
-message("## Building Plot 3: Splicing Diagnostic Zoom centered on rs62056809...")
+message("## Building Plot 3: Splicing Diagnostic Zoom centered on anchor SNP...")
 
 anchor_snp <- "rs62056809"
 anchor_lookup <- snp_loc[snpid == anchor_snp]
@@ -171,7 +171,7 @@ if (nrow(anchor_lookup) > 0) {
     unique_sig_features <- sort(setdiff(unique(snp_diag$color_group), "Background / Non-Sig"))
 
     if (length(unique_sig_features) == 0) {
-        message("## No significant splicing features near rs62056809. Skipping Plot 3.")
+        message("## No significant splicing features near anchor SNP. Skipping Plot 3.")
     } else {
     color_palette <- setNames(scales::hue_pal()(length(unique_sig_features)), unique_sig_features)
     color_palette["Background / Non-Sig"] <- "#B0B0B0"
@@ -204,7 +204,8 @@ if (nrow(anchor_lookup) > 0) {
     png(out_file3, width = 11, height = 7, units = "in", res = 300)
     print(p3)
     dev.off()
-    message(paste("## Saved Layout 3:", out_file3))
+        message(paste("## Saved Layout 3:", out_file3))
+    }
 } else {
     message(sprintf("## Warning: Anchor SNP %s not found in location maps. Skipping Plot 3.", anchor_snp))
 }
