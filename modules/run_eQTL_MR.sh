@@ -13,7 +13,7 @@ command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 python3 -c 'import pandas' 2>/dev/null || { echo "ERROR: pandas unavailable"; exit 1; }
 
 BASE="$HOME/donglab/data/target_ALS"
-HARMONIZED_ROOT="$BASE/eQTL_harmonization"
+HARMONIZED_ROOT="$HOME/donglab/data/GCST90027163/GWAS/eQTL_harmonization"
 GLOBAL_SUMMARY="$BASE/MR/MR_summary_all_tissues.tsv"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
 MIN_F=10
