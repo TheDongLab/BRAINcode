@@ -127,7 +127,7 @@ for(tissue in TISSUES){
     sdv<-apply(G,1,sd); ok<-is.finite(sdv)&sdv>0; tr<-tr[ok]; G<-G[ok,,drop=FALSE]; x<-x[match(tr$SNP,rawid)]
     if(nrow(x)<MINSHARED){cat("too few variable SNPs\n"); master[[length(master)+1]]<-data.table(tissue,geneid=gene,status="too_few_variable_snps",n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus); next}
 
-    R<-cor(t(G)); R<-pmax(-1,pmin(1,R)); diag(R)<-1; colnames(R)<-rownames(R)<-x$snpid
+    R<-cor(t(G)); R[R>1]<-1; R[R< -1]<- -1; diag(R)<-1; colnames(R)<-rownames(R)<-x$snpid
     d1<-list(beta=x$beta_qtl,varbeta=x$se_qtl^2,snp=x$snpid,position=x$qtl_pos,type="quant",sdY=1,N=N_EQTL,LD=R)
     d2<-list(beta=x$gwas_beta_h,varbeta=x$gwas_se^2,snp=x$snpid,position=x$qtl_pos,type="cc",N=GWAS_N,LD=R)
 
