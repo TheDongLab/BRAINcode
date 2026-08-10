@@ -136,50 +136,55 @@ for(tissue in TISSUES){
     s_eqtl<-tryCatch(susieR::estimate_s_rss(z1,R,n=N_EQTL),error=function(e) NA_real_)
     s_gwas<-tryCatch(susieR::estimate_s_rss(z2,R,n=GWAS_N),error=function(e) NA_real_)
 
-    ans<-tryCatch({
-      S1<-coloc::runsusie(d1,maxit=200,L=L); S2<-coloc::runsusie(d2,maxit=200,L=L)
-      pip1<-if(is.null(S1$pip)) rep(NA_real_,nrow(x)) else S1$pip; pip2<-if(is.null(S2$pip)) rep(NA_real_,nrow(x)) else S2$pip
-      fwrite(data.table(snp=x$snpid,position=x$qtl_pos,eqtl_pip=pip1,gwas_pip=pip2),file.path(gout,"PIP.tsv"),sep="\t")
+    run_coloc_results<-function(S1,S2,x,gout){
+  pip1<-if(is.null(S1$pip)) rep(NA_real_,nrow(x)) else S1$pip; pip2<-if(is.null(S2$pip)) rep(NA_real_,nrow(x)) else S2$pip
+  fwrite(data.table(snp=x$snpid,position=x$qtl_pos,eqtl_pip=pip1,gwas_pip=pip2),file.path(gout,"PIP.tsv"),sep="\t")
 
-      ncs1<-write_cs(S1,file.path(gout,"eQTL_credible_sets.tsv"),x$snpid,"eQTL")
-      ncs2<-write_cs(S2,file.path(gout,"GWAS_credible_sets.tsv"),x$snpid,"GWAS")
-      top1<-if(any(is.finite(pip1))) which.max(pip1) else NA_integer_; top2<-if(any(is.finite(pip2))) which.max(pip2) else NA_integer_
+  ncs1<-write_cs(S1,file.path(gout,"eQTL_credible_sets.tsv"),x$snpid,"eQTL"); ncs2<-write_cs(S2,file.path(gout,"GWAS_credible_sets.tsv"),x$snpid,"GWAS")
+  top1<-if(any(is.finite(pip1))) which.max(pip1) else NA_integer_; top2<-if(any(is.finite(pip2))) which.max(pip2) else NA_integer_
 
-      if(ncs1==0||ncs2==0){
-        status<-if(ncs1==0&&ncs2==0) "no_eQTL_or_GWAS_credible_set" else if(ncs1==0) "no_eQTL_credible_set" else "no_GWAS_credible_set"
-        fwrite(data.table(status=status),file.path(gout,"coloc_susie.tsv"),sep="\t")
-        return(list(status=status,h4=NA_real_,ncs1=ncs1,ncs2=ncs2,
-                    eqtl_top=if(!is.na(top1))x$snpid[top1] else NA_character_,eqtl_pip=if(!is.na(top1))pip1[top1] else NA_real_,
-                    gwas_top=if(!is.na(top2))x$snpid[top2] else NA_character_,gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_))
-      }
+  if(ncs1==0||ncs2==0){
+    status<-if(ncs1==0&&ncs2==0) "no_eQTL_or_GWAS_credible_set" else if(ncs1==0) "no_eQTL_credible_set" else "no_GWAS_credible_set"
+    fwrite(data.table(status=status),file.path(gout,"coloc_susie.tsv"),sep="\t")
+    return(list(status=status,h4=NA_real_,ncs1=ncs1,ncs2=ncs2,
+                eqtl_top=if(!is.na(top1))x$snpid[top1] else NA_character_,eqtl_pip=if(!is.na(top1))pip1[top1] else NA_real_,
+                gwas_top=if(!is.na(top2))x$snpid[top2] else NA_character_,gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_))
+  }
 
-      C<-coloc::coloc.susie(S1,S2); csum<-if(is.null(C$summary)) data.table() else as.data.table(C$summary)
-      if(!nrow(csum)){
-        fwrite(data.table(status="no_coloc_signal_pairs"),file.path(gout,"coloc_susie.tsv"),sep="\t")
-        return(list(status="no_coloc_signal_pairs",h4=NA_real_,ncs1=ncs1,ncs2=ncs2,
-                    eqtl_top=x$snpid[top1],eqtl_pip=pip1[top1],gwas_top=x$snpid[top2],gwas_pip=pip2[top2]))
-      }
+  C<-coloc::coloc.susie(S1,S2); csum<-if(is.null(C$summary)) data.table() else as.data.table(C$summary)
+  if(!nrow(csum)){
+    fwrite(data.table(status="no_coloc_signal_pairs"),file.path(gout,"coloc_susie.tsv"),sep="\t")
+    return(list(status="no_coloc_signal_pairs",h4=NA_real_,ncs1=ncs1,ncs2=ncs2,
+                eqtl_top=if(!is.na(top1))x$snpid[top1] else NA_character_,eqtl_pip=if(!is.na(top1))pip1[top1] else NA_real_,
+                gwas_top=if(!is.na(top2))x$snpid[top2] else NA_character_,gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_))
+  }
 
-      fwrite(csum,file.path(gout,"coloc_susie.tsv"),sep="\t")
-      h4<-if("PP.H4.abf"%in%names(csum)) suppressWarnings(max(csum$PP.H4.abf,na.rm=TRUE)) else NA_real_
-      if(!is.finite(h4)) h4<-NA_real_
-      list(status="OK",h4=h4,ncs1=ncs1,ncs2=ncs2,eqtl_top=x$snpid[top1],eqtl_pip=pip1[top1],gwas_top=x$snpid[top2],gwas_pip=pip2[top2])
-    },error=function(e) list(status=paste0("ERROR: ",conditionMessage(e)),h4=NA_real_,ncs1=NA_integer_,ncs2=NA_integer_,
-                              eqtl_top=NA_character_,eqtl_pip=NA_real_,gwas_top=NA_character_,gwas_pip=NA_real_))
+  fwrite(csum,file.path(gout,"coloc_susie.tsv"),sep="\t")
+  h4<-if("PP.H4.abf"%in%names(csum)) suppressWarnings(max(csum$PP.H4.abf,na.rm=TRUE)) else NA_real_; if(!is.finite(h4)) h4<-NA_real_
+  list(status="OK",h4=h4,ncs1=ncs1,ncs2=ncs2,
+       eqtl_top=if(!is.na(top1))x$snpid[top1] else NA_character_,eqtl_pip=if(!is.na(top1))pip1[top1] else NA_real_,
+       gwas_top=if(!is.na(top2))x$snpid[top2] else NA_character_,gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_)
+}
 
-    fwrite(x[,.(snpid,qtl_chr,qtl_pos,effect_allele,other_allele,beta_qtl,se_qtl,p_qtl,gwas_beta_h,gwas_se,gwas_p,relation)],
-           file.path(gout,"harmonized_locus.tsv"),sep="\t")
+ans<-tryCatch({
+  S1<-coloc::runsusie(d1,maxit=200,L=L); S2<-coloc::runsusie(d2,maxit=200,L=L)
+  run_coloc_results(S1,S2,x,gout)
+},error=function(e) list(status=paste0("ERROR: ",conditionMessage(e)),h4=NA_real_,ncs1=NA_integer_,ncs2=NA_integer_,
+                          eqtl_top=NA_character_,eqtl_pip=NA_real_,gwas_top=NA_character_,gwas_pip=NA_real_))
 
-    rec<-data.table(tissue,geneid=gene,status=ans$status,n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,N_eQTL=N_EQTL,N_GWAS=GWAS_N,
-                    MR_method=if("method"%in%names(mr))mr$method else NA_character_,MR_p=if("p_MR"%in%names(mr))as.numeric(mr$p_MR) else NA_real_,
-                    MR_global_FDR=if("FDR_MR_global"%in%names(mr))as.numeric(mr$FDR_MR_global) else NA_real_,
-                    eqtl_LD_mismatch_s=s_eqtl,gwas_LD_mismatch_s=s_gwas,n_eQTL_CS=ans$ncs1,n_GWAS_CS=ans$ncs2,
-                    top_eQTL_SNP=ans$eqtl_top,top_eQTL_PIP=ans$eqtl_pip,top_GWAS_SNP=ans$gwas_top,top_GWAS_PIP=ans$gwas_pip,
-                    max_PP_H4=ans$h4,coloc_pass=!is.na(ans$h4)&ans$h4>=H4CUT)
+fwrite(x[,.(snpid,qtl_chr,qtl_pos,effect_allele,other_allele,beta_qtl,se_qtl,p_qtl,gwas_beta_h,gwas_se,gwas_p,relation)],
+       file.path(gout,"harmonized_locus.tsv"),sep="\t")
 
-    master[[length(master)+1]]<-rec
-    cat(ans$status,", shared=",nrow(x),"/",n_locus," (",round(100*nrow(x)/n_locus,1),"%), eQTL_CS=",ans$ncs1,", GWAS_CS=",ans$ncs2,", H4=",signif(ans$h4,3),"\n",sep="")
-    rm(G,R,x,q); gc()
+rec<-data.table(tissue,geneid=gene,status=ans$status,n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,N_eQTL=N_EQTL,N_GWAS=GWAS_N,
+                MR_method=if("method"%in%names(mr))mr$method else NA_character_,MR_p=if("p_MR"%in%names(mr))as.numeric(mr$p_MR) else NA_real_,
+                MR_global_FDR=if("FDR_MR_global"%in%names(mr))as.numeric(mr$FDR_MR_global) else NA_real_,
+                eqtl_LD_mismatch_s=s_eqtl,gwas_LD_mismatch_s=s_gwas,n_eQTL_CS=ans$ncs1,n_GWAS_CS=ans$ncs2,
+                top_eQTL_SNP=ans$eqtl_top,top_eQTL_PIP=ans$eqtl_pip,top_GWAS_SNP=ans$gwas_top,top_GWAS_PIP=ans$gwas_pip,
+                max_PP_H4=ans$h4,coloc_pass=!is.na(ans$h4)&ans$h4>=H4CUT)
+
+master[[length(master)+1]]<-rec
+cat(ans$status,", shared=",nrow(x),"/",n_locus," (",round(100*nrow(x)/n_locus,1),"%), eQTL_CS=",ans$ncs1,", GWAS_CS=",ans$ncs2,", H4=",signif(ans$h4,3),"\n",sep="")
+rm(G,R,x,q); gc()
   }
   rm(full); gc()
 }
