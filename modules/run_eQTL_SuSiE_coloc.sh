@@ -68,149 +68,242 @@ master<-list()
 for(tissue in TISSUES){
   mrdir<-file.path(BASE,tissue,"MR"); snpfile<-file.path(mrdir,paste0(tissue,"_SNP_results.tsv.gz")); outroot<-file.path(mrdir,"SuSiE_coloc")
   eqtldir<-file.path(BASE,tissue,"eQTL"); resultdir<-file.path(eqtldir,"results")
-  fullfile<-file.path(resultdir,paste0(tissue,"_eQTL.full_annotated.txt")); metafile<-file.path(resultdir,"target_ALS_Combined_Meta_eQTL.txt")
-  locfile<-file.path(eqtldir,"snp_location.txt"); covfile<-file.path(eqtldir,paste0("covariates_",tissue,"_encoded.txt"))
+  fullfile<-file.path(resultdir,paste0(tissue,"_eQTL.full_annotated.txt")); topfile<-file.path(resultdir,paste0(tissue,"_eQTL.top_for_boxplot.txt"))
+  genefile<-file.path(eqtldir,"gene_location.txt"); locfile<-file.path(eqtldir,"snp_location.txt"); covfile<-file.path(eqtldir,paste0("covariates_",tissue,"_encoded.txt"))
 
-  for(f in c(snpfile,fullfile,metafile,locfile,covfile)) if(!file.exists(f)||file.info(f)$size==0) stop("Missing/empty: ",f)
+  for(f in c(snpfile,fullfile,topfile,genefile,locfile,covfile)) if(!file.exists(f)||file.info(f)$size==0) stop("Missing/empty: ",f)
   if(dir.exists(outroot)) unlink(outroot,recursive=TRUE,force=TRUE); dir.create(outroot,recursive=TRUE,showWarnings=FALSE)
 
   # ============================================================
-  # UNIQUE SNP CANDIDATES FROM SNP-FIRST MR RESULTS
+  # UNIQUE SNP CANDIDATES FROM CURRENT SNP-FIRST ANALYSIS
   # ============================================================
-  snps<-fread(snpfile); for(c in intersect(c("gwas_p","FDR_ALS_tissue","FDR_ALS_global"),names(snps))) set(snps,j=c,value=as.numeric(snps[[c]]))
+  snps<-fread(snpfile)
+  for(c in intersect(c("gwas_p","FDR_ALS_tissue","FDR_ALS_global"),names(snps))) set(snps,j=c,value=as.numeric(snps[[c]]))
+
   cand_snps<-switch(MODE,
     global_fdr=snps[is.finite(FDR_ALS_global)&FDR_ALS_global<.05],
     tissue_fdr=snps[is.finite(FDR_ALS_tissue)&FDR_ALS_tissue<.05],
     nominal=snps[is.finite(gwas_p)&gwas_p<.05],
     all=copy(snps),
     stop("Unknown CANDIDATE_MODE: ",MODE))
+
   if(!nrow(cand_snps)){cat("\n",tissue,": zero candidate SNPs\n",sep=""); next}
 
   # ============================================================
-  # CURRENT HUMAN-READABLE eQTL TABLE
-  #
-  # Used ONLY to obtain:
-  #   gene symbol
-  #   gene-specific FDR
-  #   F statistic / association identity
-  #
-  # NOT used as the internal gene identity.
+  # READ CURRENT eQTL TABLE WITH HUMAN-READABLE GENE SYMBOLS
   # ============================================================
   full<-fread(fullfile)
-  req<-c("geneid","snpid","beta","t-stat","p-value","FDR")
+  req<-c("geneid","snpid","beta","t-stat","p-value","FDR","gene_chr","gene_start","gene_end")
   miss<-setdiff(req,names(full)); if(length(miss)) stop(tissue,": full_annotated missing: ",paste(miss,collapse=", "))
 
-  full[,`:=`(gene_symbol=as.character(geneid),snpid=as.character(snpid),beta_qtl=as.numeric(beta),
-             t_qtl=as.numeric(`t-stat`),p_qtl=as.numeric(`p-value`),eqtl_FDR=as.numeric(FDR))]
-  full[,F_statistic:=t_qtl^2]
-
-  cand_full<-full[snpid%in%cand_snps$snpid & is.finite(eqtl_FDR)&eqtl_FDR<=.05 & is.finite(F_statistic)&F_statistic>=MINF,
-                  .(gene_symbol,snpid,beta_qtl,t_qtl,p_qtl,eqtl_FDR,F_statistic)]
+  full[,`:=`(
+    gene_symbol=as.character(geneid),snpid=as.character(snpid),
+    beta_qtl=as.numeric(beta),t_qtl=as.numeric(`t-stat`),p_qtl=as.numeric(`p-value`),eqtl_FDR=as.numeric(FDR),
+    gene_chr_key=nch(gene_chr),gene_start_key=as.integer(gene_start),gene_end_key=as.integer(gene_end)
+  )]
+  full[,F_statistic:=t_qtl^2]; full[,full_row_id:=.I]
 
   # ============================================================
-  # ORIGINAL MATRIXEQTL ENSG TABLE
-  #
-  # target_ALS_Combined_Meta_eQTL.txt preserves:
-  # col1 = original Ensembl ID
-  # col2 = SNP
-  # col3 = chromosome
-  # col4 = SNP position
-  # col5 = original beta
-  # col6 = original t-stat
-  # col7 = original p-value
-  #
-  # This is now the authoritative source of gene identity.
+  # ORIGINAL MATRIXEQTL ENSG COORDINATE MAP
   # ============================================================
-  cat("\n",tissue,": reading original ENSG-preserving meta eQTL file...\n",sep="")
-  meta<-fread(metafile,header=FALSE,select=1:7,showProgress=FALSE)
-  setnames(meta,c("ensembl_id","snpid","meta_chr","meta_pos","beta_qtl","t_qtl","p_qtl"))
-  meta[,`:=`(ensembl_id=as.character(ensembl_id),snpid=as.character(snpid),meta_chr=nch(meta_chr),meta_pos=as.integer(meta_pos),
-             beta_qtl=as.numeric(beta_qtl),t_qtl=as.numeric(t_qtl),p_qtl=as.numeric(p_qtl))]
-  meta<-meta[grepl("^ENSG",ensembl_id)&!is.na(snpid)]
+  gloc<-fread(genefile,header=FALSE,fill=TRUE)
+  if(ncol(gloc)<4) stop(tissue,": gene_location.txt has fewer than four columns")
+  gloc<-gloc[,1:4]; setnames(gloc,c("ensembl_id","gene_chr","gene_start","gene_end"))
 
-  # Exact association-level recovery of original ENSG.
-  # We match the SNP AND the original MatrixEQTL beta/t/P.
-  meta_cand<-meta[snpid%in%cand_snps$snpid]
-  cand<-merge(cand_full,meta_cand[,.(ensembl_id,snpid,beta_qtl,t_qtl,p_qtl)],
-              by=c("snpid","beta_qtl","t_qtl","p_qtl"),all.x=TRUE,allow.cartesian=TRUE)
+  # Remove a possible header if present.
+  if(nrow(gloc)&&tolower(as.character(gloc$ensembl_id[1]))%in%c("geneid","gene_id","ensembl_id")) gloc<-gloc[-1]
 
-  n_unmapped<-cand[is.na(ensembl_id),.N]
-  if(n_unmapped){
-    badfile<-file.path(outroot,"unmapped_candidate_associations.tsv"); fwrite(cand[is.na(ensembl_id)],badfile,sep="\t")
-    stop(tissue,": ",n_unmapped," candidate associations could not recover original ENSG; see ",badfile)
+  gloc[,`:=`(
+    ensembl_id=as.character(ensembl_id),gene_chr_key=nch(gene_chr),
+    gene_start_key=as.integer(gene_start),gene_end_key=as.integer(gene_end)
+  )]
+  gloc<-unique(gloc[,.(ensembl_id,gene_chr_key,gene_start_key,gene_end_key)])
+
+  # ============================================================
+  # EXPLICIT ENSG <-> COMMON SYMBOL MAP
+  #
+  # top_for_boxplot is only used for gene identity/disambiguation.
+  # It is NOT used as the dense SuSiE association dataset.
+  # ============================================================
+  top<-fread(topfile,header=FALSE,select=1:2,fill=TRUE)
+  setnames(top,c("ensembl_id","gene_symbol"))
+  top[,`:=`(ensembl_id=as.character(ensembl_id),gene_symbol=as.character(gene_symbol))]
+
+  if(nrow(top)&&tolower(top$ensembl_id[1])%in%c("geneid","gene_id","ensembl_id")) top<-top[-1]
+  top<-unique(top[!is.na(ensembl_id)&!is.na(gene_symbol),.(ensembl_id,gene_symbol)])
+  top[,symbol_key:=paste(ensembl_id,gene_symbol,sep="\t")]
+
+  # ============================================================
+  # CANDIDATE eQTL ASSOCIATIONS
+  # Same FDR/F requirements as upstream analysis.
+  # ============================================================
+  cand0<-full[
+    snpid%in%cand_snps$snpid &
+    is.finite(eqtl_FDR)&eqtl_FDR<=.05 &
+    is.finite(F_statistic)&F_statistic>=MINF,
+    .(full_row_id,gene_symbol,snpid,beta_qtl,t_qtl,p_qtl,eqtl_FDR,F_statistic,
+      gene_chr_key,gene_start_key,gene_end_key)
+  ]
+
+  # ============================================================
+  # RECOVER ORIGINAL ENSG
+  #
+  # Rule tested across ALL 5 tissues:
+  #
+  # 1. If current label itself is one of the coordinate ENSGs, use that exact ENSG.
+  # 2. Otherwise, if symbol + coordinate supports exactly one ENSG via top_for_boxplot, use that ENSG.
+  # 3. Otherwise, if the coordinate maps to exactly one ENSG, use that ENSG.
+  # 4. Anything remaining unresolved = hard stop.
+  # ============================================================
+  cmap<-merge(
+    cand0,
+    gloc,
+    by=c("gene_chr_key","gene_start_key","gene_end_key"),
+    all.x=TRUE,
+    allow.cartesian=TRUE
+  )
+
+  cmap[,direct_match:=!is.na(ensembl_id)&gene_symbol==ensembl_id]
+  cmap[,symbol_key:=paste(ensembl_id,gene_symbol,sep="\t")]
+  cmap[,symbol_match:=!is.na(ensembl_id)&symbol_key%chin%top$symbol_key]
+
+  resolved<-cmap[,{
+    coord_ids<-sort(unique(na.omit(ensembl_id)))
+    direct_ids<-sort(unique(na.omit(ensembl_id[direct_match])))
+    symbol_ids<-sort(unique(na.omit(ensembl_id[symbol_match])))
+
+    chosen<-if(length(direct_ids)==1) direct_ids
+            else if(length(symbol_ids)==1) symbol_ids
+            else if(length(coord_ids)==1) coord_ids
+            else NA_character_
+
+    .(ensembl_id=chosen,n_coord_ENSG=length(coord_ids),n_symbol_ENSG=length(symbol_ids),n_direct_ENSG=length(direct_ids))
+  },by=full_row_id]
+
+  cand<-merge(cand0,resolved,by="full_row_id",all.x=TRUE,validate="one-to-one")
+
+  unresolved<-cand[is.na(ensembl_id)|ensembl_id==""]
+  if(nrow(unresolved)){
+    badfile<-file.path(outroot,"unresolved_candidate_gene_mapping.tsv"); fwrite(unresolved,badfile,sep="\t")
+    stop(tissue,": ",nrow(unresolved)," candidate associations unresolved after coordinate + symbol mapping; see ",badfile)
   }
 
-  # If an association maps to >1 ENSG, retain them as separate expression traits.
-  # Never collapse them under one common symbol.
-  cand<-unique(cand[!is.na(ensembl_id)],by=c("ensembl_id","snpid"))
-  cand<-merge(cand,cand_snps[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)],by="snpid",all.x=TRUE)
+  # Save mapping diagnostics for reproducibility.
+  fwrite(cand[,.(gene_symbol,ensembl_id,snpid,n_coord_ENSG,n_symbol_ENSG,n_direct_ENSG)],
+         file.path(outroot,"candidate_gene_mapping.tsv"),sep="\t")
 
-  # Mapping diagnostics.
-  mapcheck<-cand[,.(n_ensembl=uniqueN(ensembl_id),ensembl_ids=paste(sort(unique(ensembl_id)),collapse=";")),by=.(gene_symbol,snpid)][n_ensembl>1]
-  if(nrow(mapcheck)) fwrite(mapcheck,file.path(outroot,"multi_ENSG_association_mappings.tsv"),sep="\t")
+  cat("\n",tissue," GENE MAPPING\n",sep="")
+  cat("candidate associations: ",nrow(cand),"\n",sep="")
+  cat("resolved: ",sum(!is.na(cand$ensembl_id)),"\n",sep="")
+  cat("unresolved: ",sum(is.na(cand$ensembl_id)),"\n",sep="")
+  cat("mapping coverage: ",round(mean(!is.na(cand$ensembl_id)),6),"\n",sep="")
+
+  # Candidate relationship table is now ENSG-safe.
+  cand<-unique(cand,by=c("ensembl_id","snpid"))
+  cand<-merge(cand,cand_snps[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)],by="snpid",all.x=TRUE)
 
   gene_meta<-cand[,{
     z<-unique(.SD[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)])[order(gwas_p)]
     syms<-sort(unique(gene_symbol[!is.na(gene_symbol)&gene_symbol!=""]))
-    .(gene_symbol=if(length(syms))paste(syms,collapse=";") else ensembl_id[1],
-      n_candidate_SNPs=uniqueN(snpid),candidate_SNPs=paste(sort(unique(snpid)),collapse=";"),
-      best_candidate_SNP=as.character(z$snpid[1]),best_ALS_p=as.numeric(z$gwas_p[1]),
-      best_ALS_tissue_FDR=min(z$FDR_ALS_tissue,na.rm=TRUE),best_ALS_global_FDR=min(z$FDR_ALS_global,na.rm=TRUE))
+
+    .(
+      gene_symbol=if(length(syms))paste(syms,collapse=";") else ensembl_id[1],
+      n_candidate_SNPs=uniqueN(snpid),
+      candidate_SNPs=paste(sort(unique(snpid)),collapse=";"),
+      best_candidate_SNP=as.character(z$snpid[1]),
+      best_ALS_p=as.numeric(z$gwas_p[1]),
+      best_ALS_tissue_FDR=min(z$FDR_ALS_tissue,na.rm=TRUE),
+      best_ALS_global_FDR=min(z$FDR_ALS_global,na.rm=TRUE)
+    )
   },by=ensembl_id]
 
   gene_meta[!is.finite(best_ALS_tissue_FDR),best_ALS_tissue_FDR:=NA_real_]
   gene_meta[!is.finite(best_ALS_global_FDR),best_ALS_global_FDR:=NA_real_]
   genes<-gene_meta$ensembl_id
 
-  cat(strrep("=",70),"\n",tissue,": ",nrow(cand_snps)," unique candidate SNPs → ",nrow(cand),
-      " SNP×ENSG relationships → ",length(genes)," candidate expression traits\n",strrep("=",70),"\n",sep="")
+  cat("\n",strrep("=",70),"\n",tissue,": ",
+      nrow(cand_snps)," unique candidate SNPs → ",
+      nrow(cand)," SNP×ENSG relationships → ",
+      length(genes)," candidate expression traits\n",
+      strrep("=",70),"\n",sep="")
 
-  # Same symbol may represent >1 original MatrixEQTL ENSG; report but KEEP SEPARATE.
+  # Same symbol mapping to several original ENSGs is reported, not collapsed.
   collisions<-gene_meta[,.(n_ensembl=uniqueN(ensembl_id),ensembl_ids=paste(sort(unique(ensembl_id)),collapse=";")),by=gene_symbol][n_ensembl>1]
   if(nrow(collisions)){
     fwrite(collisions,file.path(outroot,"gene_symbol_collisions.tsv"),sep="\t")
-    cat("NOTE: ",nrow(collisions)," common symbols represent >1 original ENSG; analyses remain separate.\n",sep="")
+    cat("NOTE: ",nrow(collisions)," common symbols map to >1 candidate ENSG; kept as separate expression traits.\n",sep="")
   }
 
   # ============================================================
-  # SNP POSITIONS + TISSUE-SPECIFIC SUBJECTS
+  # SNP LOCATIONS + TISSUE SUBJECTS
   # ============================================================
-  loc<-fread(locfile); loc[,`:=`(snpid=as.character(snpid),qtl_chr=nch(chr),qtl_pos=as.integer(pos),key=paste0(nch(chr),":",pos))]
+  loc<-fread(locfile)
+  loc[,`:=`(snpid=as.character(snpid),qtl_chr=nch(chr),qtl_pos=as.integer(pos),key=paste0(nch(chr),":",pos))]
   loc<-unique(loc,by="snpid")
 
   covhdr<-names(fread(covfile,nrows=0)); subjects<-setdiff(covhdr,covhdr[1]); keep<-fam[IID%in%subjects]
   if(!nrow(keep)) stop(tissue,": no covariate subjects matched PLINK FAM")
-  N_EQTL<-nrow(keep); keepfile<-file.path(outroot,"plink_keep.txt"); fwrite(keep,keepfile,sep="\t",col.names=FALSE)
-  cat("eQTL N =",N_EQTL,"\n")
+
+  N_EQTL<-nrow(keep); keepfile<-file.path(outroot,"plink_keep.txt")
+  fwrite(keep,keepfile,sep="\t",col.names=FALSE); cat("eQTL N =",N_EQTL,"\n")
 
   # ============================================================
-  # SuSiE / COLOC PER ORIGINAL MATRIXEQTL EXPRESSION TRAIT
+  # SuSiE / COLOC PER ORIGINAL MATRIXEQTL ENSG TRAIT
   # ============================================================
   for(gene in genes){
     gm<-gene_meta[ensembl_id==gene][1]; symbol<-as.character(gm$gene_symbol)
     label<-paste0(symbol," [",gene,"]"); safe<-gsub("[^A-Za-z0-9_.-]","_",paste0(symbol,"__",gene))
     cat("  ",label," ... ",sep=""); gout<-file.path(outroot,safe); dir.create(gout,showWarnings=FALSE)
 
-    # Dense locus comes directly from the ENSG-preserving file.
-    q<-copy(meta[ensembl_id==gene])
-    q<-q[is.finite(beta_qtl)&is.finite(t_qtl)&t_qtl!=0]
+    # ----------------------------------------------------------
+    # Recover the full dense locus belonging to THIS original ENSG.
+    # ----------------------------------------------------------
+    gi<-unique(gloc[ensembl_id==gene,.(gene_chr_key,gene_start_key,gene_end_key)])
+    if(!nrow(gi)) stop(label,": original ENSG absent from gene_location.txt")
+    if(nrow(gi)>1) stop(label,": original ENSG has >1 distinct coordinate interval")
+
+    gc_chr<-gi$gene_chr_key[1]; gc_start<-gi$gene_start_key[1]; gc_end<-gi$gene_end_key[1]
+    coord_ensgs<-unique(gloc[gene_chr_key==gc_chr&gene_start_key==gc_start&gene_end_key==gc_end,ensembl_id])
+
+    q<-copy(full[gene_chr_key==gc_chr&gene_start_key==gc_start&gene_end_key==gc_end])
+
+    # If several ENSGs share this exact interval, use the explicit
+    # top_for_boxplot symbol mapping to keep only this expression trait.
+    if(length(coord_ensgs)>1){
+      allowed_symbols<-unique(top[ensembl_id==gene,gene_symbol])
+      allowed_symbols<-unique(c(allowed_symbols,gene))
+
+      if(!length(allowed_symbols)) stop(label,": ambiguous gene coordinates and no symbol mapping available")
+      q<-q[gene_symbol%in%allowed_symbols]
+
+      if(!nrow(q)) stop(label,": ambiguous coordinate locus could not be separated by gene symbol")
+    }
+
+    q[,`:=`(snpid=as.character(snpid),beta_qtl=as.numeric(beta),t_qtl=as.numeric(`t-stat`),p_qtl=as.numeric(`p-value`))]
     q[,se_qtl:=abs(beta_qtl/t_qtl)]
-    q<-merge(q[,.(ensembl_id,snpid,beta_qtl,se_qtl,p_qtl)],loc[,.(snpid,qtl_chr,qtl_pos,key)],by="snpid",all.x=TRUE)
+    q<-q[!is.na(snpid)&is.finite(beta_qtl)&is.finite(se_qtl)&se_qtl>0]
+
+    # After identity has been resolved by ENSG, duplicate SNP removal is safe.
+    q<-unique(q[,.(snpid,beta_qtl,se_qtl,p_qtl)],by="snpid")
+    q<-merge(q,loc[,.(snpid,qtl_chr,qtl_pos,key)],by="snpid",all.x=TRUE)
     q<-merge(q,amap,by="key",all.x=TRUE)
-    q<-unique(q[!is.na(snpid)&is.finite(beta_qtl)&is.finite(se_qtl)&se_qtl>0],by="snpid")
-    n_locus<-nrow(q)
+    q<-unique(q,by="snpid"); n_locus<-nrow(q)
 
     if(n_locus==0){
-      cat("candidate ENSG missing from dense meta eQTL file\n")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="candidate_gene_missing_from_meta_eQTL",
-        n_locus=0,n_shared=0,shared_fraction=0,n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+      cat("candidate ENSG missing from dense eQTL data\n")
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status="candidate_gene_missing_from_current_eQTL",
+        n_locus=0,n_shared=0,shared_fraction=0,n_candidate_SNPs=gm$n_candidate_SNPs,
+        best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
     if(n_locus<MINSHARED){
       cat("too few locus SNPs (",n_locus,")\n",sep="")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="too_few_locus_snps",
-        n_locus=n_locus,n_shared=0,shared_fraction=0,n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status="too_few_locus_snps",
+        n_locus=n_locus,n_shared=0,shared_fraction=0,n_candidate_SNPs=gm$n_candidate_SNPs,
+        best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
@@ -220,12 +313,14 @@ for(tissue in TISSUES){
     x<-merge(q,gwas,by="snpid",all=FALSE)
     x<-x[qtl_chr==gwas_chr&qtl_pos==gwas_pos&!is.na(effect_allele)&!is.na(other_allele)]
     x[,pal:=paste0(effect_allele,other_allele)%in%c("AT","TA","CG","GC")]
+
     x[,relation:=fcase(
       effect_allele==gwas_ea&other_allele==gwas_oa,"exact",
       effect_allele==gwas_oa&other_allele==gwas_ea,"swap",
       effect_allele==comp[gwas_ea]&other_allele==comp[gwas_oa],"strand",
       effect_allele==comp[gwas_oa]&other_allele==comp[gwas_ea],"strand_swap",
-      default="bad")]
+      default="bad"
+    )]
 
     x<-unique(x[!pal&relation!="bad"&is.finite(gwas_beta)&is.finite(gwas_se)&gwas_se>0],by="snpid")
     x[,gwas_beta_h:=fifelse(relation%in%c("swap","strand_swap"),-gwas_beta,gwas_beta)]
@@ -234,50 +329,71 @@ for(tissue in TISSUES){
     if(nrow(x)<MINSHARED||shared_frac<MINFRAC){
       status<-if(nrow(x)<MINSHARED) "too_few_shared_snps" else "low_shared_coverage"
       cat(status,", shared=",nrow(x),"/",n_locus," (",round(100*shared_frac,1),"%)\n",sep="")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status,n_locus=n_locus,n_shared=nrow(x),
-        shared_fraction=shared_frac,n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status,n_locus=n_locus,n_shared=nrow(x),
+        shared_fraction=shared_frac,n_candidate_SNPs=gm$n_candidate_SNPs,
+        best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
     # ==========================================================
     # TISSUE-SPECIFIC TARGET ALS LD
     # ==========================================================
-    idsfile<-file.path(gout,"raw_ids.txt"); fwrite(x[,.(rawid)],idsfile,col.names=FALSE); pref<-file.path(gout,"ldgeno")
-    system2("plink",c("--bfile",BFILE,"--keep",keepfile,"--extract",idsfile,"--recode","A-transpose",
-      "--threads",Sys.getenv("SLURM_CPUS_PER_TASK","1"),"--out",pref),stdout=TRUE,stderr=TRUE)
+    idsfile<-file.path(gout,"raw_ids.txt"); fwrite(x[,.(rawid)],idsfile,col.names=FALSE)
+    pref<-file.path(gout,"ldgeno")
+
+    system2("plink",c(
+      "--bfile",BFILE,"--keep",keepfile,"--extract",idsfile,
+      "--recode","A-transpose","--threads",Sys.getenv("SLURM_CPUS_PER_TASK","1"),
+      "--out",pref
+    ),stdout=TRUE,stderr=TRUE)
 
     trawfile<-paste0(pref,".traw")
+
     if(!file.exists(trawfile)){
       cat("PLINK failed\n")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="PLINK_failed",n_locus=n_locus,n_shared=nrow(x),
-        shared_fraction=shared_frac,n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status="PLINK_failed",
+        n_locus=n_locus,n_shared=nrow(x),shared_fraction=shared_frac,
+        n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
-    tr<-fread(trawfile); geno_cols<-setdiff(names(tr),c("CHR","SNP","(C)M","POS","COUNTED","ALT"))
+    tr<-fread(trawfile)
+    geno_cols<-setdiff(names(tr),c("CHR","SNP","(C)M","POS","COUNTED","ALT"))
+
     if(nrow(tr)<MINSHARED||!length(geno_cols)){
       cat("too few PLINK SNPs\n")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="too_few_PLINK_snps",
-        n_locus=n_locus,n_shared=nrow(x),shared_fraction=shared_frac,n_candidate_SNPs=gm$n_candidate_SNPs,
-        best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status="too_few_PLINK_snps",
+        n_locus=n_locus,n_shared=nrow(x),shared_fraction=shared_frac,
+        n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
     G<-as.matrix(tr[,..geno_cols]); storage.mode(G)<-"numeric"
-    orient<-x[match(tr$SNP,rawid),effect_allele]; flip<-toupper(tr$COUNTED)!=toupper(orient); G[flip,]<-2-G[flip,]
+    orient<-x[match(tr$SNP,rawid),effect_allele]; flip<-toupper(tr$COUNTED)!=toupper(orient)
+    G[flip,]<-2-G[flip,]
     G<-t(apply(G,1,function(v){v[is.na(v)]<-mean(v,na.rm=TRUE); v}))
-    sdv<-apply(G,1,sd); ok<-is.finite(sdv)&sdv>0; tr<-tr[ok]; G<-G[ok,,drop=FALSE]; x<-x[match(tr$SNP,rawid)]
+
+    sdv<-apply(G,1,sd); ok<-is.finite(sdv)&sdv>0
+    tr<-tr[ok]; G<-G[ok,,drop=FALSE]; x<-x[match(tr$SNP,rawid)]
 
     if(nrow(x)<MINSHARED){
       cat("too few variable SNPs\n")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="too_few_variable_snps",
-        n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,n_candidate_SNPs=gm$n_candidate_SNPs,
-        best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
+      master[[length(master)+1]]<-data.table(
+        tissue,geneid=gene,gene_symbol=symbol,status="too_few_variable_snps",
+        n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,
+        n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
 
-    R<-cor(t(G)); if(!is.matrix(R)||nrow(R)!=nrow(x)) stop(label,": malformed LD matrix")
-    R[R>1]<-1; R[R< -1]<- -1; diag(R)<-1; colnames(R)<-rownames(R)<-x$snpid
+    R<-cor(t(G))
+    if(!is.matrix(R)||nrow(R)!=nrow(x)) stop(label,": malformed LD matrix")
+
+    R[R>1]<-1; R[R< -1]<- -1; diag(R)<-1
+    colnames(R)<-rownames(R)<-x$snpid
 
     # ==========================================================
     # SuSiE eQTL + SuSiE GWAS
@@ -286,6 +402,7 @@ for(tissue in TISSUES){
     d2<-list(beta=x$gwas_beta_h,varbeta=x$gwas_se^2,snp=x$snpid,position=x$qtl_pos,type="cc",N=GWAS_N,LD=R)
 
     invisible(coloc::check_dataset(d1,req="LD")); invisible(coloc::check_dataset(d2,req="LD"))
+
     z1<-d1$beta/sqrt(d1$varbeta); z2<-d2$beta/sqrt(d2$varbeta)
     s_eqtl<-tryCatch(susieR::estimate_s_rss(z1,R,n=N_EQTL),error=function(e) NA_real_)
     s_gwas<-tryCatch(susieR::estimate_s_rss(z2,R,n=GWAS_N),error=function(e) NA_real_)
@@ -293,57 +410,87 @@ for(tissue in TISSUES){
     run_coloc_results<-function(S1,S2,x,gout){
       pip1<-if(is.null(S1$pip)) rep(NA_real_,nrow(x)) else S1$pip
       pip2<-if(is.null(S2$pip)) rep(NA_real_,nrow(x)) else S2$pip
-      fwrite(data.table(snp=x$snpid,position=x$qtl_pos,eqtl_pip=pip1,gwas_pip=pip2),file.path(gout,"PIP.tsv"),sep="\t")
+
+      fwrite(data.table(snp=x$snpid,position=x$qtl_pos,eqtl_pip=pip1,gwas_pip=pip2),
+             file.path(gout,"PIP.tsv"),sep="\t")
 
       ncs1<-write_cs(S1,file.path(gout,"eQTL_credible_sets.tsv"),x$snpid,"eQTL")
       ncs2<-write_cs(S2,file.path(gout,"GWAS_credible_sets.tsv"),x$snpid,"GWAS")
+
       top1<-if(any(is.finite(pip1))) which.max(pip1) else NA_integer_
       top2<-if(any(is.finite(pip2))) which.max(pip2) else NA_integer_
 
-      ret<-function(status,h4=NA_real_) list(status=status,h4=h4,ncs1=ncs1,ncs2=ncs2,
+      ret<-function(status,h4=NA_real_) list(
+        status=status,h4=h4,ncs1=ncs1,ncs2=ncs2,
         eqtl_top=if(!is.na(top1))x$snpid[top1] else NA_character_,
         eqtl_pip=if(!is.na(top1))pip1[top1] else NA_real_,
         gwas_top=if(!is.na(top2))x$snpid[top2] else NA_character_,
-        gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_)
+        gwas_pip=if(!is.na(top2))pip2[top2] else NA_real_
+      )
 
       if(ncs1==0||ncs2==0){
         status<-if(ncs1==0&&ncs2==0) "no_eQTL_or_GWAS_credible_set" else if(ncs1==0) "no_eQTL_credible_set" else "no_GWAS_credible_set"
-        fwrite(data.table(status=status),file.path(gout,"coloc_susie.tsv"),sep="\t"); return(ret(status))
+        fwrite(data.table(status=status),file.path(gout,"coloc_susie.tsv"),sep="\t")
+        return(ret(status))
       }
 
-      C<-coloc::coloc.susie(S1,S2); csum<-if(is.null(C$summary)) data.table() else as.data.table(C$summary)
-      if(!nrow(csum)){fwrite(data.table(status="no_coloc_signal_pairs"),file.path(gout,"coloc_susie.tsv"),sep="\t"); return(ret("no_coloc_signal_pairs"))}
+      C<-coloc::coloc.susie(S1,S2)
+      csum<-if(is.null(C$summary)) data.table() else as.data.table(C$summary)
+
+      if(!nrow(csum)){
+        fwrite(data.table(status="no_coloc_signal_pairs"),file.path(gout,"coloc_susie.tsv"),sep="\t")
+        return(ret("no_coloc_signal_pairs"))
+      }
 
       fwrite(csum,file.path(gout,"coloc_susie.tsv"),sep="\t")
       h4<-if("PP.H4.abf"%in%names(csum)) suppressWarnings(max(csum$PP.H4.abf,na.rm=TRUE)) else NA_real_
       if(!is.finite(h4)) h4<-NA_real_
+
       ret("OK",h4)
     }
 
     ans<-tryCatch({
-      S1<-coloc::runsusie(d1,maxit=200,L=L); S2<-coloc::runsusie(d2,maxit=200,L=L)
+      S1<-coloc::runsusie(d1,maxit=200,L=L)
+      S2<-coloc::runsusie(d2,maxit=200,L=L)
       run_coloc_results(S1,S2,x,gout)
-    },error=function(e) list(status=paste0("ERROR: ",conditionMessage(e)),h4=NA_real_,ncs1=NA_integer_,ncs2=NA_integer_,
-      eqtl_top=NA_character_,eqtl_pip=NA_real_,gwas_top=NA_character_,gwas_pip=NA_real_))
+    },error=function(e) list(
+      status=paste0("ERROR: ",conditionMessage(e)),h4=NA_real_,
+      ncs1=NA_integer_,ncs2=NA_integer_,
+      eqtl_top=NA_character_,eqtl_pip=NA_real_,
+      gwas_top=NA_character_,gwas_pip=NA_real_
+    ))
 
-    fwrite(x[,.(snpid,qtl_chr,qtl_pos,effect_allele,other_allele,beta_qtl,se_qtl,p_qtl,gwas_beta_h,gwas_se,gwas_p,relation)],
-           file.path(gout,"harmonized_locus.tsv"),sep="\t")
+    fwrite(
+      x[,.(snpid,qtl_chr,qtl_pos,effect_allele,other_allele,beta_qtl,se_qtl,p_qtl,gwas_beta_h,gwas_se,gwas_p,relation)],
+      file.path(gout,"harmonized_locus.tsv"),sep="\t"
+    )
 
-    rec<-data.table(tissue,geneid=gene,gene_symbol=symbol,status=ans$status,n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,
-      N_eQTL=N_EQTL,N_GWAS=GWAS_N,n_candidate_SNPs=gm$n_candidate_SNPs,candidate_SNPs=gm$candidate_SNPs,
-      best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p,best_ALS_tissue_FDR=gm$best_ALS_tissue_FDR,
-      best_ALS_global_FDR=gm$best_ALS_global_FDR,eqtl_LD_mismatch_s=s_eqtl,gwas_LD_mismatch_s=s_gwas,
-      n_eQTL_CS=ans$ncs1,n_GWAS_CS=ans$ncs2,top_eQTL_SNP=ans$eqtl_top,top_eQTL_PIP=ans$eqtl_pip,
-      top_GWAS_SNP=ans$gwas_top,top_GWAS_PIP=ans$gwas_pip,max_PP_H4=ans$h4,
-      H4_reference_pass=!is.na(ans$h4)&ans$h4>=H4REF)
+    rec<-data.table(
+      tissue,geneid=gene,gene_symbol=symbol,status=ans$status,
+      n_locus=n_locus,n_shared=nrow(x),shared_fraction=nrow(x)/n_locus,
+      N_eQTL=N_EQTL,N_GWAS=GWAS_N,
+      n_candidate_SNPs=gm$n_candidate_SNPs,candidate_SNPs=gm$candidate_SNPs,
+      best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p,
+      best_ALS_tissue_FDR=gm$best_ALS_tissue_FDR,best_ALS_global_FDR=gm$best_ALS_global_FDR,
+      eqtl_LD_mismatch_s=s_eqtl,gwas_LD_mismatch_s=s_gwas,
+      n_eQTL_CS=ans$ncs1,n_GWAS_CS=ans$ncs2,
+      top_eQTL_SNP=ans$eqtl_top,top_eQTL_PIP=ans$eqtl_pip,
+      top_GWAS_SNP=ans$gwas_top,top_GWAS_PIP=ans$gwas_pip,
+      max_PP_H4=ans$h4,H4_reference_pass=!is.na(ans$h4)&ans$h4>=H4REF
+    )
 
     master[[length(master)+1]]<-rec
-    cat(ans$status,", shared=",nrow(x),"/",n_locus," (",round(100*nrow(x)/n_locus,1),"%), candidate_SNPs=",gm$n_candidate_SNPs,
-        ", eQTL_CS=",ans$ncs1,", GWAS_CS=",ans$ncs2,", H4=",signif(ans$h4,3),"\n",sep="")
+
+    cat(
+      ans$status,", shared=",nrow(x),"/",n_locus,
+      " (",round(100*nrow(x)/n_locus,1),"%), candidate_SNPs=",gm$n_candidate_SNPs,
+      ", eQTL_CS=",ans$ncs1,", GWAS_CS=",ans$ncs2,", H4=",signif(ans$h4,3),"\n",sep=""
+    )
+
     rm(G,R,x,q); gc()
   }
 
-  rm(full,meta,meta_cand,cand_full,cand,gene_meta); gc()
+  rm(full,gloc,top,cand0,cmap,resolved,cand,gene_meta); gc()
 }
 
 # ==============================================================
@@ -351,45 +498,78 @@ for(tissue in TISSUES){
 # ==============================================================
 res<-if(length(master)) rbindlist(master,fill=TRUE) else data.table()
 if(!"max_PP_H4"%in%names(res)) res[,max_PP_H4:=NA_real_]
-outfile<-file.path(BASE,"MR","SuSiE_coloc_summary.tsv"); fwrite(res,outfile,sep="\t")
+
+outfile<-file.path(BASE,"MR","SuSiE_coloc_summary.tsv")
+fwrite(res,outfile,sep="\t")
 
 # ==============================================================
 # STATUS COUNTS
 # ==============================================================
 status_counts<-if(nrow(res)){
-  z<-copy(res); z[,status_group:=ifelse(grepl("^ERROR:",status),"ERROR",status)]
+  z<-copy(res)
+  z[,status_group:=ifelse(grepl("^ERROR:",status),"ERROR",status)]
   z[,.(n_loci=.N),by=.(status=status_group)][order(-n_loci)]
 } else data.table(status=character(),n_loci=integer())
 
 if(nrow(status_counts)) status_counts[,percent:=round(100*n_loci/sum(n_loci),2)] else status_counts[,percent:=numeric()]
-statusfile<-file.path(BASE,"MR","SuSiE_coloc_status_counts.tsv"); fwrite(status_counts,statusfile,sep="\t")
+
+statusfile<-file.path(BASE,"MR","SuSiE_coloc_status_counts.tsv")
+fwrite(status_counts,statusfile,sep="\t")
 
 # ==============================================================
 # PP.H4 VALUES + HISTOGRAM
 # ==============================================================
-h4<-if(nrow(res)) res[is.finite(max_PP_H4),.(tissue,geneid,gene_symbol,max_PP_H4,n_candidate_SNPs,best_candidate_SNP,best_ALS_p,best_ALS_global_FDR)] else data.table()
-h4file<-file.path(BASE,"MR","PPH4_values.tsv"); fwrite(h4,h4file,sep="\t")
+h4<-if(nrow(res)){
+  res[is.finite(max_PP_H4),.(tissue,geneid,gene_symbol,max_PP_H4,n_candidate_SNPs,best_candidate_SNP,best_ALS_p,best_ALS_global_FDR)]
+} else data.table()
+
+h4file<-file.path(BASE,"MR","PPH4_values.tsv")
 plotfile<-file.path(BASE,"MR","PPH4_histogram.png")
+fwrite(h4,h4file,sep="\t")
 
 if(nrow(h4)){
-  p<-ggplot(h4,aes(x=max_PP_H4))+geom_histogram(binwidth=.05,boundary=0,closed="left")+
+  p<-ggplot(h4,aes(x=max_PP_H4))+
+    geom_histogram(binwidth=.05,boundary=0,closed="left")+
     geom_vline(xintercept=H4REF,linetype="dashed",linewidth=.8)+
     scale_x_continuous(limits=c(0,1),breaks=seq(0,1,.1))+
-    labs(title=paste0("SuSiE colocalization PP.H4 distribution (n=",nrow(h4),")"),
-         subtitle=paste0("Dashed line = ",H4REF," reference threshold"),
-         x="Maximum PP.H4 per Ensembl gene–tissue locus",y="Number of loci")+theme_bw(base_size=12)
+    labs(
+      title=paste0("SuSiE colocalization PP.H4 distribution (n=",nrow(h4),")"),
+      subtitle=paste0("Dashed line = ",H4REF," reference threshold"),
+      x="Maximum PP.H4 per Ensembl gene–tissue locus",
+      y="Number of loci"
+    )+
+    theme_bw(base_size=12)
 
   ggsave(filename=plotfile,plot=p,width=8,height=5,dpi=300)
 
-  cat("\nPP.H4 DISTRIBUTION\nn = ",nrow(h4),"\nmedian = ",median(h4$max_PP_H4),
-      "\nIQR = ",quantile(h4$max_PP_H4,.25)," to ",quantile(h4$max_PP_H4,.75),
-      "\n>=0.50 = ",sum(h4$max_PP_H4>=.50),"\n>=0.80 = ",sum(h4$max_PP_H4>=.80),
-      "\nValues: ",h4file,"\nHistogram: ",plotfile,"\n",sep="")
-} else cat("\nNo finite PP.H4 values; histogram not generated.\n")
+  cat(
+    "\nPP.H4 DISTRIBUTION\n",
+    "n = ",nrow(h4),
+    "\nmedian = ",median(h4$max_PP_H4),
+    "\nIQR = ",quantile(h4$max_PP_H4,.25)," to ",quantile(h4$max_PP_H4,.75),
+    "\n>=0.50 = ",sum(h4$max_PP_H4>=.50),
+    "\n>=0.80 = ",sum(h4$max_PP_H4>=.80),
+    "\nValues: ",h4file,
+    "\nHistogram: ",plotfile,"\n",
+    sep=""
+  )
+} else {
+  cat("\nNo finite PP.H4 values; histogram not generated.\n")
+}
 
-cat("\n",strrep("=",70),"\nSTATUS COUNTS\n",strrep("=",70),"\n",sep=""); print(status_counts)
-cat("\n",strrep("=",70),"\nSuSiE / COLOC SUMMARY\n",strrep("=",70),"\n",sep=""); print(res)
-cat("\nMain summary: ",outfile,"\nStatus counts: ",statusfile,"\nPP.H4 values: ",h4file,"\n",sep="")
+cat("\n",strrep("=",70),"\nSTATUS COUNTS\n",strrep("=",70),"\n",sep="")
+print(status_counts)
+
+cat("\n",strrep("=",70),"\nSuSiE / COLOC SUMMARY\n",strrep("=",70),"\n",sep="")
+print(res)
+
+cat(
+  "\nMain summary: ",outfile,
+  "\nStatus counts: ",statusfile,
+  "\nPP.H4 values: ",h4file,"\n",
+  sep=""
+)
+
 if(nrow(h4)) cat("Histogram: ",plotfile,"\n",sep="")
 RS
 
@@ -398,6 +578,7 @@ echo "SuSiE + colocalization complete."
 echo
 echo "=== STATUS COUNTS ==="
 column -t -s $'\t' "$BASE/MR/SuSiE_coloc_status_counts.tsv"
+
 echo
 echo "=== OUTPUT FILES ==="
 echo "$BASE/MR/SuSiE_coloc_summary.tsv"
