@@ -67,114 +67,142 @@ master<-list()
 
 for(tissue in TISSUES){
   mrdir<-file.path(BASE,tissue,"MR"); snpfile<-file.path(mrdir,paste0(tissue,"_SNP_results.tsv.gz")); outroot<-file.path(mrdir,"SuSiE_coloc")
-  fullfile<-file.path(BASE,tissue,"eQTL","results",paste0(tissue,"_eQTL.full_annotated.txt")); locfile<-file.path(BASE,tissue,"eQTL","snp_location.txt")
-  genefile<-file.path(BASE,tissue,"eQTL","gene_location.txt"); covfile<-file.path(BASE,tissue,"eQTL",paste0("covariates_",tissue,"_encoded.txt"))
+  eqtldir<-file.path(BASE,tissue,"eQTL"); resultdir<-file.path(eqtldir,"results")
+  fullfile<-file.path(resultdir,paste0(tissue,"_eQTL.full_annotated.txt")); metafile<-file.path(resultdir,"target_ALS_Combined_Meta_eQTL.txt")
+  locfile<-file.path(eqtldir,"snp_location.txt"); covfile<-file.path(eqtldir,paste0("covariates_",tissue,"_encoded.txt"))
 
-  for(f in c(snpfile,fullfile,locfile,genefile,covfile)) if(!file.exists(f)||file.info(f)$size==0) stop("Missing/empty: ",f)
+  for(f in c(snpfile,fullfile,metafile,locfile,covfile)) if(!file.exists(f)||file.info(f)$size==0) stop("Missing/empty: ",f)
   if(dir.exists(outroot)) unlink(outroot,recursive=TRUE,force=TRUE); dir.create(outroot,recursive=TRUE,showWarnings=FALSE)
 
   # ============================================================
-  # UNIQUE SNP CANDIDATES FROM THE NEW SNP-FIRST MR OUTPUT ONLY
+  # UNIQUE SNP CANDIDATES FROM SNP-FIRST MR RESULTS
   # ============================================================
   snps<-fread(snpfile); for(c in intersect(c("gwas_p","FDR_ALS_tissue","FDR_ALS_global"),names(snps))) set(snps,j=c,value=as.numeric(snps[[c]]))
-  cand_snps<-switch(MODE,global_fdr=snps[is.finite(FDR_ALS_global)&FDR_ALS_global<.05],
+  cand_snps<-switch(MODE,
+    global_fdr=snps[is.finite(FDR_ALS_global)&FDR_ALS_global<.05],
     tissue_fdr=snps[is.finite(FDR_ALS_tissue)&FDR_ALS_tissue<.05],
-    nominal=snps[is.finite(gwas_p)&gwas_p<.05],all=copy(snps),stop("Unknown CANDIDATE_MODE: ",MODE))
+    nominal=snps[is.finite(gwas_p)&gwas_p<.05],
+    all=copy(snps),
+    stop("Unknown CANDIDATE_MODE: ",MODE))
   if(!nrow(cand_snps)){cat("\n",tissue,": zero candidate SNPs\n",sep=""); next}
 
   # ============================================================
-  # RECOVER ORIGINAL ENSEMBL ID WHILE KEEPING COMMON GENE SYMBOL
+  # CURRENT HUMAN-READABLE eQTL TABLE
   #
-  # full_annotated geneid = current/common name
-  # gene_location.txt     = original MatrixEQTL Ensembl ID
-  # mapping is by gene chromosome/start/end
+  # Used ONLY to obtain:
+  #   gene symbol
+  #   gene-specific FDR
+  #   F statistic / association identity
+  #
+  # NOT used as the internal gene identity.
   # ============================================================
   full<-fread(fullfile)
-  req_full<-c("geneid","snpid","beta","t-stat","p-value","FDR","chr","pos","gene_chr","gene_start","gene_end")
-  miss<-setdiff(req_full,names(full)); if(length(miss)) stop(tissue,": full_annotated missing columns: ",paste(miss,collapse=", "))
+  req<-c("geneid","snpid","beta","t-stat","p-value","FDR")
+  miss<-setdiff(req,names(full)); if(length(miss)) stop(tissue,": full_annotated missing: ",paste(miss,collapse=", "))
 
-  full[,gene_symbol:=as.character(geneid)]
-  full[,`:=`(gene_chr_key=nch(gene_chr),gene_start_key=as.integer(gene_start),gene_end_key=as.integer(gene_end))]
+  full[,`:=`(gene_symbol=as.character(geneid),snpid=as.character(snpid),beta_qtl=as.numeric(beta),
+             t_qtl=as.numeric(`t-stat`),p_qtl=as.numeric(`p-value`),eqtl_FDR=as.numeric(FDR))]
+  full[,F_statistic:=t_qtl^2]
 
-  gloc<-fread(genefile,header=FALSE,fill=TRUE)
-  if(ncol(gloc)<4) stop(tissue,": gene_location.txt has fewer than 4 columns")
-  gloc<-gloc[,1:4]; setnames(gloc,c("ensembl_id","gene_chr_map","gene_start_map","gene_end_map"))
-  if(nrow(gloc)&&tolower(as.character(gloc$ensembl_id[1]))%in%c("geneid","gene_id","ensembl_id")) gloc<-gloc[-1]
+  cand_full<-full[snpid%in%cand_snps$snpid & is.finite(eqtl_FDR)&eqtl_FDR<=.05 & is.finite(F_statistic)&F_statistic>=MINF,
+                  .(gene_symbol,snpid,beta_qtl,t_qtl,p_qtl,eqtl_FDR,F_statistic)]
 
-  gloc[,`:=`(ensembl_id=as.character(ensembl_id),gene_chr_key=nch(gene_chr_map),
-             gene_start_key=as.integer(gene_start_map),gene_end_key=as.integer(gene_end_map))]
-  gloc<-unique(gloc[,.(gene_chr_key,gene_start_key,gene_end_key,ensembl_id)])
+  # ============================================================
+  # ORIGINAL MATRIXEQTL ENSG TABLE
+  #
+  # target_ALS_Combined_Meta_eQTL.txt preserves:
+  # col1 = original Ensembl ID
+  # col2 = SNP
+  # col3 = chromosome
+  # col4 = SNP position
+  # col5 = original beta
+  # col6 = original t-stat
+  # col7 = original p-value
+  #
+  # This is now the authoritative source of gene identity.
+  # ============================================================
+  cat("\n",tissue,": reading original ENSG-preserving meta eQTL file...\n",sep="")
+  meta<-fread(metafile,header=FALSE,select=1:7,showProgress=FALSE)
+  setnames(meta,c("ensembl_id","snpid","meta_chr","meta_pos","beta_qtl","t_qtl","p_qtl"))
+  meta[,`:=`(ensembl_id=as.character(ensembl_id),snpid=as.character(snpid),meta_chr=nch(meta_chr),meta_pos=as.integer(meta_pos),
+             beta_qtl=as.numeric(beta_qtl),t_qtl=as.numeric(t_qtl),p_qtl=as.numeric(p_qtl))]
+  meta<-meta[grepl("^ENSG",ensembl_id)&!is.na(snpid)]
 
-  ambig<-gloc[,.(n_ensg=uniqueN(ensembl_id)),by=.(gene_chr_key,gene_start_key,gene_end_key)][n_ensg>1]
-  if(nrow(ambig)) stop(tissue,": ",nrow(ambig)," gene coordinate keys map to >1 Ensembl ID")
+  # Exact association-level recovery of original ENSG.
+  # We match the SNP AND the original MatrixEQTL beta/t/P.
+  meta_cand<-meta[snpid%in%cand_snps$snpid]
+  cand<-merge(cand_full,meta_cand[,.(ensembl_id,snpid,beta_qtl,t_qtl,p_qtl)],
+              by=c("snpid","beta_qtl","t_qtl","p_qtl"),all.x=TRUE,allow.cartesian=TRUE)
 
-  full<-merge(full,gloc,by=c("gene_chr_key","gene_start_key","gene_end_key"),all.x=TRUE)
-  full[,`:=`(FDR=as.numeric(FDR),F_statistic=as.numeric(`t-stat`)^2,snpid=as.character(snpid))]
-
-  # Candidate regulatory relationships reconstructed from dense eQTL file. This avoids using common gene symbol as the identity key.
-  cand<-full[snpid%in%cand_snps$snpid & is.finite(FDR) & FDR<=.05 & is.finite(F_statistic) & F_statistic>=MINF]
-
-  unmapped<-cand[is.na(ensembl_id)|ensembl_id==""]
-  if(nrow(unmapped)){
-    mapfile<-file.path(outroot,"unmapped_candidate_gene_rows.tsv"); fwrite(unmapped,mapfile,sep="\t")
-    stop(tissue,": ",nrow(unmapped)," candidate eQTL rows could not recover original Ensembl ID; see ",mapfile)
+  n_unmapped<-cand[is.na(ensembl_id),.N]
+  if(n_unmapped){
+    badfile<-file.path(outroot,"unmapped_candidate_associations.tsv"); fwrite(cand[is.na(ensembl_id)],badfile,sep="\t")
+    stop(tissue,": ",n_unmapped," candidate associations could not recover original ENSG; see ",badfile)
   }
 
+  # If an association maps to >1 ENSG, retain them as separate expression traits.
+  # Never collapse them under one common symbol.
+  cand<-unique(cand[!is.na(ensembl_id)],by=c("ensembl_id","snpid"))
   cand<-merge(cand,cand_snps[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)],by="snpid",all.x=TRUE)
-  cand<-unique(cand,by=c("ensembl_id","snpid"))
 
-  # Confirm one Ensembl trait + SNP does not have conflicting duplicated statistics.
-  dupcheck<-full[ensembl_id%in%cand$ensembl_id & snpid%in%cand$snpid,
-                 .(n_beta=uniqueN(beta),n_t=uniqueN(`t-stat`)),by=.(ensembl_id,snpid)][n_beta>1|n_t>1]
-  if(nrow(dupcheck)) stop(tissue,": conflicting duplicate eQTL statistics remain after Ensembl recovery")
+  # Mapping diagnostics.
+  mapcheck<-cand[,.(n_ensembl=uniqueN(ensembl_id),ensembl_ids=paste(sort(unique(ensembl_id)),collapse=";")),by=.(gene_symbol,snpid)][n_ensembl>1]
+  if(nrow(mapcheck)) fwrite(mapcheck,file.path(outroot,"multi_ENSG_association_mappings.tsv"),sep="\t")
 
   gene_meta<-cand[,{
     z<-unique(.SD[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)])[order(gwas_p)]
     syms<-sort(unique(gene_symbol[!is.na(gene_symbol)&gene_symbol!=""]))
-    .(gene_symbol=if(length(syms))syms[1] else ensembl_id[1],n_candidate_SNPs=uniqueN(snpid),
-      candidate_SNPs=paste(sort(unique(snpid)),collapse=";"),best_candidate_SNP=as.character(z$snpid[1]),
-      best_ALS_p=as.numeric(z$gwas_p[1]),best_ALS_tissue_FDR=min(z$FDR_ALS_tissue,na.rm=TRUE),
-      best_ALS_global_FDR=min(z$FDR_ALS_global,na.rm=TRUE))
+    .(gene_symbol=if(length(syms))paste(syms,collapse=";") else ensembl_id[1],
+      n_candidate_SNPs=uniqueN(snpid),candidate_SNPs=paste(sort(unique(snpid)),collapse=";"),
+      best_candidate_SNP=as.character(z$snpid[1]),best_ALS_p=as.numeric(z$gwas_p[1]),
+      best_ALS_tissue_FDR=min(z$FDR_ALS_tissue,na.rm=TRUE),best_ALS_global_FDR=min(z$FDR_ALS_global,na.rm=TRUE))
   },by=ensembl_id]
 
   gene_meta[!is.finite(best_ALS_tissue_FDR),best_ALS_tissue_FDR:=NA_real_]
   gene_meta[!is.finite(best_ALS_global_FDR),best_ALS_global_FDR:=NA_real_]
   genes<-gene_meta$ensembl_id
 
-  cat("\n",strrep("=",70),"\n",tissue,": ",nrow(cand_snps)," unique candidate SNPs → ",
-      nrow(cand)," SNP×Ensembl relationships → ",length(genes)," candidate expression traits\n",strrep("=",70),"\n",sep="")
+  cat(strrep("=",70),"\n",tissue,": ",nrow(cand_snps)," unique candidate SNPs → ",nrow(cand),
+      " SNP×ENSG relationships → ",length(genes)," candidate expression traits\n",strrep("=",70),"\n",sep="")
 
-  # Useful collision diagnostic: same common symbol representing >1 Ensembl trait.
+  # Same symbol may represent >1 original MatrixEQTL ENSG; report but KEEP SEPARATE.
   collisions<-gene_meta[,.(n_ensembl=uniqueN(ensembl_id),ensembl_ids=paste(sort(unique(ensembl_id)),collapse=";")),by=gene_symbol][n_ensembl>1]
   if(nrow(collisions)){
     fwrite(collisions,file.path(outroot,"gene_symbol_collisions.tsv"),sep="\t")
-    cat("  NOTE: ",nrow(collisions)," common gene symbols map to >1 candidate Ensembl trait; kept separate.\n",sep="")
+    cat("NOTE: ",nrow(collisions)," common symbols represent >1 original ENSG; analyses remain separate.\n",sep="")
   }
 
-  loc<-fread(locfile); loc[,key:=paste0(nch(chr),":",pos)]; loc<-unique(loc,by="snpid")
+  # ============================================================
+  # SNP POSITIONS + TISSUE-SPECIFIC SUBJECTS
+  # ============================================================
+  loc<-fread(locfile); loc[,`:=`(snpid=as.character(snpid),qtl_chr=nch(chr),qtl_pos=as.integer(pos),key=paste0(nch(chr),":",pos))]
+  loc<-unique(loc,by="snpid")
+
   covhdr<-names(fread(covfile,nrows=0)); subjects<-setdiff(covhdr,covhdr[1]); keep<-fam[IID%in%subjects]
   if(!nrow(keep)) stop(tissue,": no covariate subjects matched PLINK FAM")
-  N_EQTL<-nrow(keep); keepfile<-file.path(outroot,"plink_keep.txt"); fwrite(keep,keepfile,sep="\t",col.names=FALSE); cat("eQTL N =",N_EQTL,"\n")
+  N_EQTL<-nrow(keep); keepfile<-file.path(outroot,"plink_keep.txt"); fwrite(keep,keepfile,sep="\t",col.names=FALSE)
+  cat("eQTL N =",N_EQTL,"\n")
 
+  # ============================================================
+  # SuSiE / COLOC PER ORIGINAL MATRIXEQTL EXPRESSION TRAIT
+  # ============================================================
   for(gene in genes){
     gm<-gene_meta[ensembl_id==gene][1]; symbol<-as.character(gm$gene_symbol)
     label<-paste0(symbol," [",gene,"]"); safe<-gsub("[^A-Za-z0-9_.-]","_",paste0(symbol,"__",gene))
     cat("  ",label," ... ",sep=""); gout<-file.path(outroot,safe); dir.create(gout,showWarnings=FALSE)
 
-    # IMPORTANT: dense locus is selected by original Ensembl expression trait, never by common symbol.
-    q<-copy(full[ensembl_id==gene])
-    q[,`:=`(snpid=as.character(snpid),qtl_chr=nch(chr),qtl_pos=as.integer(pos),beta_qtl=as.numeric(beta),
-             se_qtl=abs(as.numeric(beta)/as.numeric(`t-stat`)),p_qtl=as.numeric(`p-value`))]
-    q<-q[!is.na(snpid)&is.finite(beta_qtl)&is.finite(se_qtl)&se_qtl>0]
-
-    # Duplicate SNPs are only safe to remove AFTER separating by Ensembl trait.
-    q<-unique(q[,.(ensembl_id,gene_symbol,snpid,qtl_chr,qtl_pos,beta_qtl,se_qtl,p_qtl)],by="snpid")
-    q<-merge(q,loc[,.(snpid,key)],by="snpid",all.x=TRUE); q<-merge(q,amap,by="key",all.x=TRUE)
-    q<-unique(q,by="snpid"); n_locus<-nrow(q)
+    # Dense locus comes directly from the ENSG-preserving file.
+    q<-copy(meta[ensembl_id==gene])
+    q<-q[is.finite(beta_qtl)&is.finite(t_qtl)&t_qtl!=0]
+    q[,se_qtl:=abs(beta_qtl/t_qtl)]
+    q<-merge(q[,.(ensembl_id,snpid,beta_qtl,se_qtl,p_qtl)],loc[,.(snpid,qtl_chr,qtl_pos,key)],by="snpid",all.x=TRUE)
+    q<-merge(q,amap,by="key",all.x=TRUE)
+    q<-unique(q[!is.na(snpid)&is.finite(beta_qtl)&is.finite(se_qtl)&se_qtl>0],by="snpid")
+    n_locus<-nrow(q)
 
     if(n_locus==0){
-      cat("candidate gene missing from current dense eQTL data\n")
-      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="candidate_gene_missing_from_current_eQTL",
+      cat("candidate ENSG missing from dense meta eQTL file\n")
+      master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="candidate_gene_missing_from_meta_eQTL",
         n_locus=0,n_shared=0,shared_fraction=0,n_candidate_SNPs=gm$n_candidate_SNPs,best_candidate_SNP=gm$best_candidate_SNP,best_ALS_p=gm$best_ALS_p)
       next
     }
@@ -192,10 +220,13 @@ for(tissue in TISSUES){
     x<-merge(q,gwas,by="snpid",all=FALSE)
     x<-x[qtl_chr==gwas_chr&qtl_pos==gwas_pos&!is.na(effect_allele)&!is.na(other_allele)]
     x[,pal:=paste0(effect_allele,other_allele)%in%c("AT","TA","CG","GC")]
-    x[,relation:=fcase(effect_allele==gwas_ea&other_allele==gwas_oa,"exact",
+    x[,relation:=fcase(
+      effect_allele==gwas_ea&other_allele==gwas_oa,"exact",
       effect_allele==gwas_oa&other_allele==gwas_ea,"swap",
       effect_allele==comp[gwas_ea]&other_allele==comp[gwas_oa],"strand",
-      effect_allele==comp[gwas_oa]&other_allele==comp[gwas_ea],"strand_swap",default="bad")]
+      effect_allele==comp[gwas_oa]&other_allele==comp[gwas_ea],"strand_swap",
+      default="bad")]
+
     x<-unique(x[!pal&relation!="bad"&is.finite(gwas_beta)&is.finite(gwas_se)&gwas_se>0],by="snpid")
     x[,gwas_beta_h:=fifelse(relation%in%c("swap","strand_swap"),-gwas_beta,gwas_beta)]
     shared_frac<-nrow(x)/n_locus
@@ -209,13 +240,13 @@ for(tissue in TISSUES){
     }
 
     # ==========================================================
-    # TISSUE-SPECIFIC LD
+    # TISSUE-SPECIFIC TARGET ALS LD
     # ==========================================================
     idsfile<-file.path(gout,"raw_ids.txt"); fwrite(x[,.(rawid)],idsfile,col.names=FALSE); pref<-file.path(gout,"ldgeno")
     system2("plink",c("--bfile",BFILE,"--keep",keepfile,"--extract",idsfile,"--recode","A-transpose",
       "--threads",Sys.getenv("SLURM_CPUS_PER_TASK","1"),"--out",pref),stdout=TRUE,stderr=TRUE)
-    trawfile<-paste0(pref,".traw")
 
+    trawfile<-paste0(pref,".traw")
     if(!file.exists(trawfile)){
       cat("PLINK failed\n")
       master[[length(master)+1]]<-data.table(tissue,geneid=gene,gene_symbol=symbol,status="PLINK_failed",n_locus=n_locus,n_shared=nrow(x),
@@ -260,7 +291,8 @@ for(tissue in TISSUES){
     s_gwas<-tryCatch(susieR::estimate_s_rss(z2,R,n=GWAS_N),error=function(e) NA_real_)
 
     run_coloc_results<-function(S1,S2,x,gout){
-      pip1<-if(is.null(S1$pip)) rep(NA_real_,nrow(x)) else S1$pip; pip2<-if(is.null(S2$pip)) rep(NA_real_,nrow(x)) else S2$pip
+      pip1<-if(is.null(S1$pip)) rep(NA_real_,nrow(x)) else S1$pip
+      pip2<-if(is.null(S2$pip)) rep(NA_real_,nrow(x)) else S2$pip
       fwrite(data.table(snp=x$snpid,position=x$qtl_pos,eqtl_pip=pip1,gwas_pip=pip2),file.path(gout,"PIP.tsv"),sep="\t")
 
       ncs1<-write_cs(S1,file.path(gout,"eQTL_credible_sets.tsv"),x$snpid,"eQTL")
@@ -289,7 +321,8 @@ for(tissue in TISSUES){
     }
 
     ans<-tryCatch({
-      S1<-coloc::runsusie(d1,maxit=200,L=L); S2<-coloc::runsusie(d2,maxit=200,L=L); run_coloc_results(S1,S2,x,gout)
+      S1<-coloc::runsusie(d1,maxit=200,L=L); S2<-coloc::runsusie(d2,maxit=200,L=L)
+      run_coloc_results(S1,S2,x,gout)
     },error=function(e) list(status=paste0("ERROR: ",conditionMessage(e)),h4=NA_real_,ncs1=NA_integer_,ncs2=NA_integer_,
       eqtl_top=NA_character_,eqtl_pip=NA_real_,gwas_top=NA_character_,gwas_pip=NA_real_))
 
@@ -310,7 +343,7 @@ for(tissue in TISSUES){
     rm(G,R,x,q); gc()
   }
 
-  rm(full,gloc,cand,gene_meta); gc()
+  rm(full,meta,meta_cand,cand_full,cand,gene_meta); gc()
 }
 
 # ==============================================================
