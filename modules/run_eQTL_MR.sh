@@ -32,15 +32,20 @@ def bh(p):
     out.loc[order]=adj
     return out
 
-def p_from_z(z): return math.erfc(abs(z)/math.sqrt(2)) if pd.notna(z) else np.nan
 def exp_safe(x):
     if pd.isna(x): return np.nan
     if x>700: return np.inf
     if x<-700: return 0.
     return math.exp(x)
 
-all_results=[]; summaries=[]
+def unique_join(x):
+    return ";".join(sorted(set(map(str,x.dropna()))))
 
+relationship_by_tissue={}; snp_by_tissue={}; summaries=[]
+
+# ==============================================================
+# 1. BUILD SNP×GENE EFFECT TABLE + UNIQUE-SNP STATISTICAL TABLE
+# ==============================================================
 for tissue in TISSUES:
     infile=f"{ROOT}/{tissue}/{tissue}_SNP_gene_MR_ready.tsv.gz"
     out=f"{BASE}/{tissue}/MR"; os.makedirs(out,exist_ok=True)
@@ -57,84 +62,142 @@ for tissue in TISSUES:
         d[c]=pd.to_numeric(d[c],errors="coerce")
 
     d=d.rename(columns={"beta":"beta_eqtl","p-value":"p_eqtl"})
-    d["tissue"]=tissue; d["analysis_unit"]="SNP_gene_relationship"; d["method"]="SNP_Wald"
+    d["tissue"]=tissue
     d["F_statistic"]=(d["beta_eqtl"]/d["se_qtl"])**2
-    d["strong_instrument"]=d["F_statistic"]>=MIN_F
 
-    # SNP-specific MR: each SNP→gene relationship is estimated independently
-    d["beta_MR"]=d["gwas_beta_harmonized"]/d["beta_eqtl"]
-    d["se_MR"]=d["gwas_se"]/d["beta_eqtl"].abs()
-    d["se_MR_delta"]=np.sqrt(
+    # Input should already be harmonized + F>=10, but enforce it again.
+    good=(d["F_statistic"]>=MIN_F)&d["beta_eqtl"].notna()&(d["beta_eqtl"]!=0)&(d["se_qtl"]>0)&d["gwas_beta_harmonized"].notna()&(d["gwas_se"]>0)&d["gwas_p"].notna()
+    d=d[good].copy().drop_duplicates(["snpid","geneid"])
+
+    # ----------------------------------------------------------
+    # Wald ratio is EFFECT-SIZE ANNOTATION ONLY.
+    # No SNP×gene MR P-value is calculated.
+    # ----------------------------------------------------------
+    d["beta_Wald_ratio"]=d["gwas_beta_harmonized"]/d["beta_eqtl"]
+    d["se_Wald_first_order"]=d["gwas_se"]/d["beta_eqtl"].abs()
+    d["se_Wald_delta"]=np.sqrt(
         d["gwas_se"]**2/d["beta_eqtl"]**2 +
         d["gwas_beta_harmonized"]**2*d["se_qtl"]**2/d["beta_eqtl"]**4
     )
-    d["z_MR"]=d["beta_MR"]/d["se_MR"]; d["p_MR"]=d["z_MR"].apply(p_from_z)
-    d["OR_MR"]=d["beta_MR"].apply(exp_safe)
-    d["CI95_lower_beta"]=d["beta_MR"]-1.96*d["se_MR"]; d["CI95_upper_beta"]=d["beta_MR"]+1.96*d["se_MR"]
-    d["OR_CI95_lower"]=d["CI95_lower_beta"].apply(exp_safe); d["OR_CI95_upper"]=d["CI95_upper_beta"].apply(exp_safe)
+    d["OR_Wald_ratio"]=d["beta_Wald_ratio"].apply(exp_safe)
+    d["CI95_lower_beta"]=d["beta_Wald_ratio"]-1.96*d["se_Wald_first_order"]
+    d["CI95_upper_beta"]=d["beta_Wald_ratio"]+1.96*d["se_Wald_first_order"]
+    d["OR_CI95_lower"]=d["CI95_lower_beta"].apply(exp_safe)
+    d["OR_CI95_upper"]=d["CI95_upper_beta"].apply(exp_safe)
 
-    d["MR_status"]="PASS"
-    d.loc[~d["strong_instrument"],"MR_status"]="WEAK_INSTRUMENT"
-    bad=d[["beta_eqtl","se_qtl","gwas_beta_harmonized","gwas_se","beta_MR","se_MR","p_MR"]].isna().any(axis=1)
-    d.loc[bad,"MR_status"]="MISSING_VALUE"
-    d.loc[(d["se_qtl"]<=0)|(d["gwas_se"]<=0)|(d["beta_eqtl"]==0),"MR_status"]="INVALID_VALUE"
+    # ----------------------------------------------------------
+    # UNIQUE SNP = statistical unit.
+    # Check ALS statistics are identical across all gene rows.
+    # ----------------------------------------------------------
+    check=d.groupby("snpid").agg(
+        n_beta=("gwas_beta_harmonized","nunique"),
+        n_se=("gwas_se","nunique"),
+        n_p=("gwas_p","nunique")
+    )
+    bad=check[(check.n_beta>1)|(check.n_se>1)|(check.n_p>1)]
+    if len(bad): raise ValueError(f"{tissue}: {len(bad)} SNPs have inconsistent GWAS statistics across gene annotations")
 
-    passed=d[d["MR_status"]=="PASS"].copy()
-    passed["FDR_MR_tissue"]=bh(passed["p_MR"])
-    passed=passed.sort_values(["FDR_MR_tissue","p_MR","snpid","geneid"])
+    snp=d.sort_values(["snpid","p_eqtl"]).drop_duplicates("snpid").copy()
+    keep=["tissue","snpid","gwas_beta_harmonized","gwas_se","gwas_p"]
+    for c in ["gwas_chr","gwas_pos","harmonized_effect_allele","harmonized_other_allele"]:
+        if c in snp.columns: keep.append(c)
+    snp=snp[keep].copy()
 
-    # Number of expression targets is annotation only — no gene aggregation
-    ntargets=passed.groupby("snpid")["geneid"].nunique()
-    passed["n_regulatory_targets"]=passed["snpid"].map(ntargets).astype(int)
+    annot=d.groupby("snpid").agg(
+        n_regulatory_targets=("geneid","nunique"),
+        regulatory_genes=("geneid",unique_join)
+    ).reset_index()
+    snp=snp.merge(annot,on="snpid",how="left",validate="one_to_one")
 
-    d.to_csv(f"{out}/{tissue}_SNP_MR_all.tsv.gz",sep="\t",index=False,compression="gzip")
-    passed.to_csv(f"{out}/{tissue}_SNP_MR_F10.tsv.gz",sep="\t",index=False,compression="gzip")
-    passed[passed["p_MR"]<.05].to_csv(f"{out}/{tissue}_SNP_MR_nominal_P0.05.tsv",sep="\t",index=False)
-    passed[passed["FDR_MR_tissue"]<.05].to_csv(f"{out}/{tissue}_SNP_MR_FDR0.05.tsv",sep="\t",index=False)
+    # Published ALS GWAS P value = significance test.
+    snp["FDR_ALS_tissue"]=bh(snp["gwas_p"])
+    snp=snp.sort_values(["FDR_ALS_tissue","gwas_p","snpid"])
+
+    relationship_by_tissue[tissue]=d
+    snp_by_tissue[tissue]=snp
 
     summaries.append({
         "tissue":tissue,
-        "SNP_gene_MR_tests":len(passed),
-        "unique_SNPs":passed["snpid"].nunique(),
-        "target_genes":passed["geneid"].nunique(),
-        "multi_target_SNPs":int((ntargets>=2).sum()),
-        "nominal_P0.05":int((passed["p_MR"]<.05).sum()),
-        "tissue_FDR0.05":int((passed["FDR_MR_tissue"]<.05).sum())
+        "SNP_gene_relationships":len(d),
+        "unique_SNPs":len(snp),
+        "target_genes":d["geneid"].nunique(),
+        "multi_target_SNPs":int((snp["n_regulatory_targets"]>=2).sum()),
+        "ALS_nominal_P0.05_SNPs":int((snp["gwas_p"]<.05).sum()),
+        "ALS_tissue_FDR0.05_SNPs":int((snp["FDR_ALS_tissue"]<.05).sum())
     })
-    all_results.append(passed)
 
-    print(f"SNP→gene MR relationships : {len(passed):,}")
-    print(f"Unique SNPs               : {passed['snpid'].nunique():,}")
-    print(f"Target genes              : {passed['geneid'].nunique():,}")
-    print(f"SNPs regulating >=2 genes : {(ntargets>=2).sum():,}")
-    print(f"P<0.05                    : {(passed['p_MR']<.05).sum():,}")
-    print(f"Tissue FDR<0.05           : {(passed['FDR_MR_tissue']<.05).sum():,}")
+    print(f"SNP→gene relationships : {len(d):,}")
+    print(f"Unique SNPs            : {len(snp):,}")
+    print(f"Target genes           : {d['geneid'].nunique():,}")
+    print(f"Multi-target SNPs      : {(snp['n_regulatory_targets']>=2).sum():,}")
+    print(f"ALS P<0.05 SNPs        : {(snp['gwas_p']<.05).sum():,}")
+    print(f"Tissue FDR<0.05 SNPs  : {(snp['FDR_ALS_tissue']<.05).sum():,}")
 
 # ==============================================================
-# GLOBAL FDR ACROSS ALL SNP × GENE × TISSUE MR RELATIONSHIPS
+# 2. GLOBAL FDR — EACH SNP COUNTED EXACTLY ONCE ACROSS ALL TISSUES
 # ==============================================================
-allmr=pd.concat(all_results,ignore_index=True)
-allmr["FDR_MR_global"]=bh(allmr["p_MR"])
-allmr=allmr.sort_values(["FDR_MR_global","p_MR","tissue","snpid","geneid"])
+combined=pd.concat(snp_by_tissue.values(),ignore_index=True)
 
+check=combined.groupby("snpid").agg(
+    n_beta=("gwas_beta_harmonized","nunique"),
+    n_se=("gwas_se","nunique"),
+    n_p=("gwas_p","nunique")
+)
+bad=check[(check.n_beta>1)|(check.n_se>1)|(check.n_p>1)]
+if len(bad): raise ValueError(f"Across tissues: {len(bad)} SNPs have inconsistent GWAS statistics")
+
+global_snp=combined.sort_values("snpid").drop_duplicates("snpid")[["snpid","gwas_beta_harmonized","gwas_se","gwas_p"]].copy()
+ga=combined.groupby("snpid").agg(
+    n_tissues=("tissue","nunique"),
+    tissues=("tissue",unique_join)
+).reset_index()
+
+all_rel=pd.concat(relationship_by_tissue.values(),ignore_index=True)
+gg=all_rel.groupby("snpid").agg(
+    n_unique_regulatory_genes=("geneid","nunique"),
+    regulatory_genes_all_tissues=("geneid",unique_join)
+).reset_index()
+
+global_snp=global_snp.merge(ga,on="snpid",how="left").merge(gg,on="snpid",how="left")
+global_snp["FDR_ALS_global"]=bh(global_snp["gwas_p"])
+global_snp=global_snp.sort_values(["FDR_ALS_global","gwas_p","snpid"])
+
+global_fdr=global_snp.set_index("snpid")["FDR_ALS_global"]
+
+# ==============================================================
+# 3. WRITE ONLY CONSOLIDATED ACTIVE OUTPUTS
+# ==============================================================
 for tissue in TISSUES:
     out=f"{BASE}/{tissue}/MR"
-    x=allmr[allmr["tissue"]==tissue].copy()
-    x.to_csv(f"{out}/{tissue}_SNP_MR_with_global_FDR.tsv.gz",sep="\t",index=False,compression="gzip")
-    x[x["FDR_MR_global"]<.05].to_csv(f"{out}/{tissue}_SNP_MR_global_FDR0.05.tsv",sep="\t",index=False)
+
+    snp=snp_by_tissue[tissue].copy()
+    snp["FDR_ALS_global"]=snp["snpid"].map(global_fdr)
+    snp=snp.sort_values(["FDR_ALS_global","FDR_ALS_tissue","gwas_p","snpid"])
+
+    rel=relationship_by_tissue[tissue].copy()
+    rel=rel.merge(snp[["snpid","n_regulatory_targets","FDR_ALS_tissue","FDR_ALS_global"]],
+                  on="snpid",how="left",validate="many_to_one")
+    rel=rel.sort_values(["FDR_ALS_global","gwas_p","snpid","geneid"])
+
+    # 1 row per SNP: primary statistical results
+    snp.to_csv(f"{out}/{tissue}_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
+
+    # 1 row per SNP×gene: regulatory + Wald effect-size annotations
+    rel.to_csv(f"{out}/{tissue}_SNP_gene_effects.tsv.gz",sep="\t",index=False,compression="gzip")
+
+# Global unique-SNP result table
+global_snp.to_csv(f"{GLOBAL}/all_tissues_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
 
 summary=pd.DataFrame(summaries)
 summary.to_csv(f"{GLOBAL}/MR_summary_all_tissues.tsv",sep="\t",index=False)
-allmr.to_csv(f"{GLOBAL}/all_tissues_SNP_MR.tsv.gz",sep="\t",index=False,compression="gzip")
-allmr[allmr["FDR_MR_global"]<.05].to_csv(f"{GLOBAL}/all_tissues_SNP_MR_global_FDR0.05.tsv",sep="\t",index=False)
 
-print(f"\n{'='*70}\nALL-TISSUE SNP-FIRST MR SUMMARY\n{'='*70}")
+print(f"\n{'='*70}\nALL-TISSUE SNP-FIRST SUMMARY\n{'='*70}")
 print(summary.to_string(index=False))
-print(f"\nTotal SNP×gene MR tests : {len(allmr):,}")
-print(f"Unique SNPs             : {allmr['snpid'].nunique():,}")
-print(f"Global FDR<0.05         : {(allmr['FDR_MR_global']<.05).sum():,}")
+print(f"\nUnique SNPs globally          : {len(global_snp):,}")
+print(f"ALS P<0.05 globally           : {(global_snp['gwas_p']<.05).sum():,}")
+print(f"Global SNP-level FDR<0.05     : {(global_snp['FDR_ALS_global']<.05).sum():,}")
 PY
 
 echo
-echo "SNP-first MR analysis complete."
+echo "SNP-first analysis complete."
 column -t -s $'\t' "$GLOBAL/MR_summary_all_tissues.tsv"
