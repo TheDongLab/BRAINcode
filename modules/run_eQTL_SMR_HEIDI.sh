@@ -142,6 +142,10 @@ def resolve(symbol,chrom,start,end):
     eids=[x for x in ids if x in expr_ids]
     if len(eids)==1: return eids[0]
     if len(ids)==1: return ids[0]
+    if len(ids)>1:
+        chosen=sorted(ids)[0]
+        print(f"WARNING: ambiguous gene {symbol} at {key}; candidates={';'.join(sorted(ids))}; using {chosen}")
+        return chosen
     return None
 
 with open(rawf) as fh: hdr=fh.readline().split()
