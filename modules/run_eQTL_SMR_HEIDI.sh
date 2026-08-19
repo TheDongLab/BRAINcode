@@ -10,6 +10,7 @@ set -euo pipefail
 module --force purge
 module load PLINK/1.9b_7.11-x86_64
 
+QTL_LABEL="eQTL"
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"; EXPR="$BASE/QTL/expression_matrix.txt"
@@ -26,7 +27,7 @@ for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$EXPR" "$GENCODE"
 command -v python3 >/dev/null || { echo "ERROR: python3 unavailable"; exit 1; }
 python3 -c 'import pandas,numpy' >/dev/null 2>&1 || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
 
-export SMR BASE GLOBAL BFILE RAW BIM EXPR GENCODE GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
+export QTL_LABEL SMR BASE GLOBAL BFILE RAW BIM EXPR GENCODE GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
 export LD_UPPER LD_LOWER HEIDI_MIN HEIDI_MAX CIS_WIND TISSUE_LIST="${TISSUES[*]}"
 
 # ---------- Persistent GRCh38 GWAS .ma ----------
@@ -136,6 +137,7 @@ for r in traits.itertuples(index=False):
     try: key=(str(r.gene_chr).replace("chr","").upper(),int(r.gene_start),int(r.gene_end))
     except: continue
     ids=coord.get(key,[]); chosen=None
+
     if symbol in ids: chosen=symbol
     if chosen is None:
         sids=[x for x in ids if x in symmap.get(symbol,set())]
@@ -176,6 +178,7 @@ use=["geneid","snpid","beta","t-stat","p-value","FDR","gene_chr","gene_start","g
 for ch in pd.read_csv(fullf,sep="\t",usecols=use,dtype=str,chunksize=250000):
     total+=len(ch); ch=ch[ch.snpid.isin(available)].copy()
     if ch.empty: continue
+
     keys=[(str(a),str(b),str(c),str(d)) for a,b,c,d in zip(ch.geneid,ch.gene_chr,ch.gene_start,ch.gene_end)]
     ch["gene"]=[trait_map.get(k) for k in keys]
     p=pd.to_numeric(ch["p-value"],errors="coerce"); bad=ch.gene.isna()
@@ -240,7 +243,8 @@ loc=pd.read_csv(locf,sep="\t",dtype=str); loc["chr_clean"]=loc.chr.str.replace("
 m=besd_snps.merge(loc[["snpid","chr_clean","pos","key"]].drop_duplicates("snpid"),on="snpid",how="left")
 m=m.merge(bim[["rawid","key","effect","other"]].drop_duplicates("key"),on="key",how="left")
 if m[["chr_clean","pos","rawid","effect","other"]].isna().any().any():
-    z=m[m[["chr_clean","pos","rawid","effect","other"]].isna().any(axis=1)]; raise RuntimeError(f"{T}: {len(z):,}/{len(m):,} BESD SNPs missing metadata")
+    z=m[m[["chr_clean","pos","rawid","effect","other"]].isna().any(axis=1)]
+    raise RuntimeError(f"{T}: {len(z):,}/{len(m):,} BESD SNPs missing metadata")
 if m.snpid.duplicated().any(): raise RuntimeError(f"{T}: duplicate SNP IDs after metadata merge")
 
 m[["chr_clean","snpid"]].assign(GD="0",BP=m["pos"],A1=m["effect"],A2=m["other"])[["chr_clean","snpid","GD","BP","A1","A2"]].to_csv(esiout,sep="\t",header=False,index=False)
@@ -263,7 +267,8 @@ sym=top.groupby("gene").symbol.agg(lambda x:";".join(sorted(set(map(str,x))))).r
 p=besd_probes.merge(g[["gene","chr_clean","bp"]],on="gene",how="left").merge(sym,on="gene",how="left")
 p["symbol"]=p.symbol.fillna(p.gene); p["strand"]="NA"; p["GD"]="0"
 if p[["chr_clean","bp"]].isna().any().any():
-    z=p[p[["chr_clean","bp"]].isna().any(axis=1)]; raise RuntimeError(f"{T}: {len(z):,}/{len(p):,} BESD probes missing gene coordinates")
+    z=p[p[["chr_clean","bp"]].isna().any(axis=1)]
+    raise RuntimeError(f"{T}: {len(z):,}/{len(p):,} BESD probes missing gene coordinates")
 if p.gene.duplicated().any(): raise RuntimeError(f"{T}: duplicate probes after metadata merge")
 p[["chr_clean","gene","GD","bp","symbol","strand"]].to_csv(epiout,sep="\t",header=False,index=False)
 print(f"{T}: update pools ready: {len(m):,} SNPs; {len(p):,} probes")
@@ -332,26 +337,42 @@ PY
     touch "$LD_OK"
   fi
 
-  # ---------- Single-SNP SMR + SMR-multi + HEIDI ----------
-  RESULT_VALID=0
-  if [[ -s "$SMROUT.smr" ]] && head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_SMR_multi" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then RESULT_VALID=1; fi
+  # ---------- Standard SMR + HEIDI ----------
+  SINGLE_VALID=0
+  if [[ -s "$SMROUT.smr" ]] && head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then SINGLE_VALID=1; fi
 
-  if [[ "$RESULT_VALID" -eq 1 ]]; then
-    echo "Reusing completed SMR + SMR-multi + HEIDI result: $SMROUT.smr"
+  if [[ "$SINGLE_VALID" -eq 1 ]]; then
+    echo "Reusing single-SNP SMR + HEIDI result: $SMROUT.smr"
   else
-    rm -f "$SMROUT.smr"; echo "Running SMR + SMR-multi + HEIDI for $TISSUE"
+    rm -f "$SMROUT.smr"; echo "Running single-SNP SMR + HEIDI for $TISSUE"
+    "$SMR" --bfile "$LD_BFILE" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
+      --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
+      --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 --cis-wind "$CIS_WIND" \
+      --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
+    [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no single-SNP SMR output for $TISSUE"; exit 1; }
+  fi
+
+  # ---------- SMR-multi ----------
+  MULTI_VALID=0
+  if [[ -s "$SMROUT.msmr" ]] && head -1 "$SMROUT.msmr" | grep -q "p_SMR_multi" && head -1 "$SMROUT.msmr" | grep -q "p_HEIDI"; then MULTI_VALID=1; fi
+
+  if [[ "$MULTI_VALID" -eq 1 ]]; then
+    echo "Reusing SMR-multi result: $SMROUT.msmr"
+  else
+    rm -f "$SMROUT.msmr" "$SMROUT.snps4msmr.list"; echo "Running SMR-multi for $TISSUE"
     "$SMR" --bfile "$LD_BFILE" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
       --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
       --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 --cis-wind "$CIS_WIND" \
       --smr-multi --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
-    [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no SMR output for $TISSUE"; exit 1; }
+    [[ -s "$SMROUT.msmr" ]] || { echo "ERROR: no SMR-multi output for $TISSUE"; exit 1; }
   fi
 done
 
-# ---------- Combine tissues; BH-FDR for single-SNP SMR and SMR-multi ----------
+# ---------- Combine .smr + .msmr; BH-FDR ----------
 python3 <<'PY'
 import os,numpy as np,pandas as pd
-BASE=os.environ["BASE"]; GLOBAL=os.environ["GLOBAL"]; tissues=os.environ["TISSUE_LIST"].split(); HEIDI=float(os.environ["HEIDI_PASS"])
+BASE=os.environ["BASE"]; GLOBAL=os.environ["GLOBAL"]; Q=os.environ["QTL_LABEL"]
+tissues=os.environ["TISSUE_LIST"].split(); HEIDI=float(os.environ["HEIDI_PASS"])
 
 def bh(p):
     p=pd.to_numeric(p,errors="coerce"); out=pd.Series(np.nan,index=p.index,dtype=float); ok=p.notna()
@@ -362,12 +383,22 @@ def bh(p):
 
 allx=[]; summary=[]
 for t in tissues:
-    f=f"{BASE}/{t}/MR/SMR_HEIDI/results/{t}_SMR_HEIDI.smr"
-    if not os.path.exists(f): raise RuntimeError(f"Missing completed SMR result: {f}")
-    d=pd.read_csv(f,sep=r"\s+",dtype=str)
-    for c in ["p_SMR","p_SMR_multi","p_HEIDI","b_SMR","se_SMR","p_GWAS","p_eQTL"]:
-        if c in d: d[c]=pd.to_numeric(d[c],errors="coerce")
-    if "p_SMR" not in d or "p_SMR_multi" not in d or "p_HEIDI" not in d: raise RuntimeError(f"Malformed SMR-multi result: {f}")
+    prefix=f"{BASE}/{t}/MR/SMR_HEIDI/results/{t}_SMR_HEIDI"; sf=prefix+".smr"; mf=prefix+".msmr"
+    if not os.path.exists(sf): raise RuntimeError(f"Missing single-SNP SMR result: {sf}")
+    if not os.path.exists(mf): raise RuntimeError(f"Missing SMR-multi result: {mf}")
+
+    s=pd.read_csv(sf,sep=r"\s+",dtype=str); m=pd.read_csv(mf,sep=r"\s+",dtype=str)
+    if "probeID" not in s or "p_SMR" not in s or "p_HEIDI" not in s: raise RuntimeError(f"Malformed .smr: {sf}")
+    if "probeID" not in m or "p_SMR_multi" not in m: raise RuntimeError(f"Malformed .msmr: {mf}")
+    if s.probeID.duplicated().any(): raise RuntimeError(f"Duplicate probeID in {sf}")
+    if m.probeID.duplicated().any(): raise RuntimeError(f"Duplicate probeID in {mf}")
+
+    for c in ["p_SMR","p_HEIDI","b_SMR","se_SMR","p_GWAS","p_eQTL"]:
+        if c in s: s[c]=pd.to_numeric(s[c],errors="coerce")
+    m["p_SMR_multi"]=pd.to_numeric(m["p_SMR_multi"],errors="coerce")
+
+    d=s.merge(m[["probeID","p_SMR_multi"]],on="probeID",how="left",validate="one_to_one")
+    if d.p_SMR_multi.isna().all(): raise RuntimeError(f"No p_SMR_multi values merged for {t}")
 
     d.insert(0,"tissue",t); d["FDR_SMR_tissue"]=bh(d.p_SMR); d["FDR_SMR_multi_tissue"]=bh(d.p_SMR_multi)
     d["HEIDI_tested"]=d.p_HEIDI.notna(); d["HEIDI_pass"]=d.HEIDI_tested&(d.p_HEIDI>=HEIDI)
@@ -375,14 +406,10 @@ for t in tissues:
     allx.append(d)
 
     summary.append({
-      "tissue":t,
-      "SMR_tests":len(d),
-      "SMR_nominal_P0.05":int((d.p_SMR<.05).sum()),
-      "SMR_tissue_FDR0.05":int((d.FDR_SMR_tissue<.05).sum()),
-      "SMR_multi_nominal_P0.05":int((d.p_SMR_multi<.05).sum()),
-      "SMR_multi_tissue_FDR0.05":int((d.FDR_SMR_multi_tissue<.05).sum()),
-      "HEIDI_tested":int(d.HEIDI_tested.sum()),
-      "HEIDI_P_ge_0.05":int(d.HEIDI_pass.sum())
+      "tissue":t,"SMR_tests":len(d),
+      "SMR_nominal_P0.05":int((d.p_SMR<.05).sum()),"SMR_tissue_FDR0.05":int((d.FDR_SMR_tissue<.05).sum()),
+      "SMR_multi_nominal_P0.05":int((d.p_SMR_multi<.05).sum()),"SMR_multi_tissue_FDR0.05":int((d.FDR_SMR_multi_tissue<.05).sum()),
+      "HEIDI_tested":int(d.HEIDI_tested.sum()),"HEIDI_P_ge_0.05":int(d.HEIDI_pass.sum())
     })
 
 x=pd.concat(allx,ignore_index=True)
@@ -393,9 +420,9 @@ x["SMR_MULTI_HEIDI_pass"]=x.SMR_multi_global_FDR_pass&x.HEIDI_pass
 
 for t in tissues:
     out=f"{BASE}/{t}/MR/SMR_HEIDI"; d=x[x.tissue==t].sort_values(["FDR_SMR_multi_global","p_SMR_multi","p_SMR"])
-    d.to_csv(f"{out}/{t}_SMR_HEIDI_all.tsv.gz",sep="\t",index=False,compression="gzip")
-    d[d.SMR_HEIDI_pass].to_csv(f"{out}/{t}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
-    d[d.SMR_MULTI_HEIDI_pass].to_csv(f"{out}/{t}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
+    d.to_csv(f"{out}/{t}_{Q}_SMR_HEIDI_all.tsv.gz",sep="\t",index=False,compression="gzip")
+    d[d.SMR_HEIDI_pass].to_csv(f"{out}/{t}_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
+    d[d.SMR_MULTI_HEIDI_pass].to_csv(f"{out}/{t}_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
 
 s=pd.DataFrame(summary)
 for i,r in s.iterrows():
@@ -405,10 +432,10 @@ for i,r in s.iterrows():
     s.loc[i,"SMR_multi_global_FDR0.05"]=int((d.FDR_SMR_multi_global<.05).sum())
     s.loc[i,"SMR_multi_global_FDR0.05_and_HEIDI_pass"]=int(d.SMR_MULTI_HEIDI_pass.sum())
 
-s.to_csv(f"{GLOBAL}/SMR_HEIDI_summary_all_tissues.tsv",sep="\t",index=False)
-x.to_csv(f"{GLOBAL}/all_tissues_SMR_HEIDI.tsv.gz",sep="\t",index=False,compression="gzip")
-x[x.SMR_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_SMR_HEIDI_pass.tsv",sep="\t",index=False)
-x[x.SMR_MULTI_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
+s.to_csv(f"{GLOBAL}/{Q}_SMR_HEIDI_summary_all_tissues.tsv",sep="\t",index=False)
+x.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI.tsv.gz",sep="\t",index=False,compression="gzip")
+x[x.SMR_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
+x[x.SMR_MULTI_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
 
 print("\n======================================================================\nSMR + SMR-MULTI + HEIDI SUMMARY\n======================================================================")
 print(s.to_string(index=False))
@@ -419,5 +446,5 @@ print(f"SMR-multi global FDR<0.05: {(x.FDR_SMR_multi_global<.05).sum():,}")
 print(f"SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_MULTI_HEIDI_pass.sum():,}")
 PY
 
-echo; echo "SMR + SMR-multi + HEIDI complete."; echo
-column -t -s $'\t' "$GLOBAL/SMR_HEIDI_summary_all_tissues.tsv"
+echo; echo "eQTL SMR + SMR-multi + HEIDI complete."; echo
+column -t -s $'\t' "$GLOBAL/${QTL_LABEL}_SMR_HEIDI_summary_all_tissues.tsv"
