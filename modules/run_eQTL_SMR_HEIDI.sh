@@ -2,8 +2,8 @@
 #SBATCH --job-name=eQTL_SMR_HEIDI
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.err
-#SBATCH --time=23:30:00
-#SBATCH --mem=64G
+#SBATCH --time=16:30:00
+#SBATCH --mem=56G
 #SBATCH --cpus-per-task=4
 
 set -euo pipefail
@@ -13,6 +13,7 @@ module load PLINK/1.9b_7.11-x86_64
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"; EXPR="$BASE/QTL/expression_matrix.txt"
+GENCODE="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf"
 GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 GWAS_ORIG="$GWAS_DIR/GCST90027163_buildGRCh37.tsv.gz"; GWAS_MA="$GWAS_DIR/ALS_GRCh38_SMR.ma"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
@@ -21,11 +22,11 @@ PEQTL_SMR=5e-8; PEQTL_HEIDI=1.57e-3; HEIDI_PASS=0.05
 LD_UPPER=0.90; LD_LOWER=0.05; HEIDI_MIN=3; HEIDI_MAX=20; CIS_WIND=2000
 
 mkdir -p "$GLOBAL"
-for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$EXPR" "$GWAS"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
+for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$EXPR" "$GENCODE" "$GWAS"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
 command -v python3 >/dev/null || { echo "ERROR: python3 unavailable"; exit 1; }
 python3 -c 'import pandas,numpy' >/dev/null 2>&1 || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
 
-export SMR BASE GLOBAL BFILE RAW BIM EXPR GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
+export SMR BASE GLOBAL BFILE RAW BIM EXPR GENCODE GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
 export LD_UPPER LD_LOWER HEIDI_MIN HEIDI_MAX CIS_WIND TISSUE_LIST="${TISSUES[*]}"
 
 # ---------- Persistent GRCh38 GWAS .ma ----------
@@ -108,7 +109,7 @@ PY
 
     python3 <<'PY'
 import os,pandas as pd
-T=os.environ["TISSUE"]; fullf=os.environ["FULL"]; topf=os.environ["TOP"]; glf=os.environ["GENELOC"]; exprf=os.environ["EXPR"]
+T=os.environ["TISSUE"]; fullf=os.environ["FULL"]; topf=os.environ["TOP"]; glf=os.environ["GENELOC"]; exprf=os.environ["EXPR"]; gtff=os.environ["GENCODE"]
 locf=os.environ["SNPLOC"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]; outf=os.environ["MATEQTL"]; peq_heidi=float(os.environ["PEQTL_HEIDI"])
 
 g=pd.read_csv(glf,sep="\t",header=None,names=["ensembl_id","chr","start","end"],dtype=str)
@@ -120,9 +121,14 @@ top=pd.read_csv(topf,sep="\t",header=None,usecols=[0,1],names=["ensembl_id","sym
 if len(top) and str(top.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: top=top.iloc[1:]
 symmap={str(s):set(z.ensembl_id.astype(str)) for s,z in top.groupby("symbol")}
 
-expr=pd.read_csv(exprf,sep="\t",usecols=[0],dtype=str)
-expr_ids=set(expr.iloc[:,0].dropna().astype(str)); expr_ids.discard("gene_id")
-print(f"{T}: original expression matrix contains {len(expr_ids):,} gene IDs")
+expr=pd.read_csv(exprf,sep="\t",usecols=[0],dtype=str); expr_ids=set(expr.iloc[:,0].dropna().astype(str)); expr_ids.discard("gene_id")
+
+gtf=pd.read_csv(gtff,sep="\t",comment="#",header=None,usecols=[2,8],names=["feature","attr"],dtype=str)
+gtf=gtf[gtf.feature=="gene"].copy()
+gtf["ensembl_id"]=gtf.attr.str.extract(r'gene_id "([^"]+)"'); gtf["symbol"]=gtf.attr.str.extract(r'gene_name "([^"]+)"')
+gtf=gtf.dropna(subset=["ensembl_id","symbol"]).drop_duplicates(["symbol","ensembl_id"])
+gencode_map={str(s):set(z.ensembl_id.astype(str)) for s,z in gtf.groupby("symbol")}
+print(f"{T}: expression IDs={len(expr_ids):,}; GENCODE v49 symbols={len(gencode_map):,}")
 
 def resolve(symbol,chrom,start,end):
     try: key=(str(chrom).replace("chr","").upper(),int(start),int(end))
@@ -131,6 +137,8 @@ def resolve(symbol,chrom,start,end):
     if symbol in ids: return symbol
     sids=[x for x in ids if x in symmap.get(symbol,set())]
     if len(sids)==1: return sids[0]
+    gids=[x for x in ids if x in gencode_map.get(symbol,set())]
+    if len(gids)==1: return gids[0]
     eids=[x for x in ids if x in expr_ids]
     if len(eids)==1: return eids[0]
     if len(ids)==1: return ids[0]
