@@ -2,7 +2,7 @@
 #SBATCH --job-name=eQTL_SMR_HEIDI
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.err
-#SBATCH --time=16:30:00
+#SBATCH --time=1:30:00
 #SBATCH --mem=56G
 #SBATCH --cpus-per-task=4
 
@@ -137,7 +137,6 @@ for r in traits.itertuples(index=False):
     try: key=(str(r.gene_chr).replace("chr","").upper(),int(r.gene_start),int(r.gene_end))
     except: continue
     ids=coord.get(key,[]); chosen=None
-
     if symbol in ids: chosen=symbol
     if chosen is None:
         sids=[x for x in ids if x in symmap.get(symbol,set())]
@@ -207,7 +206,7 @@ PY
     [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]] || { echo "ERROR: BESD creation failed"; exit 1; }
   fi
 
-  # ---------- Native SMR metadata updates ----------
+  # ---------- Native SMR metadata ----------
   if [[ ! -e "$ESI_OK" && -s "$BESD.esi.preupdate" ]]; then
     echo "Restoring pre-timeout ESI backup before native SMR update"; cp -f "$BESD.esi.preupdate" "$BESD.esi"; rm -f "$BESD.esi.preupdate"
   fi
@@ -368,7 +367,7 @@ PY
   fi
 done
 
-# ---------- Combine .smr + .msmr; BH-FDR ----------
+# ---------- Combine .smr + .msmr; BH-FDR + HEIDI diagnostics ----------
 python3 <<'PY'
 import os,numpy as np,pandas as pd
 BASE=os.environ["BASE"]; GLOBAL=os.environ["GLOBAL"]; Q=os.environ["QTL_LABEL"]
@@ -393,7 +392,7 @@ for t in tissues:
     if s.probeID.duplicated().any(): raise RuntimeError(f"Duplicate probeID in {sf}")
     if m.probeID.duplicated().any(): raise RuntimeError(f"Duplicate probeID in {mf}")
 
-    for c in ["p_SMR","p_HEIDI","b_SMR","se_SMR","p_GWAS","p_eQTL"]:
+    for c in ["p_SMR","p_HEIDI","b_SMR","se_SMR","p_GWAS","p_eQTL","nsnp_HEIDI"]:
         if c in s: s[c]=pd.to_numeric(s[c],errors="coerce")
     m["p_SMR_multi"]=pd.to_numeric(m["p_SMR_multi"],errors="coerce")
 
@@ -437,6 +436,11 @@ x.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI.tsv.gz",sep="\t",index=False,compr
 x[x.SMR_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
 x[x.SMR_MULTI_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
 
+single_hits=x[x.SMR_global_FDR_pass].copy().sort_values(["FDR_SMR_global","p_SMR"])
+multi_hits=x[x.SMR_multi_global_FDR_pass].copy().sort_values(["FDR_SMR_multi_global","p_SMR_multi"])
+single_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
+multi_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
+
 print("\n======================================================================\nSMR + SMR-MULTI + HEIDI SUMMARY\n======================================================================")
 print(s.to_string(index=False))
 print(f"\nTotal SMR tests: {len(x):,}")
@@ -444,6 +448,20 @@ print(f"Single-SNP SMR global FDR<0.05: {(x.FDR_SMR_global<.05).sum():,}")
 print(f"Single-SNP SMR global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_HEIDI_pass.sum():,}")
 print(f"SMR-multi global FDR<0.05: {(x.FDR_SMR_multi_global<.05).sum():,}")
 print(f"SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_MULTI_HEIDI_pass.sum():,}")
+
+print("\n======================================================================\nHEIDI P-VALUES FOR SINGLE-SNP SMR GLOBAL FDR<0.05 HITS\n======================================================================")
+if len(single_hits):
+    cols=["tissue","probeID","Gene","topSNP","p_eQTL","p_GWAS","p_SMR","FDR_SMR_tissue","FDR_SMR_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
+    print(single_hits[[c for c in cols if c in single_hits.columns]].to_string(index=False))
+else:
+    print("None")
+
+print("\n======================================================================\nHEIDI P-VALUES FOR SMR-MULTI GLOBAL FDR<0.05 HITS\n======================================================================")
+if len(multi_hits):
+    cols=["tissue","probeID","Gene","topSNP","p_eQTL","p_GWAS","p_SMR_multi","FDR_SMR_multi_tissue","FDR_SMR_multi_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
+    print(multi_hits[[c for c in cols if c in multi_hits.columns]].to_string(index=False))
+else:
+    print("None")
 PY
 
 echo; echo "eQTL SMR + SMR-multi + HEIDI complete."; echo
