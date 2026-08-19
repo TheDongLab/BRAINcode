@@ -2,7 +2,7 @@
 #SBATCH --job-name=eQTL_SMR_HEIDI
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/MR/eQTL_SMR_HEIDI.err
-#SBATCH --time=12:00:00
+#SBATCH --time=23:30:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=4
 
@@ -13,8 +13,7 @@ module load PLINK/1.9b_7.11-x86_64
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"
-GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"
-GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
+GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 GWAS_ORIG="$GWAS_DIR/GCST90027163_buildGRCh37.tsv.gz"; GWAS_MA="$GWAS_DIR/ALS_GRCh38_SMR.ma"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
 
@@ -22,86 +21,117 @@ PEQTL_SMR=5e-8; PEQTL_HEIDI=1.57e-3; HEIDI_PASS=0.05
 LD_UPPER=0.90; LD_LOWER=0.05; HEIDI_MIN=3; HEIDI_MAX=20; CIS_WIND=2000
 
 mkdir -p "$GLOBAL"
-for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$GWAS" "$GWAS_ORIG"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
+for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$GWAS"; do
+  [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }
+done
 command -v python3 >/dev/null || { echo "ERROR: python3 unavailable"; exit 1; }
-python3 -c 'import pandas,numpy' 2>/dev/null || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
+python3 -c 'import pandas,numpy' >/dev/null 2>&1 || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
 
-export SMR BASE GLOBAL BFILE RAW BIM GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS LD_UPPER LD_LOWER HEIDI_MIN HEIDI_MAX CIS_WIND TISSUE_LIST="${TISSUES[*]}"
+export SMR BASE GLOBAL BFILE RAW BIM GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
+export LD_UPPER LD_LOWER HEIDI_MIN HEIDI_MAX CIS_WIND TISSUE_LIST="${TISSUES[*]}"
 
-# ---------- Create persistent GRCh38 GWAS .ma only if missing/invalid ----------
-if [[ -s "$GWAS_MA" ]] && python3 - "$GWAS_MA" <<'PY'
-import sys, pandas as pd, numpy as np
+# ---------- Persistent GRCh38 GWAS .ma: validate and reuse ----------
+GWAS_VALID=0
+if [[ -s "$GWAS_MA" ]]; then
+  if python3 - "$GWAS_MA" <<'PY'
+import sys,pandas as pd
 f=sys.argv[1]
 try:
-    d=pd.read_csv(f,sep="\t")
-    required=["SNP","A1","A2","freq","b","se","p","n"]
-    assert list(d.columns)==required
-    assert len(d)>1000 and d["SNP"].nunique()==len(d)
-    assert d["A1"].astype(str).str.upper().isin(["A","C","G","T"]).all()
-    assert d["A2"].astype(str).str.upper().isin(["A","C","G","T"]).all()
-    b=pd.to_numeric(d["b"],errors="coerce"); se=pd.to_numeric(d["se"],errors="coerce"); p=pd.to_numeric(d["p"],errors="coerce")
-    assert b.notna().all() and se.notna().all() and (se>0).all() and p.notna().all() and ((p>=0)&(p<=1)).all()
-    print(f"VALID: {len(d):,} SNPs")
+    d=pd.read_csv(f,sep="\t",nrows=10000)
+    req=["SNP","A1","A2","freq","b","se","p","n"]
+    assert list(d.columns)==req and len(d)>0
+    assert d.SNP.notna().all() and d.A1.notna().all() and d.A2.notna().all()
+    se=pd.to_numeric(d.se,errors="coerce"); p=pd.to_numeric(d.p,errors="coerce")
+    assert se.notna().all() and (se>0).all() and p.notna().all() and ((p>=0)&(p<=1)).all()
 except Exception as e:
-    print("INVALID:",e); sys.exit(1)
+    print("INVALID GWAS .ma:",e); sys.exit(1)
 PY
-then
+  then GWAS_VALID=1; fi
+fi
+
+if [[ "$GWAS_VALID" -eq 1 ]]; then
   echo "Reusing validated GWAS SMR file: $GWAS_MA"
 else
+  [[ -s "$GWAS_ORIG" ]] || { echo "ERROR: cannot rebuild GWAS .ma; missing $GWAS_ORIG"; exit 1; }
   echo "Creating GRCh38 GWAS SMR file: $GWAS_MA"
   rm -f "$GWAS_MA"
   python3 <<'PY'
-import os, pandas as pd, numpy as np
+import os,pandas as pd,numpy as np
 g=os.environ["GWAS"]; go=os.environ["GWAS_ORIG"]; out=os.environ["GWAS_MA"]
-
 want=["hm_rsid","hm_effect_allele","hm_other_allele","hm_beta","standard_error","p_value","hm_effect_allele_frequency"]
 d=pd.read_csv(g,sep="\t",compression="gzip",usecols=lambda x:x in want,dtype=str)
 need=["hm_rsid","hm_effect_allele","hm_other_allele","hm_beta","standard_error","p_value"]
 miss=set(need)-set(d.columns)
-if miss: raise ValueError(f"GWAS missing: {sorted(miss)}")
-
+if miss: raise RuntimeError(f"GWAS missing columns: {sorted(miss)}")
 for c in ["hm_beta","standard_error","p_value"]: d[c]=pd.to_numeric(d[c],errors="coerce")
 d["freq"]=pd.to_numeric(d["hm_effect_allele_frequency"],errors="coerce") if "hm_effect_allele_frequency" in d else np.nan
-
 n=pd.read_csv(go,sep="\t",compression="gzip",usecols=["N_effective"])
-N=int(round(pd.to_numeric(n["N_effective"],errors="coerce").median()))
-
+N=int(round(pd.to_numeric(n.N_effective,errors="coerce").median()))
 d=d.rename(columns={"hm_rsid":"SNP","hm_effect_allele":"A1","hm_other_allele":"A2","hm_beta":"b","standard_error":"se","p_value":"p"})
 d=d[d.SNP.notna()&d.A1.notna()&d.A2.notna()&d.b.notna()&d.se.notna()&(d.se>0)&d.p.notna()].copy()
-d["A1"]=d.A1.str.upper(); d["A2"]=d.A2.str.upper(); d=d[d.A1.isin(list("ACGT"))&d.A2.isin(list("ACGT"))]
-d["n"]=N; d=d.drop_duplicates("SNP")
+d["A1"]=d.A1.str.upper(); d["A2"]=d.A2.str.upper()
+d=d[d.A1.isin(list("ACGT"))&d.A2.isin(list("ACGT"))].drop_duplicates("SNP"); d["n"]=N
 d[["SNP","A1","A2","freq","b","se","p","n"]].to_csv(out,sep="\t",index=False,na_rep="NA")
 print(f"Created {out}: {len(d):,} SNPs; N={N:,}")
 PY
 fi
 
-# ---------- Per-tissue eQTL -> BESD -> SMR + HEIDI ----------
+# ---------- Per tissue ----------
 for TISSUE in "${TISSUES[@]}"; do
-  echo; echo "======================================================================"; echo "$TISSUE"; echo "======================================================================"
+  echo
+  echo "======================================================================"
+  echo "$TISSUE"
+  echo "======================================================================"
 
   EQTL="$BASE/$TISSUE/eQTL"; RESULTS="$EQTL/results"; OUT="$BASE/$TISSUE/MR/SMR_HEIDI"
   INPUT="$OUT/input"; BESDDIR="$OUT/besd"; RESDIR="$OUT/results"
   FULL="$RESULTS/${TISSUE}_eQTL.full_annotated.txt"; TOP="$RESULTS/${TISSUE}_eQTL.top_for_boxplot.txt"
   GENELOC="$EQTL/gene_location.txt"; SNPLOC="$EQTL/snp_location.txt"; COV="$EQTL/covariates_${TISSUE}_encoded.txt"
   MATEQTL="$INPUT/${TISSUE}_MatrixEQTL_ENSG.txt"; KEEP="$INPUT/plink_keep.txt"; FREQ="$INPUT/${TISSUE}_freq"
+  ESI_POOL="$INPUT/${TISSUE}_update.esi"; EPI_POOL="$INPUT/${TISSUE}_update.epi"; FREQ_POOL="$INPUT/${TISSUE}_update.freq"
   BESD="$BESDDIR/${TISSUE}_eQTL"; SMROUT="$RESDIR/${TISSUE}_SMR_HEIDI"
+  ESI_OK="$BESD.esi_native_updated.ok"; EPI_OK="$BESD.epi_native_updated.ok"; FREQ_OK="$BESD.freq_native_updated.ok"
 
-  rm -rf "$OUT"; mkdir -p "$INPUT" "$BESDDIR" "$RESDIR"
+  mkdir -p "$INPUT" "$BESDDIR" "$RESDIR"
   for f in "$FULL" "$TOP" "$GENELOC" "$SNPLOC" "$COV"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
-  export TISSUE EQTL RESULTS OUT INPUT BESDDIR RESDIR FULL TOP GENELOC SNPLOC COV MATEQTL KEEP FREQ BESD SMROUT
+  export TISSUE EQTL RESULTS OUT INPUT BESDDIR RESDIR FULL TOP GENELOC SNPLOC COV MATEQTL KEEP FREQ
+  export ESI_POOL EPI_POOL FREQ_POOL BESD SMROUT ESI_OK EPI_OK FREQ_OK
 
-  # Restore original ENSG identity using the same coordinate + symbol logic validated across all five tissues.
-  python3 <<'PY'
-import os, pandas as pd, numpy as np
+  # Tissue subjects are required for both PLINK frequencies and HEIDI LD.
+  if [[ ! -s "$KEEP" ]]; then
+    python3 <<'PY'
+import os,pandas as pd
+fam=pd.read_csv(os.environ["BFILE"]+".fam",sep=r"\s+",header=None,usecols=[0,1],names=["FID","IID"],dtype=str)
+cov=pd.read_csv(os.environ["COV"],sep="\t",nrows=0)
+subjects=set(map(str,list(cov.columns)[1:])); keep=fam[fam.IID.isin(subjects)]
+if keep.empty: raise RuntimeError("No covariate subjects matched PLINK FAM")
+keep.to_csv(os.environ["KEEP"],sep="\t",header=False,index=False)
+print(f"{os.environ['TISSUE']}: eQTL/LD N={len(keep):,}")
+PY
+  fi
+  N_EQTL=$(wc -l < "$KEEP")
+  echo "$TISSUE: eQTL/LD N=$N_EQTL"
 
+  # Build MatrixEQTL->BESD only when a complete BESD trio does not already exist.
+  if [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]]; then
+    echo "Reusing existing BESD: $BESD"
+  else
+    echo "Building BESD for $TISSUE"
+    rm -f "$BESD.besd" "$BESD.esi" "$BESD.epi" "$ESI_OK" "$EPI_OK" "$FREQ_OK"
+
+    if [[ ! -s "$MATEQTL" ]]; then
+      rm -f "$MATEQTL.gz"
+      python3 <<'PY'
+import os,pandas as pd
 T=os.environ["TISSUE"]; fullf=os.environ["FULL"]; topf=os.environ["TOP"]; glf=os.environ["GENELOC"]
-locf=os.environ["SNPLOC"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]; famf=os.environ["BFILE"]+".fam"
-covf=os.environ["COV"]; outf=os.environ["MATEQTL"]; keepf=os.environ["KEEP"]
+locf=os.environ["SNPLOC"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]; outf=os.environ["MATEQTL"]
+peq_heidi=float(os.environ["PEQTL_HEIDI"])
 
 g=pd.read_csv(glf,sep="\t",header=None,names=["ensembl_id","chr","start","end"],dtype=str)
 if len(g) and str(g.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: g=g.iloc[1:]
 g["chrkey"]=g.chr.str.replace("^chr","",regex=True).str.upper()
-g["startkey"]=pd.to_numeric(g.start,errors="coerce").astype("Int64"); g["endkey"]=pd.to_numeric(g.end,errors="coerce").astype("Int64")
+g["startkey"]=pd.to_numeric(g.start,errors="coerce").astype("Int64")
+g["endkey"]=pd.to_numeric(g.end,errors="coerce").astype("Int64")
 coord={k:sorted(z.ensembl_id.dropna().astype(str).unique()) for k,z in g.groupby(["chrkey","startkey","endkey"],dropna=False)}
 
 top=pd.read_csv(topf,sep="\t",header=None,usecols=[0,1],names=["ensembl_id","symbol"],dtype=str).drop_duplicates()
@@ -119,148 +149,228 @@ def resolve(symbol,chrom,start,end):
     return None
 
 with open(rawf) as fh: hdr=fh.readline().split()
-meta={"FID","IID","PAT","MAT","SEX","PHENOTYPE"}; rr=[]
+meta={"FID","IID","PAT","MAT","SEX","PHENOTYPE"}; rawids=[]
 for c in hdr:
-    if c in meta or "_" not in c: continue
-    vid,a=c.rsplit("_",1); rr.append((vid,a.upper()))
-raw=pd.DataFrame(rr,columns=["rawid","effect_allele"])
+    if c not in meta and "_" in c: rawids.append(c.rsplit("_",1)[0])
+rawids=set(rawids)
 
 bim=pd.read_csv(bimf,sep=r"\s+",header=None,names=["chr","rawid","cm","pos","a1","a2"],dtype=str)
+bim=bim[bim.rawid.isin(rawids)].copy()
 bim["key"]=bim.chr.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos
 loc=pd.read_csv(locf,sep="\t",dtype=str); loc["key"]=loc.chr.str.replace("^chr","",regex=True).str.upper()+":"+loc.pos
-vm=loc[["snpid","key"]].drop_duplicates().merge(bim[["rawid","key"]],on="key").merge(raw,on="rawid")
-available=set(vm.snpid.astype(str))
-
-fam=pd.read_csv(famf,sep=r"\s+",header=None,usecols=[0,1],names=["FID","IID"],dtype=str)
-cov=pd.read_csv(covf,sep="\t",nrows=0); subjects=set(map(str,list(cov.columns)[1:]))
-keep=fam[fam.IID.isin(subjects)]
-if keep.empty: raise RuntimeError(f"{T}: no covariate subjects matched PLINK FAM")
-keep.to_csv(keepf,sep="\t",header=False,index=False)
+available=set(loc[["snpid","key"]].drop_duplicates().merge(bim[["key"]].drop_duplicates(),on="key").snpid.astype(str))
 
 use=["geneid","snpid","beta","t-stat","p-value","FDR","gene_chr","gene_start","gene_end"]
-first=True; total=written=unresolved=0; cache={}
-
+first=True; total=written=unresolved=strong_unresolved=0; cache={}
 for ch in pd.read_csv(fullf,sep="\t",usecols=use,dtype=str,chunksize=250000):
     total+=len(ch); ch=ch[ch.snpid.isin(available)].copy()
     if ch.empty: continue
-
     for r in ch[["geneid","gene_chr","gene_start","gene_end"]].drop_duplicates().itertuples(index=False):
         k=(str(r.geneid),str(r.gene_chr),str(r.gene_start),str(r.gene_end))
         if k not in cache: cache[k]=resolve(*k)
-
     ch["gene"]=[cache[(str(a),str(b),str(c),str(d))] for a,b,c,d in zip(ch.geneid,ch.gene_chr,ch.gene_start,ch.gene_end)]
-    unresolved+=int(ch.gene.isna().sum()); ch=ch[ch.gene.notna()].copy()
+    p=pd.to_numeric(ch["p-value"],errors="coerce"); bad=ch.gene.isna()
+    unresolved+=int(bad.sum()); strong_unresolved+=int((bad&(p<=peq_heidi)).sum()); ch=ch[~bad].copy()
     if ch.empty: continue
-
     for c in ["beta","t-stat","p-value","FDR"]: ch[c]=pd.to_numeric(ch[c],errors="coerce")
     ok=ch.beta.notna()&ch["t-stat"].notna()&(ch["t-stat"]!=0)&ch["p-value"].notna()&(ch["p-value"]>=0)&(ch["p-value"]<=1)&ch.FDR.notna()
-    ch=ch[ok]
+    ch=ch[ok]; out=ch[["snpid","gene","beta","t-stat","p-value","FDR"]].rename(columns={"snpid":"SNP"})
+    out.to_csv(outf,sep="\t",index=False,mode="w" if first else "a",header=first); first=False; written+=len(out)
 
-    out=ch[["snpid","gene","beta","t-stat","p-value","FDR"]].rename(columns={"snpid":"SNP"})
-    out.to_csv(outf,sep="\t",index=False,mode="w" if first else "a",header=first)
-    written+=len(out); first=False
-
-if unresolved: print(f"WARNING: {T}: {unresolved:,} genotype-backed rows lacked recoverable ENSG identity and were excluded.")
-print(f"{T}: source rows={total:,}; SMR MatrixEQTL rows={written:,}; eQTL/LD N={len(keep):,}")
+if strong_unresolved: raise RuntimeError(f"{T}: {strong_unresolved} unresolved rows have p<={peq_heidi}; refusing to silently remove HEIDI-relevant eQTLs")
+if unresolved: print(f"WARNING: {T}: {unresolved:,} genotype-backed rows lacked recoverable ENSG identity and were excluded")
+print(f"{T}: source={total:,}; BESD input={written:,}")
 PY
+    fi
 
-  # Build tissue frequency and BESD. MatrixEQTL format is natively supported by SMR.
-  plink --bfile "$BFILE" --keep "$KEEP" --freq --threads "${SLURM_CPUS_PER_TASK:-1}" --out "$FREQ" >/dev/null
-  N_EQTL=$(wc -l < "$KEEP")
-  "$SMR" --eqtl-summary "$MATEQTL" --matrix-eqtl-format --make-besd --add-n "$N_EQTL" --out "$BESD"
+    "$SMR" --eqtl-summary "$MATEQTL" --matrix-eqtl-format --make-besd --add-n "$N_EQTL" --out "$BESD"
+    [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]] || { echo "ERROR: BESD creation failed"; exit 1; }
+  fi
 
-  # Complete .esi/.epi metadata while preserving BESD ordering.
-  python3 <<'PY'
-import os, shutil, pandas as pd, numpy as np
-T=os.environ["TISSUE"]; besd=os.environ["BESD"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]; locf=os.environ["SNPLOC"]
-glf=os.environ["GENELOC"]; topf=os.environ["TOP"]; frqf=os.environ["FREQ"]+".frq"
+  # The cancelled old script created .esi.preupdate before its slow Python loop; restore that known-good original once.
+  if [[ ! -e "$ESI_OK" && -s "$BESD.esi.preupdate" ]]; then
+    echo "Restoring pre-timeout ESI backup before native SMR update"
+    cp -f "$BESD.esi.preupdate" "$BESD.esi"
+    rm -f "$BESD.esi.preupdate"
+  fi
 
+  # PLINK frequency is cheap and is reused on later submissions.
+  if [[ ! -s "$FREQ.frq" ]]; then
+    echo "Calculating tissue-specific allele frequencies"
+    plink --bfile "$BFILE" --keep "$KEEP" --freq --threads "${SLURM_CPUS_PER_TASK:-1}" --out "$FREQ" >/dev/null
+  fi
+
+  # Generate vectorized metadata pools once; no per-SNP Python lookup loop.
+  if [[ ! -e "$ESI_OK" || ! -e "$EPI_OK" || ! -e "$FREQ_OK" ]]; then
+    echo "Preparing native SMR metadata update files"
+    python3 <<'PY'
+import os,pandas as pd,numpy as np
+
+T=os.environ["TISSUE"]; besd=os.environ["BESD"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]
+locf=os.environ["SNPLOC"]; glf=os.environ["GENELOC"]; topf=os.environ["TOP"]; frqf=os.environ["FREQ"]+".frq"
+esiout=os.environ["ESI_POOL"]; epiout=os.environ["EPI_POOL"]; freqout=os.environ["FREQ_POOL"]
+
+# Only variants/probes actually present in this BESD.
+esi=pd.read_csv(besd+".esi",sep=r"\s+",header=None,dtype=str)
+epi=pd.read_csv(besd+".epi",sep=r"\s+",header=None,dtype=str)
+besd_snps=pd.DataFrame({"snpid":esi.iloc[:,1].astype(str).unique()})
+besd_probes=pd.DataFrame({"gene":epi.iloc[:,1].astype(str).unique()})
+
+# MatrixEQTL effect allele = suffix of the corresponding PLINK .raw column.
 with open(rawf) as fh: hdr=fh.readline().split()
 meta={"FID","IID","PAT","MAT","SEX","PHENOTYPE"}; rr=[]
 for c in hdr:
     if c in meta or "_" not in c: continue
     vid,a=c.rsplit("_",1); rr.append((vid,a.upper()))
-raw=pd.DataFrame(rr,columns=["rawid","effect"])
+raw=pd.DataFrame(rr,columns=["rawid","effect"]).drop_duplicates("rawid")
 
-bim=pd.read_csv(bimf,sep=r"\s+",header=None,names=["chr","rawid","cm","pos","a1","a2"],dtype=str)
+bim=pd.read_csv(bimf,sep=r"\s+",header=None,names=["chr_bim","rawid","cm","pos_bim","a1","a2"],dtype=str)
 bim["a1"]=bim.a1.str.upper(); bim["a2"]=bim.a2.str.upper()
-bim["key"]=bim.chr.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos
-x=raw.merge(bim,on="rawid",how="left"); x["other"]=np.where(x.effect==x.a1,x.a2,np.where(x.effect==x.a2,x.a1,None))
+bim["key"]=bim.chr_bim.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos_bim
+bim=bim.merge(raw,on="rawid",how="inner")
+bim["other"]=np.where(bim.effect==bim.a1,bim.a2,np.where(bim.effect==bim.a2,bim.a1,np.nan))
 
-loc=pd.read_csv(locf,sep="\t",dtype=str); loc["key"]=loc.chr.str.replace("^chr","",regex=True).str.upper()+":"+loc.pos
-m=loc[["snpid","chr","pos","key"]].drop_duplicates().merge(x[["rawid","key","effect","other"]],on="key",how="left")
+loc=pd.read_csv(locf,sep="\t",dtype=str)
+loc["chr_clean"]=loc.chr.str.replace("^chr","",regex=True)
+loc["key"]=loc.chr_clean.str.upper()+":"+loc.pos
+m=besd_snps.merge(loc[["snpid","chr_clean","pos","key"]].drop_duplicates("snpid"),on="snpid",how="left")
+m=m.merge(bim[["rawid","key","effect","other"]].drop_duplicates("key"),on="key",how="left")
 
+if m[["chr_clean","pos","rawid","effect","other"]].isna().any().any():
+    z=m[m[["chr_clean","pos","rawid","effect","other"]].isna().any(axis=1)]
+    raise RuntimeError(f"{T}: {len(z):,}/{len(m):,} BESD SNPs missing metadata")
+if m.snpid.duplicated().any(): raise RuntimeError(f"{T}: duplicate SNP IDs after metadata merge")
+
+# Standard ESI: Chr SNP GeneticDistance BP A1 A2.
+m[["chr_clean","snpid"]].assign(GD="0",BP=m["pos"],A1=m["effect"],A2=m["other"])[
+    ["chr_clean","snpid","GD","BP","A1","A2"]
+].to_csv(esiout,sep="\t",header=False,index=False)
+
+# Tissue-specific effect-allele frequency.
 frq=pd.read_csv(frqf,sep=r"\s+",dtype=str); frq["MAF"]=pd.to_numeric(frq.MAF,errors="coerce")
-fm=m.merge(frq[["SNP","A1","A2","MAF"]],left_on="rawid",right_on="SNP",how="left")
-fm["freq"]=np.where(fm.effect==fm.A1.str.upper(),fm.MAF,np.where(fm.effect==fm.A2.str.upper(),1-fm.MAF,np.nan))
-snpmap=fm.set_index("snpid")
+f=m[["snpid","rawid","effect","other"]].merge(frq[["SNP","A1","A2","MAF"]],left_on="rawid",right_on="SNP",how="left")
+f["A1"]=f.A1.str.upper(); f["A2"]=f.A2.str.upper()
+f["freq"]=np.where(f.effect==f.A1,f.MAF,np.where(f.effect==f.A2,1-f.MAF,np.nan))
+if f["freq"].isna().any(): raise RuntimeError(f"{T}: {f.freq.isna().sum():,} BESD SNPs lack usable allele frequency")
+f[["snpid","effect","other","freq"]].to_csv(freqout,sep="\t",header=False,index=False)
 
-esi=besd+".esi"; shutil.copy2(esi,esi+".preupdate")
-e=pd.read_csv(esi,sep=r"\s+",header=None,dtype=str); rows=[]; missing=[]
-for s in e.iloc[:,1].astype(str):
-    if s not in snpmap.index: missing.append(s); continue
-    r=snpmap.loc[s]; r=r.iloc[0] if isinstance(r,pd.DataFrame) else r
-    rows.append([str(r["chr"]).replace("chr",""),s,"0",str(r["pos"]),r["effect"],r["other"],r["freq"]])
-if missing: raise RuntimeError(f"{T}: {len(missing)} BESD SNPs missing genotype metadata")
-pd.DataFrame(rows).to_csv(esi,sep="\t",header=False,index=False,na_rep="NA")
-
+# Standard EPI: Chr ProbeID GeneticDistance BP Gene Strand.
 g=pd.read_csv(glf,sep="\t",header=None,names=["gene","chr","start","end"],dtype=str)
 if len(g) and str(g.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: g=g.iloc[1:]
-g["bp"]=((pd.to_numeric(g.start,errors="coerce")+pd.to_numeric(g.end,errors="coerce"))/2).round().astype("Int64")
+g=g.drop_duplicates("gene"); g["chr_clean"]=g.chr.str.replace("^chr","",regex=True)
+g["start"]=pd.to_numeric(g.start,errors="coerce"); g["end"]=pd.to_numeric(g.end,errors="coerce")
+g["bp"]=((g.start+g.end)/2).round().astype("Int64")
+
 top=pd.read_csv(topf,sep="\t",header=None,usecols=[0,1],names=["gene","symbol"],dtype=str).drop_duplicates()
-sym=top.groupby("gene").symbol.agg(lambda z:";".join(sorted(set(map(str,z))))).to_dict()
-gm=g.drop_duplicates("gene").set_index("gene")
+if len(top) and str(top.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: top=top.iloc[1:]
+sym=top.groupby("gene").symbol.agg(lambda x:";".join(sorted(set(map(str,x))))).reset_index()
 
-epi=besd+".epi"; shutil.copy2(epi,epi+".preupdate")
-ep=pd.read_csv(epi,sep=r"\s+",header=None,dtype=str); out=[]; missing=[]
-for p in ep.iloc[:,1].astype(str):
-    if p not in gm.index: missing.append(p); continue
-    r=gm.loc[p]; r=r.iloc[0] if isinstance(r,pd.DataFrame) else r
-    out.append([str(r["chr"]).replace("chr",""),p,"0",str(r["bp"]),sym.get(p,p),"NA"])
-if missing: raise RuntimeError(f"{T}: {len(missing)} BESD probes missing gene_location metadata")
-pd.DataFrame(out).to_csv(epi,sep="\t",header=False,index=False)
+p=besd_probes.merge(g[["gene","chr_clean","bp"]],on="gene",how="left").merge(sym,on="gene",how="left")
+p["symbol"]=p.symbol.fillna(p.gene); p["strand"]="NA"; p["GD"]="0"
+if p[["chr_clean","bp"]].isna().any().any():
+    z=p[p[["chr_clean","bp"]].isna().any(axis=1)]
+    raise RuntimeError(f"{T}: {len(z):,}/{len(p):,} BESD probes missing gene coordinates")
+if p.gene.duplicated().any(): raise RuntimeError(f"{T}: duplicate probes after metadata merge")
 
-print(f"{T}: BESD metadata updated: {len(rows):,} SNPs; {len(out):,} probes")
+p[["chr_clean","gene","GD","bp","symbol","strand"]].to_csv(epiout,sep="\t",header=False,index=False)
+print(f"{T}: update pools ready: {len(m):,} SNPs; {len(p):,} probes")
+PY
+  fi
+
+  # SMR natively updates MatrixEQTL-derived .esi/.epi and preserves BESD indexing.
+  if [[ ! -e "$ESI_OK" ]]; then
+    echo "Updating ESI with native SMR --update-esi"
+    "$SMR" --beqtl-summary "$BESD" --update-esi "$ESI_POOL"
+    touch "$ESI_OK"
+  else
+    echo "ESI already updated; skipping"
+  fi
+
+  if [[ ! -e "$EPI_OK" ]]; then
+    echo "Updating EPI with native SMR --update-epi"
+    "$SMR" --beqtl-summary "$BESD" --update-epi "$EPI_POOL"
+    touch "$EPI_OK"
+  else
+    echo "EPI already updated; skipping"
+  fi
+
+  if [[ ! -e "$FREQ_OK" ]]; then
+    echo "Updating effect-allele frequencies with native SMR --update-freq"
+    "$SMR" --beqtl-summary "$BESD" --update-freq "$FREQ_POOL"
+    touch "$FREQ_OK"
+  else
+    echo "Frequencies already updated; skipping"
+  fi
+
+  # Fast post-update integrity check.
+  python3 <<'PY'
+import os,pandas as pd
+T=os.environ["TISSUE"]; b=os.environ["BESD"]
+e=pd.read_csv(b+".esi",sep=r"\s+",header=None,dtype=str); p=pd.read_csv(b+".epi",sep=r"\s+",header=None,dtype=str)
+if e.shape[1]<6 or p.shape[1]<6: raise RuntimeError(f"{T}: malformed ESI/EPI after update")
+if e.iloc[:,1].duplicated().any() or p.iloc[:,1].duplicated().any(): raise RuntimeError(f"{T}: duplicate SNP/probe IDs after update")
+if (e.iloc[:,0].isin(["0","NA","nan"])).any() or (e.iloc[:,3].isin(["0","NA","nan"])).any(): raise RuntimeError(f"{T}: incomplete ESI coordinates")
+if (p.iloc[:,0].isin(["0","NA","nan"])).any() or (p.iloc[:,3].isin(["0","NA","nan"])).any(): raise RuntimeError(f"{T}: incomplete EPI coordinates")
+print(f"{T}: metadata integrity OK: {len(e):,} SNPs; {len(p):,} probes")
 PY
 
-  gzip -f "$MATEQTL"
+  # Input/update pools are no longer needed once metadata is complete.
+  rm -f "$ESI_POOL" "$EPI_POOL" "$FREQ_POOL"
+  [[ -s "$MATEQTL" ]] && gzip -f "$MATEQTL"
 
-  # Standard cis-SMR + HEIDI. HEIDI pass (P>=0.05) is applied downstream.
-  "$SMR" --bfile "$BFILE" --keep "$KEEP" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
-    --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
-    --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 --cis-wind "$CIS_WIND" \
-    --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
+  # Resume-safe SMR + HEIDI: do not rerun a completed result.
+  RESULT_VALID=0
+  if [[ -s "$SMROUT.smr" ]]; then
+    if head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then RESULT_VALID=1; fi
+  fi
 
-  [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no SMR output for $TISSUE"; exit 1; }
+  if [[ "$RESULT_VALID" -eq 1 ]]; then
+    echo "Reusing completed SMR + HEIDI result: $SMROUT.smr"
+  else
+    rm -f "$SMROUT.smr"
+    echo "Running SMR + HEIDI for $TISSUE"
+    "$SMR" --bfile "$BFILE" --keep "$KEEP" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
+      --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" \
+      --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
+      --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 \
+      --cis-wind "$CIS_WIND" --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
+    [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no SMR output for $TISSUE"; exit 1; }
+  fi
 done
 
-# ---------- BH-FDR + HEIDI interpretation ----------
+# ---------- Combine tissues, BH-FDR and apply HEIDI P >= 0.05 ----------
 python3 <<'PY'
-import os, numpy as np, pandas as pd
-BASE=os.environ["BASE"]; GLOBAL=os.environ["GLOBAL"]; T=os.environ["TISSUE_LIST"].split(); HEIDI=float(os.environ["HEIDI_PASS"])
+import os,numpy as np,pandas as pd
+BASE=os.environ["BASE"]; GLOBAL=os.environ["GLOBAL"]; tissues=os.environ["TISSUE_LIST"].split()
+HEIDI=float(os.environ["HEIDI_PASS"])
 
 def bh(p):
     p=pd.to_numeric(p,errors="coerce"); out=pd.Series(np.nan,index=p.index,dtype=float); ok=p.notna()
     if not ok.any(): return out
-    x=p[ok].clip(0,1); order=x.sort_values().index; v=x.loc[order].to_numpy(); m=len(v); a=np.empty(m); run=1.
-    for i in range(m-1,-1,-1): run=min(run,v[i]*m/(i+1)); a[i]=min(run,1.)
-    out.loc[order]=a; return out
+    x=p[ok].clip(0,1); idx=x.sort_values().index; v=x.loc[idx].to_numpy(); m=len(v); a=np.empty(m); run=1.
+    for i in range(m-1,-1,-1):
+        run=min(run,v[i]*m/(i+1)); a[i]=min(run,1.)
+    out.loc[idx]=a; return out
 
 allx=[]; summary=[]
-for t in T:
-    f=f"{BASE}/{t}/MR/SMR_HEIDI/results/{t}_SMR_HEIDI.smr"; d=pd.read_csv(f,sep=r"\s+",dtype=str)
+for t in tissues:
+    f=f"{BASE}/{t}/MR/SMR_HEIDI/results/{t}_SMR_HEIDI.smr"
+    if not os.path.exists(f): raise RuntimeError(f"Missing completed SMR result: {f}")
+    d=pd.read_csv(f,sep=r"\s+",dtype=str)
+    if "p_SMR" not in d or "p_HEIDI" not in d: raise RuntimeError(f"Malformed SMR result: {f}")
     for c in ["p_SMR","p_HEIDI","b_SMR","se_SMR","p_GWAS","p_eQTL"]:
         if c in d: d[c]=pd.to_numeric(d[c],errors="coerce")
-    d.insert(0,"tissue",t); d["FDR_SMR_tissue"]=bh(d["p_SMR"])
-    d["HEIDI_tested"]=d["p_HEIDI"].notna(); d["HEIDI_pass"]=d["HEIDI_tested"]&(d["p_HEIDI"]>=HEIDI)
-    d["SMR_tissue_FDR_pass"]=d["FDR_SMR_tissue"]<.05
-    allx.append(d); summary.append({"tissue":t,"SMR_tests":len(d),"SMR_nominal_P0.05":int((d.p_SMR<.05).sum()),
-      "SMR_tissue_FDR0.05":int((d.FDR_SMR_tissue<.05).sum()),"HEIDI_tested":int(d.HEIDI_tested.sum()),"HEIDI_P_ge_0.05":int(d.HEIDI_pass.sum())})
+    d.insert(0,"tissue",t); d["FDR_SMR_tissue"]=bh(d.p_SMR)
+    d["HEIDI_tested"]=d.p_HEIDI.notna(); d["HEIDI_pass"]=d.HEIDI_tested&(d.p_HEIDI>=HEIDI)
+    d["SMR_tissue_FDR_pass"]=d.FDR_SMR_tissue<0.05; allx.append(d)
+    summary.append({"tissue":t,"SMR_tests":len(d),"SMR_nominal_P0.05":int((d.p_SMR<.05).sum()),
+      "SMR_tissue_FDR0.05":int((d.FDR_SMR_tissue<.05).sum()),"HEIDI_tested":int(d.HEIDI_tested.sum()),
+      "HEIDI_P_ge_0.05":int(d.HEIDI_pass.sum())})
 
-x=pd.concat(allx,ignore_index=True); x["FDR_SMR_global"]=bh(x["p_SMR"]); x["SMR_global_FDR_pass"]=x["FDR_SMR_global"]<.05
-x["SMR_HEIDI_pass"]=x["SMR_global_FDR_pass"]&x["HEIDI_pass"]
+x=pd.concat(allx,ignore_index=True); x["FDR_SMR_global"]=bh(x.p_SMR)
+x["SMR_global_FDR_pass"]=x.FDR_SMR_global<0.05; x["SMR_HEIDI_pass"]=x.SMR_global_FDR_pass&x.HEIDI_pass
 
-for t in T:
+for t in tissues:
     out=f"{BASE}/{t}/MR/SMR_HEIDI"; d=x[x.tissue==t].sort_values(["FDR_SMR_global","p_SMR"])
     d.to_csv(f"{out}/{t}_SMR_HEIDI_all.tsv.gz",sep="\t",index=False,compression="gzip")
     d[d.SMR_HEIDI_pass].to_csv(f"{out}/{t}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
@@ -282,5 +392,7 @@ print(f"Global SMR FDR<0.05: {(x.FDR_SMR_global<.05).sum():,}")
 print(f"Global SMR FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_HEIDI_pass.sum():,}")
 PY
 
-echo; echo "SMR + HEIDI complete."; echo
+echo
+echo "SMR + HEIDI complete."
+echo
 column -t -s $'\t' "$GLOBAL/SMR_HEIDI_summary_all_tissues.tsv"
