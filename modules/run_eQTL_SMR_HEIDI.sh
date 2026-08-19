@@ -122,31 +122,50 @@ if len(top) and str(top.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}:
 symmap={str(s):set(z.ensembl_id.astype(str)) for s,z in top.groupby("symbol")}
 
 expr=pd.read_csv(exprf,sep="\t",usecols=[0],dtype=str); expr_ids=set(expr.iloc[:,0].dropna().astype(str)); expr_ids.discard("gene_id")
-
-gtf=pd.read_csv(gtff,sep="\t",comment="#",header=None,usecols=[2,8],names=["feature","attr"],dtype=str)
-gtf=gtf[gtf.feature=="gene"].copy()
+gtf=pd.read_csv(gtff,sep="\t",comment="#",header=None,usecols=[2,8],names=["feature","attr"],dtype=str); gtf=gtf[gtf.feature=="gene"].copy()
 gtf["ensembl_id"]=gtf.attr.str.extract(r'gene_id "([^"]+)"'); gtf["symbol"]=gtf.attr.str.extract(r'gene_name "([^"]+)"')
 gtf=gtf.dropna(subset=["ensembl_id","symbol"]).drop_duplicates(["symbol","ensembl_id"])
 gencode_map={str(s):set(z.ensembl_id.astype(str)) for s,z in gtf.groupby("symbol")}
 print(f"{T}: expression IDs={len(expr_ids):,}; GENCODE v49 symbols={len(gencode_map):,}")
 
-def resolve(symbol,chrom,start,end):
-    try: key=(str(chrom).replace("chr","").upper(),int(start),int(end))
-    except: return None
-    symbol=str(symbol); ids=coord.get(key,[])
-    if symbol in ids: return symbol
-    sids=[x for x in ids if x in symmap.get(symbol,set())]
-    if len(sids)==1: return sids[0]
-    gids=[x for x in ids if x in gencode_map.get(symbol,set())]
-    if len(gids)==1: return gids[0]
-    eids=[x for x in ids if x in expr_ids]
-    if len(eids)==1: return eids[0]
-    if len(ids)==1: return ids[0]
-    if len(ids)>1:
-        chosen=sorted(ids)[0]
-        print(f"WARNING: ambiguous gene {symbol} at {key}; candidates={';'.join(sorted(ids))}; using {chosen}")
-        return chosen
-    return None
+# Resolve each unique expression-trait label first, then use already-claimed ENSGs to resolve coordinate collisions.
+traits=pd.read_csv(fullf,sep="\t",usecols=["geneid","gene_chr","gene_start","gene_end"],dtype=str).drop_duplicates()
+trait_map={}; claimed={}
+
+for r in traits.itertuples(index=False):
+    symbol=str(r.geneid)
+    try: key=(str(r.gene_chr).replace("chr","").upper(),int(r.gene_start),int(r.gene_end))
+    except: continue
+    ids=coord.get(key,[]); chosen=None
+
+    if symbol in ids: chosen=symbol
+    if chosen is None:
+        sids=[x for x in ids if x in symmap.get(symbol,set())]
+        if len(sids)==1: chosen=sids[0]
+    if chosen is None:
+        gids=[x for x in ids if x in gencode_map.get(symbol,set())]
+        if len(gids)==1: chosen=gids[0]
+    if chosen is None:
+        eids=[x for x in ids if x in expr_ids]
+        if len(eids)==1: chosen=eids[0]
+    if chosen is None and len(ids)==1: chosen=ids[0]
+
+    k=(symbol,str(r.gene_chr),str(r.gene_start),str(r.gene_end))
+    if chosen is not None:
+        trait_map[k]=chosen
+        claimed.setdefault(key,set()).add(chosen)
+
+for r in traits.itertuples(index=False):
+    k=(str(r.geneid),str(r.gene_chr),str(r.gene_start),str(r.gene_end))
+    if k in trait_map: continue
+    try: key=(str(r.gene_chr).replace("chr","").upper(),int(r.gene_start),int(r.gene_end))
+    except: continue
+    ids=coord.get(key,[]); remaining=[x for x in ids if x not in claimed.get(key,set())]
+    if len(remaining)==1:
+        trait_map[k]=remaining[0]; claimed.setdefault(key,set()).add(remaining[0])
+        print(f"Resolved coordinate collision: {r.geneid} -> {remaining[0]} from candidates={';'.join(ids)}")
+    elif len(ids)>1:
+        print(f"WARNING: unresolved coordinate collision: {r.geneid}; candidates={';'.join(ids)}; already_claimed={';'.join(sorted(claimed.get(key,set())))}")
 
 with open(rawf) as fh: hdr=fh.readline().split()
 meta={"FID","IID","PAT","MAT","SEX","PHENOTYPE"}; rawids=set(c.rsplit("_",1)[0] for c in hdr if c not in meta and "_" in c)
@@ -156,23 +175,32 @@ bim["key"]=bim.chr.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos
 loc=pd.read_csv(locf,sep="\t",dtype=str); loc["key"]=loc.chr.str.replace("^chr","",regex=True).str.upper()+":"+loc.pos
 available=set(loc[["snpid","key"]].drop_duplicates().merge(bim[["key"]].drop_duplicates(),on="key").snpid.astype(str))
 
-use=["geneid","snpid","beta","t-stat","p-value","FDR","gene_chr","gene_start","gene_end"]; first=True; total=written=unresolved=strong_unresolved=0; cache={}
+use=["geneid","snpid","beta","t-stat","p-value","FDR","gene_chr","gene_start","gene_end"]; first=True; total=written=unresolved=strong_unresolved=duplicates=0
 for ch in pd.read_csv(fullf,sep="\t",usecols=use,dtype=str,chunksize=250000):
     total+=len(ch); ch=ch[ch.snpid.isin(available)].copy()
     if ch.empty: continue
-    for r in ch[["geneid","gene_chr","gene_start","gene_end"]].drop_duplicates().itertuples(index=False):
-        k=(str(r.geneid),str(r.gene_chr),str(r.gene_start),str(r.gene_end))
-        if k not in cache: cache[k]=resolve(*k)
-    ch["gene"]=[cache[(str(a),str(b),str(c),str(d))] for a,b,c,d in zip(ch.geneid,ch.gene_chr,ch.gene_start,ch.gene_end)]
+
+    keys=[(str(a),str(b),str(c),str(d)) for a,b,c,d in zip(ch.geneid,ch.gene_chr,ch.gene_start,ch.gene_end)]
+    ch["gene"]=[trait_map.get(k) for k in keys]
     p=pd.to_numeric(ch["p-value"],errors="coerce"); bad=ch.gene.isna()
     unresolved+=int(bad.sum()); strong_unresolved+=int((bad&(p<=peq_heidi)).sum()); ch=ch[~bad].copy()
     if ch.empty: continue
+
     for c in ["beta","t-stat","p-value","FDR"]: ch[c]=pd.to_numeric(ch[c],errors="coerce")
     ok=ch.beta.notna()&ch["t-stat"].notna()&(ch["t-stat"]!=0)&ch["p-value"].notna()&(ch["p-value"]>=0)&(ch["p-value"]<=1)&ch.FDR.notna()
     ch=ch[ok]; out=ch[["snpid","gene","beta","t-stat","p-value","FDR"]].rename(columns={"snpid":"SNP"})
+
+    dup=out.duplicated(["SNP","gene"],keep=False)
+    if dup.any():
+        z=out.loc[dup,["SNP","gene"]].drop_duplicates()
+        print(f"ERROR: {T}: duplicate SNP×probe mappings detected after ENSG recovery:")
+        print(z.head(20).to_string(index=False))
+        duplicates+=len(z)
+
     out.to_csv(outf,sep="\t",index=False,mode="w" if first else "a",header=first); first=False; written+=len(out)
 
 if strong_unresolved: raise RuntimeError(f"{T}: {strong_unresolved} unresolved rows have p<={peq_heidi}; refusing to silently remove HEIDI-relevant eQTLs")
+if duplicates: raise RuntimeError(f"{T}: {duplicates} duplicate SNP×probe mappings remain after ENSG recovery")
 if unresolved: print(f"WARNING: {T}: {unresolved:,} genotype-backed rows lacked recoverable ENSG identity and were excluded")
 print(f"{T}: source={total:,}; BESD input={written:,}")
 PY
