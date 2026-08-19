@@ -12,7 +12,7 @@ module load PLINK/1.9b_7.11-x86_64
 
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/SMR_HEIDI"
-BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"
+BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"; EXPR="$BASE/QTL/expression_matrix.txt"
 GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 GWAS_ORIG="$GWAS_DIR/GCST90027163_buildGRCh37.tsv.gz"; GWAS_MA="$GWAS_DIR/ALS_GRCh38_SMR.ma"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
@@ -21,11 +21,11 @@ PEQTL_SMR=5e-8; PEQTL_HEIDI=1.57e-3; HEIDI_PASS=0.05
 LD_UPPER=0.90; LD_LOWER=0.05; HEIDI_MIN=3; HEIDI_MAX=20; CIS_WIND=2000
 
 mkdir -p "$GLOBAL"
-for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$GWAS"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
+for f in "$SMR" "$BFILE.bed" "$BFILE.bim" "$BFILE.fam" "$RAW" "$EXPR" "$GWAS"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
 command -v python3 >/dev/null || { echo "ERROR: python3 unavailable"; exit 1; }
 python3 -c 'import pandas,numpy' >/dev/null 2>&1 || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
 
-export SMR BASE GLOBAL BFILE RAW BIM GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
+export SMR BASE GLOBAL BFILE RAW BIM EXPR GWAS GWAS_ORIG GWAS_MA PEQTL_SMR PEQTL_HEIDI HEIDI_PASS
 export LD_UPPER LD_LOWER HEIDI_MIN HEIDI_MAX CIS_WIND TISSUE_LIST="${TISSUES[*]}"
 
 # ---------- Persistent GRCh38 GWAS .ma ----------
@@ -104,13 +104,11 @@ PY
   if [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]]; then
     echo "Reusing existing BESD: $BESD"
   else
-    echo "Building BESD for $TISSUE"; rm -f "$BESD.besd" "$BESD.esi" "$BESD.epi" "$ESI_OK" "$EPI_OK" "$FREQ_OK"
+    echo "Building BESD for $TISSUE"; rm -f "$BESD.besd" "$BESD.esi" "$BESD.epi" "$ESI_OK" "$EPI_OK" "$FREQ_OK" "$MATEQTL" "$MATEQTL.gz"
 
-    if [[ ! -s "$MATEQTL" ]]; then
-      rm -f "$MATEQTL.gz"
-      python3 <<'PY'
+    python3 <<'PY'
 import os,pandas as pd
-T=os.environ["TISSUE"]; fullf=os.environ["FULL"]; topf=os.environ["TOP"]; glf=os.environ["GENELOC"]
+T=os.environ["TISSUE"]; fullf=os.environ["FULL"]; topf=os.environ["TOP"]; glf=os.environ["GENELOC"]; exprf=os.environ["EXPR"]
 locf=os.environ["SNPLOC"]; rawf=os.environ["RAW"]; bimf=os.environ["BIM"]; outf=os.environ["MATEQTL"]; peq_heidi=float(os.environ["PEQTL_HEIDI"])
 
 g=pd.read_csv(glf,sep="\t",header=None,names=["ensembl_id","chr","start","end"],dtype=str)
@@ -122,13 +120,19 @@ top=pd.read_csv(topf,sep="\t",header=None,usecols=[0,1],names=["ensembl_id","sym
 if len(top) and str(top.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: top=top.iloc[1:]
 symmap={str(s):set(z.ensembl_id.astype(str)) for s,z in top.groupby("symbol")}
 
+expr=pd.read_csv(exprf,sep="\t",usecols=[0],dtype=str)
+expr_ids=set(expr.iloc[:,0].dropna().astype(str)); expr_ids.discard("gene_id")
+print(f"{T}: original expression matrix contains {len(expr_ids):,} gene IDs")
+
 def resolve(symbol,chrom,start,end):
     try: key=(str(chrom).replace("chr","").upper(),int(start),int(end))
     except: return None
-    ids=coord.get(key,[])
-    if str(symbol) in ids: return str(symbol)
-    sids=[x for x in ids if x in symmap.get(str(symbol),set())]
+    symbol=str(symbol); ids=coord.get(key,[])
+    if symbol in ids: return symbol
+    sids=[x for x in ids if x in symmap.get(symbol,set())]
     if len(sids)==1: return sids[0]
+    eids=[x for x in ids if x in expr_ids]
+    if len(eids)==1: return eids[0]
     if len(ids)==1: return ids[0]
     return None
 
@@ -160,7 +164,6 @@ if strong_unresolved: raise RuntimeError(f"{T}: {strong_unresolved} unresolved r
 if unresolved: print(f"WARNING: {T}: {unresolved:,} genotype-backed rows lacked recoverable ENSG identity and were excluded")
 print(f"{T}: source={total:,}; BESD input={written:,}")
 PY
-    fi
 
     "$SMR" --eqtl-summary "$MATEQTL" --matrix-eqtl-format --make-besd --add-n "$N_EQTL" --out "$BESD"
     [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]] || { echo "ERROR: BESD creation failed"; exit 1; }
@@ -217,9 +220,11 @@ g=pd.read_csv(glf,sep="\t",header=None,names=["gene","chr","start","end"],dtype=
 if len(g) and str(g.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: g=g.iloc[1:]
 g=g.drop_duplicates("gene"); g["chr_clean"]=g.chr.str.replace("^chr","",regex=True)
 g["start"]=pd.to_numeric(g.start,errors="coerce"); g["end"]=pd.to_numeric(g.end,errors="coerce"); g["bp"]=((g.start+g.end)/2).round().astype("Int64")
+
 top=pd.read_csv(topf,sep="\t",header=None,usecols=[0,1],names=["gene","symbol"],dtype=str).drop_duplicates()
 if len(top) and str(top.iloc[0,0]).lower() in {"geneid","gene_id","ensembl_id"}: top=top.iloc[1:]
 sym=top.groupby("gene").symbol.agg(lambda x:";".join(sorted(set(map(str,x))))).reset_index()
+
 p=besd_probes.merge(g[["gene","chr_clean","bp"]],on="gene",how="left").merge(sym,on="gene",how="left")
 p["symbol"]=p.symbol.fillna(p.gene); p["strand"]="NA"; p["GD"]="0"
 if p[["chr_clean","bp"]].isna().any().any():
@@ -248,7 +253,7 @@ PY
   rm -f "$ESI_POOL" "$EPI_POOL" "$FREQ_POOL"
   [[ -s "$MATEQTL" ]] && gzip -f "$MATEQTL"
 
-  # ---------- Build/reuse tissue-specific rsID PLINK LD reference ----------
+  # ---------- rsID-matched tissue LD reference ----------
   if [[ -e "$LD_OK" && -s "$LD_BFILE.bed" && -s "$LD_BFILE.bim" && -s "$LD_BFILE.fam" ]]; then
     echo "Reusing rsID-matched SMR LD reference: $LD_BFILE"
   else
@@ -260,12 +265,10 @@ import os,pandas as pd
 T=os.environ["TISSUE"]; bimf=os.environ["BIM"]; locf=os.environ["SNPLOC"]; besd=os.environ["BESD"]
 mapout=os.environ["LD_MAP"]; extractout=os.environ["LD_EXTRACT"]
 
-bim=pd.read_csv(bimf,sep=r"\s+",header=None,names=["chr","old_id","cm","pos","a1","a2"],dtype=str)
-bim["key"]=bim.chr.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos
+bim=pd.read_csv(bimf,sep=r"\s+",header=None,names=["chr","old_id","cm","pos","a1","a2"],dtype=str); bim["key"]=bim.chr.str.replace("^chr","",regex=True).str.upper()+":"+bim.pos
 loc=pd.read_csv(locf,sep="\t",dtype=str); loc["key"]=loc.chr.str.replace("^chr","",regex=True).str.upper()+":"+loc.pos
 esi=pd.read_csv(besd+".esi",sep=r"\s+",header=None,dtype=str); besd_rs=set(esi.iloc[:,1].astype(str))
 
-# A duplicated old PLINK ID cannot be safely renamed with --update-name; use only one-to-one old ID <-> rsID mappings.
 unique_old=set(bim.loc[~bim.old_id.duplicated(keep=False),"old_id"])
 x=bim[bim.old_id.isin(unique_old)][["old_id","key"]].merge(loc[["snpid","key"]].drop_duplicates(),on="key",how="inner")
 x=x[x.snpid.astype(str).isin(besd_rs)].drop_duplicates(["old_id","snpid"])
@@ -274,8 +277,7 @@ x=x[x.old_id.isin(old_n[old_n==1].index)&x.snpid.isin(rs_n[rs_n==1].index)].drop
 
 if x.empty: raise RuntimeError(f"{T}: no unambiguous PLINK ID -> rsID mappings")
 if x.old_id.duplicated().any() or x.snpid.duplicated().any(): raise RuntimeError(f"{T}: non-unique LD rename map remained")
-x[["old_id","snpid"]].to_csv(mapout,sep="\t",header=False,index=False)
-x[["old_id"]].to_csv(extractout,sep="\t",header=False,index=False)
+x[["old_id","snpid"]].to_csv(mapout,sep="\t",header=False,index=False); x[["old_id"]].to_csv(extractout,sep="\t",header=False,index=False)
 print(f"{T}: unambiguous PLINK -> rsID mappings: {len(x):,}")
 PY
 
@@ -287,10 +289,9 @@ PY
     python3 <<'PY'
 import os,pandas as pd
 T=os.environ["TISSUE"]; b=os.environ["LD_BFILE"]
-d=pd.read_csv(b+".bim",sep=r"\s+",header=None,dtype=str)
+d=pd.read_csv(b+".bim",sep=r"\s+",header=None,dtype=str); fam=pd.read_csv(b+".fam",sep=r"\s+",header=None,dtype=str)
 if d.empty: raise RuntimeError(f"{T}: empty SMR LD reference")
 if d.iloc[:,1].duplicated().any(): raise RuntimeError(f"{T}: duplicate rsIDs remain in SMR LD reference")
-fam=pd.read_csv(b+".fam",sep=r"\s+",header=None,dtype=str)
 print(f"{T}: SMR LD reference ready: {len(d):,} unique rsID SNPs; N={len(fam):,}")
 PY
     touch "$LD_OK"
@@ -298,9 +299,7 @@ PY
 
   # ---------- SMR + HEIDI ----------
   RESULT_VALID=0
-  if [[ -s "$SMROUT.smr" ]]; then
-    if head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then RESULT_VALID=1; fi
-  fi
+  if [[ -s "$SMROUT.smr" ]] && head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then RESULT_VALID=1; fi
 
   if [[ "$RESULT_VALID" -eq 1 ]]; then
     echo "Reusing completed SMR + HEIDI result: $SMROUT.smr"
