@@ -65,14 +65,10 @@ for tissue in TISSUES:
     d["tissue"]=tissue
     d["F_statistic"]=(d["beta_eqtl"]/d["se_qtl"])**2
 
-    # Input should already be harmonized + F>=10, but enforce it again.
     good=(d["F_statistic"]>=MIN_F)&d["beta_eqtl"].notna()&(d["beta_eqtl"]!=0)&(d["se_qtl"]>0)&d["gwas_beta_harmonized"].notna()&(d["gwas_se"]>0)&d["gwas_p"].notna()
     d=d[good].copy().drop_duplicates(["snpid","geneid"])
 
-    # ----------------------------------------------------------
-    # Wald ratio is EFFECT-SIZE ANNOTATION ONLY.
-    # No SNP×gene MR P-value is calculated.
-    # ----------------------------------------------------------
+    # Wald ratio = effect-size annotation only
     d["beta_Wald_ratio"]=d["gwas_beta_harmonized"]/d["beta_eqtl"]
     d["se_Wald_first_order"]=d["gwas_se"]/d["beta_eqtl"].abs()
     d["se_Wald_delta"]=np.sqrt(
@@ -85,10 +81,7 @@ for tissue in TISSUES:
     d["OR_CI95_lower"]=d["CI95_lower_beta"].apply(exp_safe)
     d["OR_CI95_upper"]=d["CI95_upper_beta"].apply(exp_safe)
 
-    # ----------------------------------------------------------
-    # UNIQUE SNP = statistical unit.
-    # Check ALS statistics are identical across all gene rows.
-    # ----------------------------------------------------------
+    # UNIQUE SNP = statistical unit
     check=d.groupby("snpid").agg(
         n_beta=("gwas_beta_harmonized","nunique"),
         n_se=("gwas_se","nunique"),
@@ -109,7 +102,6 @@ for tissue in TISSUES:
     ).reset_index()
     snp=snp.merge(annot,on="snpid",how="left",validate="one_to_one")
 
-    # Published ALS GWAS P value = significance test.
     snp["FDR_ALS_tissue"]=bh(snp["gwas_p"])
     snp=snp.sort_values(["FDR_ALS_tissue","gwas_p","snpid"])
 
@@ -161,11 +153,10 @@ gg=all_rel.groupby("snpid").agg(
 global_snp=global_snp.merge(ga,on="snpid",how="left").merge(gg,on="snpid",how="left")
 global_snp["FDR_ALS_global"]=bh(global_snp["gwas_p"])
 global_snp=global_snp.sort_values(["FDR_ALS_global","gwas_p","snpid"])
-
 global_fdr=global_snp.set_index("snpid")["FDR_ALS_global"]
 
 # ==============================================================
-# 3. WRITE ONLY CONSOLIDATED ACTIVE OUTPUTS
+# 3. WRITE CONSOLIDATED eQTL OUTPUTS
 # ==============================================================
 for tissue in TISSUES:
     out=f"{BASE}/{tissue}/MR"
@@ -175,23 +166,24 @@ for tissue in TISSUES:
     snp=snp.sort_values(["FDR_ALS_global","FDR_ALS_tissue","gwas_p","snpid"])
 
     rel=relationship_by_tissue[tissue].copy()
-    rel=rel.merge(snp[["snpid","n_regulatory_targets","FDR_ALS_tissue","FDR_ALS_global"]],
-                  on="snpid",how="left",validate="many_to_one")
+    rel=rel.merge(
+        snp[["snpid","n_regulatory_targets","FDR_ALS_tissue","FDR_ALS_global"]],
+        on="snpid",how="left",validate="many_to_one"
+    )
     rel=rel.sort_values(["FDR_ALS_global","gwas_p","snpid","geneid"])
 
-    # 1 row per SNP: primary statistical results
-    snp.to_csv(f"{out}/{tissue}_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
+    # 1 row per SNP
+    snp.to_csv(f"{out}/{tissue}_eQTL_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
 
-    # 1 row per SNP×gene: regulatory + Wald effect-size annotations
-    rel.to_csv(f"{out}/{tissue}_SNP_gene_effects.tsv.gz",sep="\t",index=False,compression="gzip")
+    # 1 row per SNP×gene
+    rel.to_csv(f"{out}/{tissue}_eQTL_SNP_gene_effects.tsv.gz",sep="\t",index=False,compression="gzip")
 
-# Global unique-SNP result table
-global_snp.to_csv(f"{GLOBAL}/all_tissues_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
+global_snp.to_csv(f"{GLOBAL}/all_tissues_eQTL_SNP_results.tsv.gz",sep="\t",index=False,compression="gzip")
 
 summary=pd.DataFrame(summaries)
-summary.to_csv(f"{GLOBAL}/MR_summary_all_tissues.tsv",sep="\t",index=False)
+summary.to_csv(f"{GLOBAL}/eQTL_MR_summary_all_tissues.tsv",sep="\t",index=False)
 
-print(f"\n{'='*70}\nALL-TISSUE SNP-FIRST SUMMARY\n{'='*70}")
+print(f"\n{'='*70}\nALL-TISSUE eQTL SNP-FIRST SUMMARY\n{'='*70}")
 print(summary.to_string(index=False))
 print(f"\nUnique SNPs globally          : {len(global_snp):,}")
 print(f"ALS P<0.05 globally           : {(global_snp['gwas_p']<.05).sum():,}")
@@ -199,5 +191,5 @@ print(f"Global SNP-level FDR<0.05     : {(global_snp['FDR_ALS_global']<.05).sum(
 PY
 
 echo
-echo "SNP-first analysis complete."
-column -t -s $'\t' "$GLOBAL/MR_summary_all_tissues.tsv"
+echo "eQTL SNP-first analysis complete."
+column -t -s $'\t' "$GLOBAL/eQTL_MR_summary_all_tissues.tsv"
