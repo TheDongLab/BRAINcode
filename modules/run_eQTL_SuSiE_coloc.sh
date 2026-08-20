@@ -66,7 +66,10 @@ fam<-fread(paste0(BFILE,".fam"),header=FALSE,select=1:2,col.names=c("FID","IID")
 master<-list()
 
 for(tissue in TISSUES){
-  mrdir<-file.path(BASE,tissue,"MR"); snpfile<-file.path(mrdir,paste0(tissue,"_SNP_results.tsv.gz")); outroot<-file.path(mrdir,"SuSiE_coloc")
+  mrdir<-file.path(BASE,tissue,"MR")
+  snpfile<-file.path(mrdir,paste0(tissue,"_eQTL_SNP_results.tsv.gz"))
+  outroot<-file.path(mrdir,"eQTL_SuSiE_coloc")
+
   eqtldir<-file.path(BASE,tissue,"eQTL"); resultdir<-file.path(eqtldir,"results")
   fullfile<-file.path(resultdir,paste0(tissue,"_eQTL.full_annotated.txt")); topfile<-file.path(resultdir,paste0(tissue,"_eQTL.top_for_boxplot.txt"))
   genefile<-file.path(eqtldir,"gene_location.txt"); locfile<-file.path(eqtldir,"snp_location.txt"); covfile<-file.path(eqtldir,paste0("covariates_",tissue,"_encoded.txt"))
@@ -110,7 +113,6 @@ for(tissue in TISSUES){
   if(ncol(gloc)<4) stop(tissue,": gene_location.txt has fewer than four columns")
   gloc<-gloc[,1:4]; setnames(gloc,c("ensembl_id","gene_chr","gene_start","gene_end"))
 
-  # Remove a possible header if present.
   if(nrow(gloc)&&tolower(as.character(gloc$ensembl_id[1]))%in%c("geneid","gene_id","ensembl_id")) gloc<-gloc[-1]
 
   gloc[,`:=`(
@@ -120,10 +122,7 @@ for(tissue in TISSUES){
   gloc<-unique(gloc[,.(ensembl_id,gene_chr_key,gene_start_key,gene_end_key)])
 
   # ============================================================
-  # EXPLICIT ENSG <-> COMMON SYMBOL MAP
-  #
-  # top_for_boxplot is only used for gene identity/disambiguation.
-  # It is NOT used as the dense SuSiE association dataset.
+  # ENSG <-> COMMON SYMBOL MAP
   # ============================================================
   top<-fread(topfile,header=FALSE,select=1:2,fill=TRUE)
   setnames(top,c("ensembl_id","gene_symbol"))
@@ -135,7 +134,6 @@ for(tissue in TISSUES){
 
   # ============================================================
   # CANDIDATE eQTL ASSOCIATIONS
-  # Same FDR/F requirements as upstream analysis.
   # ============================================================
   cand0<-full[
     snpid%in%cand_snps$snpid &
@@ -147,13 +145,6 @@ for(tissue in TISSUES){
 
   # ============================================================
   # RECOVER ORIGINAL ENSG
-  #
-  # Rule tested across ALL 5 tissues:
-  #
-  # 1. If current label itself is one of the coordinate ENSGs, use that exact ENSG.
-  # 2. Otherwise, if symbol + coordinate supports exactly one ENSG via top_for_boxplot, use that ENSG.
-  # 3. Otherwise, if the coordinate maps to exactly one ENSG, use that ENSG.
-  # 4. Anything remaining unresolved = hard stop.
   # ============================================================
   cmap<-merge(
     cand0,
@@ -188,7 +179,6 @@ for(tissue in TISSUES){
     stop(tissue,": ",nrow(unresolved)," candidate associations unresolved after coordinate + symbol mapping; see ",badfile)
   }
 
-  # Save mapping diagnostics for reproducibility.
   fwrite(cand[,.(gene_symbol,ensembl_id,snpid,n_coord_ENSG,n_symbol_ENSG,n_direct_ENSG)],
          file.path(outroot,"candidate_gene_mapping.tsv"),sep="\t")
 
@@ -198,7 +188,6 @@ for(tissue in TISSUES){
   cat("unresolved: ",sum(is.na(cand$ensembl_id)),"\n",sep="")
   cat("mapping coverage: ",round(mean(!is.na(cand$ensembl_id)),6),"\n",sep="")
 
-  # Candidate relationship table is now ENSG-safe.
   cand<-unique(cand,by=c("ensembl_id","snpid"))
   cand<-merge(cand,cand_snps[,.(snpid,gwas_p,FDR_ALS_tissue,FDR_ALS_global)],by="snpid",all.x=TRUE)
 
@@ -227,7 +216,6 @@ for(tissue in TISSUES){
       length(genes)," candidate expression traits\n",
       strrep("=",70),"\n",sep="")
 
-  # Same symbol mapping to several original ENSGs is reported, not collapsed.
   collisions<-gene_meta[,.(n_ensembl=uniqueN(ensembl_id),ensembl_ids=paste(sort(unique(ensembl_id)),collapse=";")),by=gene_symbol][n_ensembl>1]
   if(nrow(collisions)){
     fwrite(collisions,file.path(outroot,"gene_symbol_collisions.tsv"),sep="\t")
@@ -255,9 +243,6 @@ for(tissue in TISSUES){
     label<-paste0(symbol," [",gene,"]"); safe<-gsub("[^A-Za-z0-9_.-]","_",paste0(symbol,"__",gene))
     cat("  ",label," ... ",sep=""); gout<-file.path(outroot,safe); dir.create(gout,showWarnings=FALSE)
 
-    # ----------------------------------------------------------
-    # Recover the full dense locus belonging to THIS original ENSG.
-    # ----------------------------------------------------------
     gi<-unique(gloc[ensembl_id==gene,.(gene_chr_key,gene_start_key,gene_end_key)])
     if(!nrow(gi)) stop(label,": original ENSG absent from gene_location.txt")
     if(nrow(gi)>1) stop(label,": original ENSG has >1 distinct coordinate interval")
@@ -267,8 +252,6 @@ for(tissue in TISSUES){
 
     q<-copy(full[gene_chr_key==gc_chr&gene_start_key==gc_start&gene_end_key==gc_end])
 
-    # If several ENSGs share this exact interval, use the explicit
-    # top_for_boxplot symbol mapping to keep only this expression trait.
     if(length(coord_ensgs)>1){
       allowed_symbols<-unique(top[ensembl_id==gene,gene_symbol])
       allowed_symbols<-unique(c(allowed_symbols,gene))
@@ -283,7 +266,6 @@ for(tissue in TISSUES){
     q[,se_qtl:=abs(beta_qtl/t_qtl)]
     q<-q[!is.na(snpid)&is.finite(beta_qtl)&is.finite(se_qtl)&se_qtl>0]
 
-    # After identity has been resolved by ENSG, duplicate SNP removal is safe.
     q<-unique(q[,.(snpid,beta_qtl,se_qtl,p_qtl)],by="snpid")
     q<-merge(q,loc[,.(snpid,qtl_chr,qtl_pos,key)],by="snpid",all.x=TRUE)
     q<-merge(q,amap,by="key",all.x=TRUE)
@@ -308,7 +290,7 @@ for(tissue in TISSUES){
     }
 
     # ==========================================================
-    # eQTL ↔ GRCh38 GWAS HARMONIZATION
+    # eQTL ↔ GWAS HARMONIZATION
     # ==========================================================
     x<-merge(q,gwas,by="snpid",all=FALSE)
     x<-x[qtl_chr==gwas_chr&qtl_pos==gwas_pos&!is.na(effect_allele)&!is.na(other_allele)]
@@ -338,7 +320,7 @@ for(tissue in TISSUES){
     }
 
     # ==========================================================
-    # TISSUE-SPECIFIC TARGET ALS LD
+    # TISSUE-SPECIFIC LD
     # ==========================================================
     idsfile<-file.path(gout,"raw_ids.txt"); fwrite(x[,.(rawid)],idsfile,col.names=FALSE)
     pref<-file.path(gout,"ldgeno")
@@ -391,7 +373,6 @@ for(tissue in TISSUES){
 
     R<-cor(t(G))
     if(!is.matrix(R)||nrow(R)!=nrow(x)) stop(label,": malformed LD matrix")
-
     R[R>1]<-1; R[R< -1]<- -1; diag(R)<-1
     colnames(R)<-rownames(R)<-x$snpid
 
@@ -499,7 +480,7 @@ for(tissue in TISSUES){
 res<-if(length(master)) rbindlist(master,fill=TRUE) else data.table()
 if(!"max_PP_H4"%in%names(res)) res[,max_PP_H4:=NA_real_]
 
-outfile<-file.path(BASE,"MR","SuSiE_coloc_summary.tsv")
+outfile<-file.path(BASE,"MR","eQTL_SuSiE_coloc_summary.tsv")
 fwrite(res,outfile,sep="\t")
 
 # ==============================================================
@@ -513,7 +494,7 @@ status_counts<-if(nrow(res)){
 
 if(nrow(status_counts)) status_counts[,percent:=round(100*n_loci/sum(n_loci),2)] else status_counts[,percent:=numeric()]
 
-statusfile<-file.path(BASE,"MR","SuSiE_coloc_status_counts.tsv")
+statusfile<-file.path(BASE,"MR","eQTL_SuSiE_coloc_status_counts.tsv")
 fwrite(status_counts,statusfile,sep="\t")
 
 # ==============================================================
@@ -523,8 +504,8 @@ h4<-if(nrow(res)){
   res[is.finite(max_PP_H4),.(tissue,geneid,gene_symbol,max_PP_H4,n_candidate_SNPs,best_candidate_SNP,best_ALS_p,best_ALS_global_FDR)]
 } else data.table()
 
-h4file<-file.path(BASE,"MR","PPH4_values.tsv")
-plotfile<-file.path(BASE,"MR","PPH4_histogram.png")
+h4file<-file.path(BASE,"MR","eQTL_PPH4_values.tsv")
+plotfile<-file.path(BASE,"MR","eQTL_PPH4_histogram.png")
 fwrite(h4,h4file,sep="\t")
 
 if(nrow(h4)){
@@ -533,9 +514,9 @@ if(nrow(h4)){
     geom_vline(xintercept=H4REF,linetype="dashed",linewidth=.8)+
     scale_x_continuous(limits=c(0,1),breaks=seq(0,1,.1))+
     labs(
-      title=paste0("SuSiE colocalization PP.H4 distribution (n=",nrow(h4),")"),
+      title=paste0("eQTL SuSiE colocalization PP.H4 distribution (n=",nrow(h4),")"),
       subtitle=paste0("Dashed line = ",H4REF," reference threshold"),
-      x="Maximum PP.H4 per Ensembl gene–tissue locus",
+      x="Maximum PP.H4 per Ensembl gene-tissue locus",
       y="Number of loci"
     )+
     theme_bw(base_size=12)
@@ -560,7 +541,7 @@ if(nrow(h4)){
 cat("\n",strrep("=",70),"\nSTATUS COUNTS\n",strrep("=",70),"\n",sep="")
 print(status_counts)
 
-cat("\n",strrep("=",70),"\nSuSiE / COLOC SUMMARY\n",strrep("=",70),"\n",sep="")
+cat("\n",strrep("=",70),"\neQTL SuSiE / COLOC SUMMARY\n",strrep("=",70),"\n",sep="")
 print(res)
 
 cat(
@@ -574,14 +555,14 @@ if(nrow(h4)) cat("Histogram: ",plotfile,"\n",sep="")
 RS
 
 echo
-echo "SuSiE + colocalization complete."
+echo "eQTL SuSiE + colocalization complete."
 echo
 echo "=== STATUS COUNTS ==="
-column -t -s $'\t' "$BASE/MR/SuSiE_coloc_status_counts.tsv"
+column -t -s $'\t' "$BASE/MR/eQTL_SuSiE_coloc_status_counts.tsv"
 
 echo
 echo "=== OUTPUT FILES ==="
-echo "$BASE/MR/SuSiE_coloc_summary.tsv"
-echo "$BASE/MR/SuSiE_coloc_status_counts.tsv"
-echo "$BASE/MR/PPH4_values.tsv"
-echo "$BASE/MR/PPH4_histogram.png"
+echo "$BASE/MR/eQTL_SuSiE_coloc_summary.tsv"
+echo "$BASE/MR/eQTL_SuSiE_coloc_status_counts.tsv"
+echo "$BASE/MR/eQTL_PPH4_values.tsv"
+echo "$BASE/MR/eQTL_PPH4_histogram.png"
