@@ -12,7 +12,7 @@ module load PLINK/1.9b_7.11-x86_64
 
 QTL_LABEL="eQTL"
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
-BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/SMR_HEIDI"
+BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/eQTL_SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"; EXPR="$BASE/QTL/expression_matrix.txt"
 GENCODE="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf"
 GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
@@ -75,17 +75,17 @@ fi
 for TISSUE in "${TISSUES[@]}"; do
   echo; echo "======================================================================"; echo "$TISSUE"; echo "======================================================================"
 
-  EQTL="$BASE/$TISSUE/eQTL"; RESULTS="$EQTL/results"; OUT="$BASE/$TISSUE/MR/SMR_HEIDI"
+  EQTL="$BASE/$TISSUE/eQTL"; RESULTS="$EQTL/results"; OUT="$BASE/$TISSUE/MR/eQTL_SMR_HEIDI"
   INPUT="$OUT/input"; BESDDIR="$OUT/besd"; RESDIR="$OUT/results"; LDDIR="$OUT/ld_reference"
   FULL="$RESULTS/${TISSUE}_eQTL.full_annotated.txt"; TOP="$RESULTS/${TISSUE}_eQTL.top_for_boxplot.txt"
   GENELOC="$EQTL/gene_location.txt"; SNPLOC="$EQTL/snp_location.txt"; COV="$EQTL/covariates_${TISSUE}_encoded.txt"
   MATEQTL="$INPUT/${TISSUE}_MatrixEQTL_ENSG.txt"; KEEP="$INPUT/plink_keep.txt"; FREQ="$INPUT/${TISSUE}_freq"
   ESI_POOL="$INPUT/${TISSUE}_update.esi"; EPI_POOL="$INPUT/${TISSUE}_update.epi"; FREQ_POOL="$INPUT/${TISSUE}_update.freq"
-  BESD="$BESDDIR/${TISSUE}_eQTL"; SMROUT="$RESDIR/${TISSUE}_SMR_HEIDI"
+  BESD="$BESDDIR/${TISSUE}_eQTL"; SMROUT="$RESDIR/${TISSUE}_eQTL_SMR_HEIDI"
   ESI_OK="$BESD.esi_native_updated.ok"; EPI_OK="$BESD.epi_native_updated.ok"; FREQ_OK="$BESD.freq_native_updated.ok"
-  LD_BFILE="$LDDIR/${TISSUE}_SMR_LD"; LD_MAP="$LDDIR/${TISSUE}_old_to_rsid.txt"; LD_EXTRACT="$LDDIR/${TISSUE}_extract.txt"; LD_OK="$LDDIR/${TISSUE}_SMR_LD.ok"
+  LD_BFILE="$LDDIR/${TISSUE}_eQTL_SMR_LD"; LD_MAP="$LDDIR/${TISSUE}_old_to_rsid.txt"; LD_EXTRACT="$LDDIR/${TISSUE}_extract.txt"; LD_OK="$LDDIR/${TISSUE}_eQTL_SMR_LD.ok"
 
-  mkdir -p "$INPUT" "$BESDDIR" "$RESDIR" "$LDDIR"
+  mkdir -p "$OUT" "$INPUT" "$BESDDIR" "$RESDIR" "$LDDIR"
   for f in "$FULL" "$TOP" "$GENELOC" "$SNPLOC" "$COV"; do [[ -s "$f" ]] || { echo "ERROR: missing/empty: $f"; exit 1; }; done
   export TISSUE EQTL RESULTS OUT INPUT BESDDIR RESDIR LDDIR FULL TOP GENELOC SNPLOC COV MATEQTL KEEP FREQ
   export ESI_POOL EPI_POOL FREQ_POOL BESD SMROUT ESI_OK EPI_OK FREQ_OK LD_BFILE LD_MAP LD_EXTRACT LD_OK
@@ -104,9 +104,9 @@ PY
 
   # ---------- MatrixEQTL -> BESD ----------
   if [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]]; then
-    echo "Reusing existing BESD: $BESD"
+    echo "Reusing existing eQTL BESD: $BESD"
   else
-    echo "Building BESD for $TISSUE"; rm -f "$BESD.besd" "$BESD.esi" "$BESD.epi" "$ESI_OK" "$EPI_OK" "$FREQ_OK" "$MATEQTL" "$MATEQTL.gz"
+    echo "Building eQTL BESD for $TISSUE"; rm -f "$BESD.besd" "$BESD.esi" "$BESD.epi" "$ESI_OK" "$EPI_OK" "$FREQ_OK" "$MATEQTL" "$MATEQTL.gz"
 
     python3 <<'PY'
 import os,pandas as pd
@@ -203,7 +203,7 @@ print(f"{T}: source={total:,}; BESD input={written:,}")
 PY
 
     "$SMR" --eqtl-summary "$MATEQTL" --matrix-eqtl-format --make-besd --add-n "$N_EQTL" --out "$BESD"
-    [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]] || { echo "ERROR: BESD creation failed"; exit 1; }
+    [[ -s "$BESD.besd" && -s "$BESD.esi" && -s "$BESD.epi" ]] || { echo "ERROR: eQTL BESD creation failed"; exit 1; }
   fi
 
   # ---------- Native SMR metadata ----------
@@ -292,12 +292,12 @@ PY
   rm -f "$ESI_POOL" "$EPI_POOL" "$FREQ_POOL"
   [[ -s "$MATEQTL" ]] && gzip -f "$MATEQTL"
 
-  # ---------- rsID-matched tissue LD reference ----------
+  # ---------- rsID-matched eQTL tissue LD reference ----------
   if [[ -e "$LD_OK" && -s "$LD_BFILE.bed" && -s "$LD_BFILE.bim" && -s "$LD_BFILE.fam" ]]; then
-    echo "Reusing rsID-matched SMR LD reference: $LD_BFILE"
+    echo "Reusing rsID-matched eQTL SMR LD reference: $LD_BFILE"
   else
-    echo "Building rsID-matched SMR LD reference"
-    rm -f "$LD_OK" "$LD_BFILE".{bed,bim,fam,log,nosex} "$LDDIR/${TISSUE}_SMR_pre".{bed,bim,fam,log,nosex}
+    echo "Building rsID-matched eQTL SMR LD reference"
+    rm -f "$LD_OK" "$LD_BFILE".{bed,bim,fam,log,nosex} "$LDDIR/${TISSUE}_eQTL_SMR_pre".{bed,bim,fam,log,nosex}
 
     python3 <<'PY'
 import os,pandas as pd
@@ -320,7 +320,7 @@ x[["old_id","snpid"]].to_csv(mapout,sep="\t",header=False,index=False); x[["old_
 print(f"{T}: unambiguous PLINK -> rsID mappings: {len(x):,}")
 PY
 
-    PRE="$LDDIR/${TISSUE}_SMR_pre"
+    PRE="$LDDIR/${TISSUE}_eQTL_SMR_pre"
     plink --bfile "$BFILE" --keep "$KEEP" --extract "$LD_EXTRACT" --make-bed --threads "${SLURM_CPUS_PER_TASK:-1}" --out "$PRE" >/dev/null
     plink --bfile "$PRE" --update-name "$LD_MAP" --make-bed --threads "${SLURM_CPUS_PER_TASK:-1}" --out "$LD_BFILE" >/dev/null
     rm -f "$PRE".{bed,bim,fam,log,nosex}
@@ -329,41 +329,41 @@ PY
 import os,pandas as pd
 T=os.environ["TISSUE"]; b=os.environ["LD_BFILE"]
 d=pd.read_csv(b+".bim",sep=r"\s+",header=None,dtype=str); fam=pd.read_csv(b+".fam",sep=r"\s+",header=None,dtype=str)
-if d.empty: raise RuntimeError(f"{T}: empty SMR LD reference")
-if d.iloc[:,1].duplicated().any(): raise RuntimeError(f"{T}: duplicate rsIDs remain in SMR LD reference")
-print(f"{T}: SMR LD reference ready: {len(d):,} unique rsID SNPs; N={len(fam):,}")
+if d.empty: raise RuntimeError(f"{T}: empty eQTL SMR LD reference")
+if d.iloc[:,1].duplicated().any(): raise RuntimeError(f"{T}: duplicate rsIDs remain in eQTL SMR LD reference")
+print(f"{T}: eQTL SMR LD reference ready: {len(d):,} unique rsID SNPs; N={len(fam):,}")
 PY
     touch "$LD_OK"
   fi
 
-  # ---------- Standard SMR + HEIDI ----------
+  # ---------- Standard eQTL SMR + HEIDI ----------
   SINGLE_VALID=0
   if [[ -s "$SMROUT.smr" ]] && head -1 "$SMROUT.smr" | grep -q "p_SMR" && head -1 "$SMROUT.smr" | grep -q "p_HEIDI"; then SINGLE_VALID=1; fi
 
   if [[ "$SINGLE_VALID" -eq 1 ]]; then
-    echo "Reusing single-SNP SMR + HEIDI result: $SMROUT.smr"
+    echo "Reusing single-SNP eQTL SMR + HEIDI result: $SMROUT.smr"
   else
-    rm -f "$SMROUT.smr"; echo "Running single-SNP SMR + HEIDI for $TISSUE"
+    rm -f "$SMROUT.smr"; echo "Running single-SNP eQTL SMR + HEIDI for $TISSUE"
     "$SMR" --bfile "$LD_BFILE" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
       --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
       --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 --cis-wind "$CIS_WIND" \
       --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
-    [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no single-SNP SMR output for $TISSUE"; exit 1; }
+    [[ -s "$SMROUT.smr" ]] || { echo "ERROR: no single-SNP eQTL SMR output for $TISSUE"; exit 1; }
   fi
 
-  # ---------- SMR-multi ----------
+  # ---------- eQTL SMR-multi ----------
   MULTI_VALID=0
   if [[ -s "$SMROUT.msmr" ]] && head -1 "$SMROUT.msmr" | grep -q "p_SMR_multi" && head -1 "$SMROUT.msmr" | grep -q "p_HEIDI"; then MULTI_VALID=1; fi
 
   if [[ "$MULTI_VALID" -eq 1 ]]; then
-    echo "Reusing SMR-multi result: $SMROUT.msmr"
+    echo "Reusing eQTL SMR-multi result: $SMROUT.msmr"
   else
-    rm -f "$SMROUT.msmr" "$SMROUT.snps4msmr.list"; echo "Running SMR-multi for $TISSUE"
+    rm -f "$SMROUT.msmr" "$SMROUT.snps4msmr.list"; echo "Running eQTL SMR-multi for $TISSUE"
     "$SMR" --bfile "$LD_BFILE" --gwas-summary "$GWAS_MA" --beqtl-summary "$BESD" \
       --peqtl-smr "$PEQTL_SMR" --peqtl-heidi "$PEQTL_HEIDI" --ld-upper-limit "$LD_UPPER" --ld-lower-limit "$LD_LOWER" \
       --heidi-min-m "$HEIDI_MIN" --heidi-max-m "$HEIDI_MAX" --heidi-mtd 1 --cis-wind "$CIS_WIND" \
       --smr-multi --thread-num "${SLURM_CPUS_PER_TASK:-1}" --out "$SMROUT"
-    [[ -s "$SMROUT.msmr" ]] || { echo "ERROR: no SMR-multi output for $TISSUE"; exit 1; }
+    [[ -s "$SMROUT.msmr" ]] || { echo "ERROR: no eQTL SMR-multi output for $TISSUE"; exit 1; }
   fi
 done
 
@@ -382,9 +382,9 @@ def bh(p):
 
 allx=[]; summary=[]
 for t in tissues:
-    prefix=f"{BASE}/{t}/MR/SMR_HEIDI/results/{t}_SMR_HEIDI"; sf=prefix+".smr"; mf=prefix+".msmr"
-    if not os.path.exists(sf): raise RuntimeError(f"Missing single-SNP SMR result: {sf}")
-    if not os.path.exists(mf): raise RuntimeError(f"Missing SMR-multi result: {mf}")
+    prefix=f"{BASE}/{t}/MR/eQTL_SMR_HEIDI/results/{t}_eQTL_SMR_HEIDI"; sf=prefix+".smr"; mf=prefix+".msmr"
+    if not os.path.exists(sf): raise RuntimeError(f"Missing single-SNP eQTL SMR result: {sf}")
+    if not os.path.exists(mf): raise RuntimeError(f"Missing eQTL SMR-multi result: {mf}")
 
     s=pd.read_csv(sf,sep=r"\s+",dtype=str); m=pd.read_csv(mf,sep=r"\s+",dtype=str)
     if "probeID" not in s or "p_SMR" not in s or "p_HEIDI" not in s: raise RuntimeError(f"Malformed .smr: {sf}")
@@ -399,7 +399,8 @@ for t in tissues:
     d=s.merge(m[["probeID","p_SMR_multi"]],on="probeID",how="left",validate="one_to_one")
     if d.p_SMR_multi.isna().all(): raise RuntimeError(f"No p_SMR_multi values merged for {t}")
 
-    d.insert(0,"tissue",t); d["FDR_SMR_tissue"]=bh(d.p_SMR); d["FDR_SMR_multi_tissue"]=bh(d.p_SMR_multi)
+    d.insert(0,"tissue",t)
+    d["FDR_SMR_tissue"]=bh(d.p_SMR); d["FDR_SMR_multi_tissue"]=bh(d.p_SMR_multi)
     d["HEIDI_tested"]=d.p_HEIDI.notna(); d["HEIDI_pass"]=d.HEIDI_tested&(d.p_HEIDI>=HEIDI)
     d["SMR_tissue_FDR_pass"]=d.FDR_SMR_tissue<0.05; d["SMR_multi_tissue_FDR_pass"]=d.FDR_SMR_multi_tissue<0.05
     allx.append(d)
@@ -418,7 +419,8 @@ x["SMR_HEIDI_pass"]=x.SMR_global_FDR_pass&x.HEIDI_pass
 x["SMR_MULTI_HEIDI_pass"]=x.SMR_multi_global_FDR_pass&x.HEIDI_pass
 
 for t in tissues:
-    out=f"{BASE}/{t}/MR/SMR_HEIDI"; d=x[x.tissue==t].sort_values(["FDR_SMR_multi_global","p_SMR_multi","p_SMR"])
+    out=f"{BASE}/{t}/MR/eQTL_SMR_HEIDI"; os.makedirs(out,exist_ok=True)
+    d=x[x.tissue==t].sort_values(["FDR_SMR_multi_global","p_SMR_multi","p_SMR"])
     d.to_csv(f"{out}/{t}_{Q}_SMR_HEIDI_all.tsv.gz",sep="\t",index=False,compression="gzip")
     d[d.SMR_HEIDI_pass].to_csv(f"{out}/{t}_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
     d[d.SMR_MULTI_HEIDI_pass].to_csv(f"{out}/{t}_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
@@ -431,35 +433,67 @@ for i,r in s.iterrows():
     s.loc[i,"SMR_multi_global_FDR0.05"]=int((d.FDR_SMR_multi_global<.05).sum())
     s.loc[i,"SMR_multi_global_FDR0.05_and_HEIDI_pass"]=int(d.SMR_MULTI_HEIDI_pass.sum())
 
+mkdir=GLOBAL
+os.makedirs(mkdir,exist_ok=True)
+
 s.to_csv(f"{GLOBAL}/{Q}_SMR_HEIDI_summary_all_tissues.tsv",sep="\t",index=False)
 x.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI.tsv.gz",sep="\t",index=False,compression="gzip")
 x[x.SMR_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
 x[x.SMR_MULTI_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
 
-single_hits=x[x.SMR_global_FDR_pass].copy().sort_values(["FDR_SMR_global","p_SMR"])
-multi_hits=x[x.SMR_multi_global_FDR_pass].copy().sort_values(["FDR_SMR_multi_global","p_SMR_multi"])
-single_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
-multi_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
+# ==============================================================
+# REPORT ALL FDR-SIGNIFICANT eQTL SMR RESULTS
+# ==============================================================
+x["SMR_tissue_FDR_pass"]=x["FDR_SMR_tissue"]<0.05
+x["SMR_multi_tissue_FDR_pass"]=x["FDR_SMR_multi_tissue"]<0.05
+x["SMR_global_FDR_pass"]=x["FDR_SMR_global"]<0.05
+x["SMR_multi_global_FDR_pass"]=x["FDR_SMR_multi_global"]<0.05
 
-print("\n======================================================================\nSMR + SMR-MULTI + HEIDI SUMMARY\n======================================================================")
+x["SMR_tissue_HEIDI_pass"]=x["SMR_tissue_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_multi_tissue_HEIDI_pass"]=x["SMR_multi_tissue_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_global_HEIDI_pass"]=x["SMR_global_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_multi_global_HEIDI_pass"]=x["SMR_multi_global_FDR_pass"]&x["HEIDI_pass"]
+
+hits=x[
+    x["SMR_tissue_FDR_pass"] |
+    x["SMR_multi_tissue_FDR_pass"] |
+    x["SMR_global_FDR_pass"] |
+    x["SMR_multi_global_FDR_pass"]
+].copy()
+
+hits=hits.sort_values(["FDR_SMR_global","FDR_SMR_multi_global","FDR_SMR_tissue","FDR_SMR_multi_tissue","p_SMR"])
+hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_any_FDR_pass_with_HEIDI.tsv",sep="\t",index=False)
+
+print("\n======================================================================")
+print("eQTL SMR + SMR-MULTI + HEIDI SUMMARY")
+print("======================================================================")
 print(s.to_string(index=False))
-print(f"\nTotal SMR tests: {len(x):,}")
-print(f"Single-SNP SMR global FDR<0.05: {(x.FDR_SMR_global<.05).sum():,}")
-print(f"Single-SNP SMR global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_HEIDI_pass.sum():,}")
-print(f"SMR-multi global FDR<0.05: {(x.FDR_SMR_multi_global<.05).sum():,}")
-print(f"SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_MULTI_HEIDI_pass.sum():,}")
 
-print("\n======================================================================\nHEIDI P-VALUES FOR SINGLE-SNP SMR GLOBAL FDR<0.05 HITS\n======================================================================")
-if len(single_hits):
-    cols=["tissue","probeID","Gene","topSNP","p_eQTL","p_GWAS","p_SMR","FDR_SMR_tissue","FDR_SMR_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
-    print(single_hits[[c for c in cols if c in single_hits.columns]].to_string(index=False))
-else:
-    print("None")
+print(f"\nTotal eQTL SMR tests: {len(x):,}")
+print(f"Single-SNP eQTL SMR tissue FDR<0.05: {x.SMR_tissue_FDR_pass.sum():,}")
+print(f"Single-SNP eQTL SMR tissue FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_tissue_HEIDI_pass.sum():,}")
+print(f"eQTL SMR-multi tissue FDR<0.05: {x.SMR_multi_tissue_FDR_pass.sum():,}")
+print(f"eQTL SMR-multi tissue FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_multi_tissue_HEIDI_pass.sum():,}")
+print(f"Single-SNP eQTL SMR global FDR<0.05: {x.SMR_global_FDR_pass.sum():,}")
+print(f"Single-SNP eQTL SMR global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_global_HEIDI_pass.sum():,}")
+print(f"eQTL SMR-multi global FDR<0.05: {x.SMR_multi_global_FDR_pass.sum():,}")
+print(f"eQTL SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_multi_global_HEIDI_pass.sum():,}")
 
-print("\n======================================================================\nHEIDI P-VALUES FOR SMR-MULTI GLOBAL FDR<0.05 HITS\n======================================================================")
-if len(multi_hits):
-    cols=["tissue","probeID","Gene","topSNP","p_eQTL","p_GWAS","p_SMR_multi","FDR_SMR_multi_tissue","FDR_SMR_multi_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
-    print(multi_hits[[c for c in cols if c in multi_hits.columns]].to_string(index=False))
+print("\n======================================================================")
+print("ALL eQTL SMR FDR<0.05 HITS")
+print("======================================================================")
+
+if len(hits):
+    cols=[
+        "tissue","probeID","Gene","topSNP",
+        "p_eQTL","p_GWAS",
+        "p_SMR","FDR_SMR_tissue","SMR_tissue_FDR_pass",
+        "p_SMR_multi","FDR_SMR_multi_tissue","SMR_multi_tissue_FDR_pass",
+        "FDR_SMR_global","SMR_global_FDR_pass",
+        "FDR_SMR_multi_global","SMR_multi_global_FDR_pass",
+        "p_HEIDI","nsnp_HEIDI","HEIDI_pass"
+    ]
+    print(hits[[c for c in cols if c in hits.columns]].to_string(index=False))
 else:
     print("None")
 PY
