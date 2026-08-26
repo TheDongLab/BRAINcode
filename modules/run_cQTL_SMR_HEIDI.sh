@@ -408,30 +408,66 @@ x.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI.tsv.gz",sep="\t",index=False,compr
 x[x.SMR_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_HEIDI_pass.tsv",sep="\t",index=False)
 x[x.SMR_MULTI_HEIDI_pass].to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_HEIDI_pass.tsv",sep="\t",index=False)
 
-single_hits=x[x.SMR_global_FDR_pass].copy().sort_values(["FDR_SMR_global","p_SMR"])
-multi_hits=x[x.SMR_multi_global_FDR_pass].copy().sort_values(["FDR_SMR_multi_global","p_SMR_multi"])
-single_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
-multi_hits.to_csv(f"{GLOBAL}/all_tissues_{Q}_SMR_MULTI_globalFDR_pass_with_HEIDI.tsv",sep="\t",index=False)
+# ==============================================================
+# REPORT ALL FDR-SIGNIFICANT cQTL SMR RESULTS
+# ==============================================================
 
-print("\n======================================================================\ncQTL SMR + SMR-MULTI + HEIDI SUMMARY\n======================================================================")
+x["SMR_tissue_FDR_pass"]=x["FDR_SMR_tissue"]<0.05
+x["SMR_multi_tissue_FDR_pass"]=x["FDR_SMR_multi_tissue"]<0.05
+x["SMR_global_FDR_pass"]=x["FDR_SMR_global"]<0.05
+x["SMR_multi_global_FDR_pass"]=x["FDR_SMR_multi_global"]<0.05
+
+x["SMR_tissue_HEIDI_pass"]=x["SMR_tissue_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_multi_tissue_HEIDI_pass"]=x["SMR_multi_tissue_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_global_HEIDI_pass"]=x["SMR_global_FDR_pass"]&x["HEIDI_pass"]
+x["SMR_multi_global_HEIDI_pass"]=x["SMR_multi_global_FDR_pass"]&x["HEIDI_pass"]
+
+hits=x[
+    x["SMR_tissue_FDR_pass"] |
+    x["SMR_multi_tissue_FDR_pass"] |
+    x["SMR_global_FDR_pass"] |
+    x["SMR_multi_global_FDR_pass"]
+].copy()
+
+hits=hits.sort_values(
+    ["FDR_SMR_global","FDR_SMR_multi_global","FDR_SMR_tissue","FDR_SMR_multi_tissue","p_SMR"]
+)
+
+hits.to_csv(
+    f"{GLOBAL}/all_tissues_{Q}_SMR_any_FDR_pass_with_HEIDI.tsv",
+    sep="\t",index=False
+)
+
+print("\n======================================================================")
+print("cQTL SMR + SMR-MULTI + HEIDI SUMMARY")
+print("======================================================================")
 print(s.to_string(index=False))
-print(f"\nTotal SMR tests: {len(x):,}")
-print(f"Single-SNP SMR global FDR<0.05: {(x.FDR_SMR_global<.05).sum():,}")
-print(f"Single-SNP SMR global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_HEIDI_pass.sum():,}")
-print(f"SMR-multi global FDR<0.05: {(x.FDR_SMR_multi_global<.05).sum():,}")
-print(f"SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_MULTI_HEIDI_pass.sum():,}")
 
-print("\n======================================================================\nHEIDI P-VALUES FOR SINGLE-SNP SMR GLOBAL FDR<0.05 HITS\n======================================================================")
-if len(single_hits):
-    cols=["tissue","probeID","Gene","topSNP","p_cQTL","p_GWAS","p_SMR","FDR_SMR_tissue","FDR_SMR_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
-    print(single_hits[[c for c in cols if c in single_hits.columns]].to_string(index=False))
-else:
-    print("None")
+print(f"\nTotal cQTL SMR tests: {len(x):,}")
+print(f"Single-SNP cQTL SMR tissue FDR<0.05: {x.SMR_tissue_FDR_pass.sum():,}")
+print(f"Single-SNP cQTL SMR tissue FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_tissue_HEIDI_pass.sum():,}")
+print(f"cQTL SMR-multi tissue FDR<0.05: {x.SMR_multi_tissue_FDR_pass.sum():,}")
+print(f"cQTL SMR-multi tissue FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_multi_tissue_HEIDI_pass.sum():,}")
+print(f"Single-SNP cQTL SMR global FDR<0.05: {x.SMR_global_FDR_pass.sum():,}")
+print(f"Single-SNP cQTL SMR global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_global_HEIDI_pass.sum():,}")
+print(f"cQTL SMR-multi global FDR<0.05: {x.SMR_multi_global_FDR_pass.sum():,}")
+print(f"cQTL SMR-multi global FDR<0.05 + HEIDI P>={HEIDI}: {x.SMR_multi_global_HEIDI_pass.sum():,}")
 
-print("\n======================================================================\nHEIDI P-VALUES FOR SMR-MULTI GLOBAL FDR<0.05 HITS\n======================================================================")
-if len(multi_hits):
-    cols=["tissue","probeID","Gene","topSNP","p_cQTL","p_GWAS","p_SMR_multi","FDR_SMR_multi_tissue","FDR_SMR_multi_global","p_HEIDI","nsnp_HEIDI","HEIDI_pass"]
-    print(multi_hits[[c for c in cols if c in multi_hits.columns]].to_string(index=False))
+print("\n======================================================================")
+print("ALL cQTL SMR FDR<0.05 HITS")
+print("======================================================================")
+
+if len(hits):
+    cols=[
+        "tissue","probeID","Gene","topSNP",
+        "p_cQTL","p_GWAS",
+        "p_SMR","FDR_SMR_tissue","SMR_tissue_FDR_pass",
+        "p_SMR_multi","FDR_SMR_multi_tissue","SMR_multi_tissue_FDR_pass",
+        "FDR_SMR_global","SMR_global_FDR_pass",
+        "FDR_SMR_multi_global","SMR_multi_global_FDR_pass",
+        "p_HEIDI","nsnp_HEIDI","HEIDI_pass"
+    ]
+    print(hits[[c for c in cols if c in hits.columns]].to_string(index=False))
 else:
     print("None")
 PY
