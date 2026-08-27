@@ -12,6 +12,7 @@
 
 TYPE="${1:-}"                         # eQTL, sQTL, cQTL
 ROOT="/home/zw529/donglab/data/target_ALS"
+REAL_DATA_ROOT="/nfs/roberts/pi/pi_xd96/data/target_ALS"
 MR_DIR="${ROOT}/MR"
 METADATA="${ROOT}/targetALS_rnaseq_metadata.csv"
 
@@ -43,7 +44,7 @@ mkdir -p "$OUTDIR"
 
 module load deepTools 2>/dev/null || true
 
-export TYPE ROOT METADATA COLOC OUTDIR
+export TYPE ROOT REAL_DATA_ROOT METADATA COLOC OUTDIR
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS
 export MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
@@ -65,14 +66,17 @@ except ImportError as e:
 warnings.filterwarnings("ignore")
 
 TYPE = os.environ["TYPE"]
-ROOT, METADATA, COLOC, OUTDIR = map(Path, [os.environ["ROOT"], os.environ["METADATA"], os.environ["COLOC"], os.environ["OUTDIR"]])
+ROOT = Path(os.environ["ROOT"])
+REAL_DATA_ROOT = Path(os.environ["REAL_DATA_ROOT"])
+METADATA, COLOC, OUTDIR = map(Path, [os.environ["METADATA"], os.environ["COLOC"], os.environ["OUTDIR"]])
+
 FLANK_FRAC, FLANK_MIN, FLANK_MAX = float(os.environ["FLANK_FRAC"]), int(os.environ["FLANK_MIN"]), int(os.environ["FLANK_MAX"])
 BIGWIG_BIN_BP, MAX_TRACK_POINTS = int(os.environ["BIGWIG_BIN_BP"]), int(os.environ["MAX_TRACK_POINTS"])
 MAX_HITS, TISSUE_FILTER = int(os.environ["MAX_HITS"]), os.environ["TISSUE_FILTER"].strip()
 OVERWRITE, DPI = int(os.environ["OVERWRITE"]), int(os.environ["DPI"])
 
 GENOTYPE_LABELS = {0: "Ref/Ref", 1: "Het", 2: "Hom Alt"}
-TOP_COLORS = {0: "#90EE90", 1: "#ADD8E6", 2: "#FFB6C1"}   # light green, light blue, pink
+TOP_COLORS = {0: "#90EE90", 1: "#ADD8E6", 2: "#FFB6C1"}
 TRACK_COLORS = {0: "#228B22", 1: "#4682B4", 2: "#C75B7A"}
 
 Y_LABELS = {
@@ -164,6 +168,7 @@ def get_rin(row):
 def metadata_for_qtl_id(qtl_id, tissue):
     qtl_id = str(qtl_id)
     rows = metadata
+
     if meta_tissue_col:
         tissue_rows = [r for r in metadata if tissue_equal(r.get(meta_tissue_col, ""), tissue)]
         if tissue_rows: rows = tissue_rows
@@ -215,7 +220,11 @@ def load_location_table(path, kind):
         delim = detect_delimiter(first)
         fields = split_line(first, delim)
 
-        is_data = len(fields) >= 3 and re.match(r"^(chr)?[0-9XYM]+$", fields[1], re.I) and re.match(r"^\d+$", fields[2])
+        is_data = (
+            len(fields) >= 3
+            and re.match(r"^(chr)?[0-9XYM]+$", fields[1], re.I)
+            and re.match(r"^\d+$", fields[2])
+        )
 
         if is_data:
             headers = ["id", "chr", "start"]
@@ -237,9 +246,11 @@ def load_location_table(path, kind):
         idc = find_header(headers, ["snpid", "snp_id", "rsid", "id"])
         cc = find_header(headers, ["chr", "chrom", "chromosome"])
         pc = find_header(headers, ["pos", "position", "start"])
+
         return {
             str(r[idc]): (str(r[cc]), int(float(r[pc])))
-            for r in rows if not missing(r.get(idc)) and not missing(r.get(cc)) and not missing(r.get(pc))
+            for r in rows
+            if not missing(r.get(idc)) and not missing(r.get(cc)) and not missing(r.get(pc))
         }
 
     aliases = {
@@ -261,24 +272,33 @@ def load_location_table(path, kind):
                 "chr": str(r[cc]), "start": int(float(r[sc])), "end": int(float(r[ec])),
                 "strand": str(r[strandc]) if strandc and not missing(r.get(strandc)) else None
             }
-        except: pass
+        except:
+            pass
+
     return out
 
 def parse_event_coordinates(event):
     for pat in [
-        r"(chr[^:]+):(\d+)-(\d+):([+-])", r"(chr[^:]+):(\d+):(\d+):([+-])",
-        r"(chr[^:]+):(\d+)-(\d+)", r"(chr[^:]+):(\d+):(\d+)"
+        r"(chr[^:]+):(\d+)-(\d+):([+-])",
+        r"(chr[^:]+):(\d+):(\d+):([+-])",
+        r"(chr[^:]+):(\d+)-(\d+)",
+        r"(chr[^:]+):(\d+):(\d+)"
     ]:
         m = re.search(pat, str(event))
         if m:
-            return {"chr": m.group(1), "start": int(m.group(2)), "end": int(m.group(3)),
-                    "strand": m.group(4) if len(m.groups()) >= 4 else None}
+            return {
+                "chr": m.group(1), "start": int(m.group(2)), "end": int(m.group(3)),
+                "strand": m.group(4) if len(m.groups()) >= 4 else None
+            }
     return None
 
 def find_location(locations, event):
     if event in locations: return locations[event]
     target = strip_gene_version(event)
-    return next((loc for rid, loc in locations.items() if strip_gene_version(rid) == target), parse_event_coordinates(event))
+    return next(
+        (loc for rid, loc in locations.items() if strip_gene_version(rid) == target),
+        parse_event_coordinates(event)
+    )
 
 # ============================================================
 # SAMPLE DIRECTORIES
@@ -295,7 +315,10 @@ def resolve_sample_dir(tissue, sample_id):
 
     key = str(processed)
     if key not in processed_cache:
-        processed_cache[key] = {norm(p.name): p for p in processed.iterdir() if p.is_dir()} if processed.is_dir() else {}
+        processed_cache[key] = (
+            {norm(p.name): p for p in processed.iterdir() if p.is_dir()}
+            if processed.is_dir() else {}
+        )
 
     return processed_cache[key].get(norm(sample_id))
 
@@ -305,8 +328,14 @@ def resolve_sample_dir(tissue, sample_id):
 
 def bw_chrom(bw, chrom):
     chroms = bw.chroms()
-    for c in [chrom, chrom[3:] if chrom.startswith("chr") else None, "chr" + chrom]:
-        if c and c in chroms: return c
+
+    candidates = [chrom]
+    if chrom.startswith("chr"): candidates.append(chrom[3:])
+    else: candidates.append("chr" + chrom)
+
+    for c in candidates:
+        if c in chroms: return c
+
     return None
 
 def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
@@ -315,10 +344,12 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
 
     def read_one(path):
         if not path.exists(): return None
+
         bw = pyBigWig.open(str(path))
         try:
             c = bw_chrom(bw, chrom)
             if c is None: return None
+
             vals = bw.stats(c, int(start), int(end), nBins=int(n_bins), type="mean")
             return np.abs(np.asarray([0.0 if v is None else float(v) for v in vals]))
         finally:
@@ -328,23 +359,48 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
     if strand == "-": return read_one(minus), str(minus)
 
     a, b = read_one(plus), read_one(minus)
+
     if a is None and b is None: return None, None
     if a is None: return b, str(minus)
     if b is None: return a, str(plus)
+
     return a + b, f"{plus};{minus}"
 
 # ============================================================
-# REMAPPED BAM — cQTL
+# REAL BAM PATHS — cQTL
 # ============================================================
 
 bam_mapped_cache = {}
 
+def real_sample_dir(tissue, sample_id):
+    return REAL_DATA_ROOT / tissue / "RNAseq" / "Processed" / sample_id
+
+def real_remap_bam(tissue, sample_id):
+    return (
+        real_sample_dir(tissue, sample_id)
+        / "remap_chimeric"
+        / f"{sample_id}.remap.Aligned.sortedByCoord.out.bam"
+    )
+
+def real_star_bam(tissue, sample_id):
+    return real_sample_dir(tissue, sample_id) / "STAR.Aligned.sortedByCoord.out.bam"
+
 def ensure_bam_index(path):
-    path = str(path)
-    if os.path.exists(path + ".bai") or os.path.exists(re.sub(r"\.bam$", ".bai", path)): return True
+    path = Path(path)
+
+    if not path.exists():
+        print(f"    WARNING: BAM does not exist: {path}")
+        return False
+
+    bai1 = Path(str(path) + ".bai")
+    bai2 = path.with_suffix(".bai")
+
+    if bai1.exists() or bai2.exists():
+        return True
+
     try:
         print(f"    Indexing BAM: {path}")
-        pysam.index(path)
+        pysam.index(str(path))
         return True
     except Exception as e:
         print(f"    WARNING: could not index {path}: {e}")
@@ -352,51 +408,91 @@ def ensure_bam_index(path):
 
 def resolve_bam_chrom(bam, chrom):
     refs = set(bam.references)
-    for c in [chrom, chrom[3:] if chrom.startswith("chr") else None, "chr" + chrom]:
-        if c and c in refs: return c
+
+    candidates = [chrom]
+    if chrom.startswith("chr"): candidates.append(chrom[3:])
+    else: candidates.append("chr" + chrom)
+
+    for c in candidates:
+        if c in refs: return c
+
     return None
 
-def mapped_reads_from_star(sample_dir):
-    star = sample_dir / "STAR.Aligned.sortedByCoord.out.bam"
-    if not star.exists(): return None
+def mapped_reads_from_star(tissue, sample_id):
+    star = real_star_bam(tissue, sample_id)
+
+    if not star.exists():
+        print(f"    WARNING: real STAR BAM missing: {star}")
+        return None
 
     key = str(star)
-    if key in bam_mapped_cache: return bam_mapped_cache[key]
+    if key in bam_mapped_cache:
+        return bam_mapped_cache[key]
 
     try:
         if not ensure_bam_index(star): return None
-        with pysam.AlignmentFile(str(star), "rb") as bam: n = float(bam.mapped)
+
+        with pysam.AlignmentFile(str(star), "rb") as bam:
+            n = float(bam.mapped)
+
         bam_mapped_cache[key] = n
         return n
-    except: return None
+
+    except Exception as e:
+        print(f"    WARNING: could not read STAR mapped count for {star}: {e}")
+        return None
 
 def bin_array(values, n_bins):
     values = np.asarray(values, dtype=float)
-    if len(values) == n_bins: return values
 
-    edges, out = np.linspace(0, len(values), n_bins + 1).astype(int), np.zeros(n_bins)
+    if len(values) == n_bins:
+        return values
+
+    edges = np.linspace(0, len(values), n_bins + 1).astype(int)
+    out = np.zeros(n_bins)
+
     for i in range(n_bins):
         a, b = edges[i], edges[i + 1]
         if b > a: out[i] = np.mean(values[a:b])
+
     return out
 
-def remap_bam_vector(sample_dir, chrom, start, end, n_bins):
-    bams = sorted(sample_dir.glob("*remap.sorted.bam"))
-    if not bams: return None, None
+def remap_bam_vector(tissue, sample_id, chrom, start, end, n_bins):
+    # IMPORTANT: use the real BAM directly, not the broken /home symlink.
+    bam_path = real_remap_bam(tissue, sample_id)
 
-    bam_path = bams[0]
-    if not ensure_bam_index(bam_path): return None, str(bam_path)
+    if not bam_path.exists():
+        print(f"    WARNING: real remap BAM missing: {bam_path}")
+        return None, None
+
+    if not ensure_bam_index(bam_path):
+        return None, str(bam_path)
 
     try:
         with pysam.AlignmentFile(str(bam_path), "rb") as bam:
             c = resolve_bam_chrom(bam, chrom)
-            if c is None: return None, str(bam_path)
-            cov = np.sum(np.asarray(bam.count_coverage(c, int(start), int(end), quality_threshold=0), dtype=float), axis=0)
 
-        denominator = mapped_reads_from_star(sample_dir)
-        if denominator is None or denominator <= 0: return None, str(bam_path)
+            if c is None:
+                print(f"    WARNING: chromosome {chrom} not found in {bam_path}")
+                return None, str(bam_path)
 
-        return bin_array(cov * 1_000_000.0 / denominator, n_bins), str(bam_path)
+            cov = np.sum(
+                np.asarray(
+                    bam.count_coverage(c, int(start), int(end), quality_threshold=0),
+                    dtype=float
+                ),
+                axis=0
+            )
+
+        denominator = mapped_reads_from_star(tissue, sample_id)
+
+        if denominator is None or denominator <= 0:
+            print(f"    WARNING: no usable STAR read-count denominator for {sample_id}")
+            return None, str(bam_path)
+
+        rpm = cov * 1_000_000.0 / denominator
+        return bin_array(rpm, n_bins), str(bam_path)
+
     except Exception as e:
         print(f"    WARNING: BAM extraction failed for {bam_path}: {e}")
         return None, str(bam_path)
@@ -419,7 +515,8 @@ def possible_snps(hit):
         if col in hit and not missing(hit[col]): candidates.append(hit[col])
 
     for k, v in hit.items():
-        if "topsnp" in norm(k) and "gwas" not in norm(k) and not missing(v): candidates.append(v)
+        if "topsnp" in norm(k) and "gwas" not in norm(k) and not missing(v):
+            candidates.append(v)
 
     if "candidate_SNPs" in hit and not missing(hit["candidate_SNPs"]):
         candidates += [x for x in hit["candidate_SNPs"].split(";") if x]
@@ -427,12 +524,16 @@ def possible_snps(hit):
     out = []
     for x in map(str.strip, candidates):
         if x and x not in out: out.append(x)
+
     return out
 
 def genotype_group(value):
     try: x = float(value)
     except: return None
-    if not np.isfinite(x) or x < -0.1 or x > 2.1: return None
+
+    if not np.isfinite(x) or x < -0.1 or x > 2.1:
+        return None
+
     return int(np.clip(np.rint(x), 0, 2))
 
 # ============================================================
@@ -440,7 +541,9 @@ def genotype_group(value):
 # ============================================================
 
 hits_by_tissue = defaultdict(list)
-for hit in hits: hits_by_tissue[hit.get(tissue_col, "").strip()].append(hit)
+
+for hit in hits:
+    hits_by_tissue[hit.get(tissue_col, "").strip()].append(hit)
 
 total_plotted = total_skipped = 0
 
@@ -450,13 +553,20 @@ for tissue, tissue_hits in hits_by_tissue.items():
     qtl_dir = ROOT / tissue / TYPE
 
     if TYPE == "eQTL":
-        phenotype_file, trait_location_file = qtl_dir / f"expression_{tissue}.txt", qtl_dir / "gene_location.txt"
-    elif TYPE == "sQTL":
-        phenotype_file, trait_location_file = qtl_dir / f"splicing_{tissue}.txt", qtl_dir / "splicing_location.txt"
-    else:
-        phenotype_file, trait_location_file = qtl_dir / f"circ_{tissue}.txt", qtl_dir / "circ_location.txt"
+        phenotype_file = qtl_dir / f"expression_{tissue}.txt"
+        trait_location_file = qtl_dir / "gene_location.txt"
 
-    snp_file, snp_location_file = qtl_dir / f"snp_{tissue}.txt", qtl_dir / "snp_location.txt"
+    elif TYPE == "sQTL":
+        phenotype_file = qtl_dir / f"splicing_{tissue}.txt"
+        trait_location_file = qtl_dir / "splicing_location.txt"
+
+    else:
+        phenotype_file = qtl_dir / f"circ_{tissue}.txt"
+        trait_location_file = qtl_dir / "circ_location.txt"
+
+    snp_file = qtl_dir / f"snp_{tissue}.txt"
+    snp_location_file = qtl_dir / "snp_location.txt"
+
     missing_files = [p for p in [phenotype_file, trait_location_file, snp_file] if not p.exists()]
 
     if missing_files:
@@ -480,108 +590,164 @@ for tissue, tissue_hits in hits_by_tissue.items():
         print(f"\n[{index}/{len(tissue_hits)}] {tissue} | {event} | {symbol}")
 
         phenotype = find_matrix_row(phenotype_rows, event)
+
         if phenotype is None:
-            print("  SKIP: phenotype missing"); total_skipped += 1; continue
+            print("  SKIP: phenotype missing")
+            total_skipped += 1
+            continue
 
         snp = genotype = None
+
         for candidate in possible_snps(hit):
             if candidate in genotype_rows:
                 snp, genotype = candidate, genotype_rows[candidate]
                 break
 
         if genotype is None:
-            print("  SKIP: candidate SNP absent from genotype matrix"); total_skipped += 1; continue
+            print("  SKIP: candidate SNP absent from genotype matrix")
+            total_skipped += 1
+            continue
 
         loc = find_location(trait_locations, event)
+
         if loc is None:
-            print("  SKIP: coordinates unavailable"); total_skipped += 1; continue
+            print("  SKIP: coordinates unavailable")
+            total_skipped += 1
+            continue
 
         chrom = loc["chr"]
         trait_start, trait_end = min(loc["start"], loc["end"]), max(loc["start"], loc["end"])
         strand = loc.get("strand")
 
-        flank = min(int(max(FLANK_MIN, math.ceil(max(1, trait_end - trait_start) * FLANK_FRAC))), FLANK_MAX)
+        flank = min(
+            int(max(FLANK_MIN, math.ceil(max(1, trait_end - trait_start) * FLANK_FRAC))),
+            FLANK_MAX
+        )
+
         plot_start, plot_end = max(0, trait_start - flank), trait_end + flank
-        n_bins = int(min(MAX_TRACK_POINTS, max(50, math.ceil((plot_end - plot_start) / BIGWIG_BIN_BP))))
+        n_bins = int(
+            min(MAX_TRACK_POINTS, max(50, math.ceil((plot_end - plot_start) / BIGWIG_BIN_BP)))
+        )
 
         x = np.linspace(plot_start, plot_end, n_bins, endpoint=False)
         x += (plot_end - plot_start) / n_bins / 2
 
         snp_pos = None
+
         if snp in snp_locations:
             snp_chr, p = snp_locations[snp]
-            if norm(snp_chr) == norm(chrom): snp_pos = p
 
-        # genotype + MatrixEQTL phenotype + metadata + sample folder
+            if norm(snp_chr) == norm(chrom):
+                snp_pos = p
+
+        # genotype + MatrixEQTL phenotype + metadata + sample directory
         records = []
 
         for qid in [x for x in phenotype if x in genotype]:
             g = genotype_group(genotype[qid])
-            if g is None: continue
 
-            try: pheno = float(phenotype[qid])
-            except: continue
-            if not np.isfinite(pheno): continue
+            if g is None:
+                continue
+
+            try:
+                pheno = float(phenotype[qid])
+            except:
+                continue
+
+            if not np.isfinite(pheno):
+                continue
 
             meta = metadata_for_qtl_id(qid, tissue)
-            if meta is None: continue
 
-            sample_id, subject_id = str(meta.get(sample_col, "")).strip(), str(meta.get(subject_col, "")).strip()
-            if not sample_id: continue
+            if meta is None:
+                continue
+
+            sample_id = str(meta.get(sample_col, "")).strip()
+            subject_id = str(meta.get(subject_col, "")).strip()
+
+            if not sample_id:
+                continue
 
             sample_dir = resolve_sample_dir(tissue, sample_id)
-            if sample_dir is None: continue
+
+            if sample_dir is None:
+                continue
 
             records.append({
-                "qtl_id": qid, "subject_id": subject_id, "sample_id": sample_id,
-                "genotype": g, "genotype_raw": genotype[qid], "phenotype": pheno,
-                "sample_dir": sample_dir, "track": None, "track_source": None
+                "qtl_id": qid,
+                "subject_id": subject_id,
+                "sample_id": sample_id,
+                "genotype": g,
+                "genotype_raw": genotype[qid],
+                "phenotype": pheno,
+                "sample_dir": sample_dir,
+                "track": None,
+                "track_source": None
             })
 
         print(f"  Candidate subjects before track QC: {len(records)}")
 
         for r in records:
             if TYPE in {"eQTL", "sQTL"}:
-                r["track"], r["track_source"] = bigwig_vector(r["sample_dir"], chrom, plot_start, plot_end, strand, n_bins)
+                r["track"], r["track_source"] = bigwig_vector(
+                    r["sample_dir"], chrom, plot_start, plot_end, strand, n_bins
+                )
             else:
-                r["track"], r["track_source"] = remap_bam_vector(r["sample_dir"], chrom, plot_start, plot_end, n_bins)
+                r["track"], r["track_source"] = remap_bam_vector(
+                    tissue, r["sample_id"], chrom, plot_start, plot_end, n_bins
+                )
 
         # Same complete subjects in phenotype AND sequencing panels.
         complete = [
             r for r in records
-            if r["track"] is not None and len(r["track"]) == n_bins and np.all(np.isfinite(r["track"]))
+            if r["track"] is not None
+            and len(r["track"]) == n_bins
+            and np.all(np.isfinite(r["track"]))
         ]
 
-        counts = {g: sum(r["genotype"] == g for r in complete) for g in [0, 1, 2]}
+        counts = {
+            g: sum(r["genotype"] == g for r in complete)
+            for g in [0, 1, 2]
+        }
 
         print(f"  Complete subjects: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
 
         if not complete:
-            print("  SKIP: no complete subjects"); total_skipped += 1; continue
+            print("  SKIP: no complete subjects")
+            total_skipped += 1
+            continue
 
-        tracks = {g: [r["track"] for r in complete if r["genotype"] == g] for g in [0, 1, 2]}
+        tracks = {
+            g: [r["track"] for r in complete if r["genotype"] == g]
+            for g in [0, 1, 2]
+        }
 
         label = symbol if symbol else event
         basename = safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
-        pdf, png = OUTDIR / f"{basename}.pdf", OUTDIR / f"{basename}.png"
+
+        pdf = OUTDIR / f"{basename}.pdf"
+        png = OUTDIR / f"{basename}.png"
         subject_tsv = OUTDIR / f"{basename}.subjects.tsv"
 
         if not OVERWRITE and pdf.exists() and png.exists():
-            print("  EXISTS; skipping"); continue
+            print("  EXISTS; skipping")
+            continue
 
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
+
             writer.writerow([
                 "tissue", "qtl_type", "event", "gene_symbol", "snp", "qtl_id",
                 "subject_id", "sample_id", "genotype_group", "genotype_label",
                 "genotype_raw", "phenotype", "track_source"
             ])
+
             for r in complete:
                 writer.writerow([
-                    tissue, TYPE, event, symbol, snp, r["qtl_id"], r["subject_id"], r["sample_id"],
-                    r["genotype"], GENOTYPE_LABELS[r["genotype"]], r["genotype_raw"],
-                    r["phenotype"], r["track_source"]
+                    tissue, TYPE, event, symbol, snp, r["qtl_id"], r["subject_id"],
+                    r["sample_id"], r["genotype"], GENOTYPE_LABELS[r["genotype"]],
+                    r["genotype_raw"], r["phenotype"], r["track_source"]
                 ])
 
         ymax = max(float(np.nanmax(r["track"])) for r in complete)
@@ -600,8 +766,13 @@ for tissue, tissue_hits in hits_by_tissue.items():
         rng = np.random.default_rng(12345)
 
         for g in [0, 1, 2]:
-            vals = np.asarray([r["phenotype"] for r in complete if r["genotype"] == g])
-            if not len(vals): continue
+            vals = np.asarray([
+                r["phenotype"] for r in complete
+                if r["genotype"] == g
+            ])
+
+            if not len(vals):
+                continue
 
             mean_val = np.mean(vals)
             jitter = rng.normal(0, 0.055, size=len(vals))
@@ -610,27 +781,38 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 np.full(len(vals), g) + jitter, vals,
                 s=24, alpha=0.65, color=TOP_COLORS[g], edgecolor="none"
             )
+
             ax0.plot(
                 [g - 0.18, g + 0.18], [mean_val, mean_val],
                 linewidth=3, color=TOP_COLORS[g]
             )
+
             ax0.annotate(
-                f"Mean = {mean_val:.4f}", xy=(g - 0.18, mean_val), xytext=(0, 7),
-                textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color="black"
+                f"Mean = {mean_val:.4f}",
+                xy=(g - 0.18, mean_val), xytext=(0, 7),
+                textcoords="offset points", ha="left", va="bottom",
+                fontsize=8.5, color="black"
             )
 
         ax0.set_xticks(
             [0, 1, 2],
-            [f"Ref/Ref\n(N={counts[0]})", f"Het\n(N={counts[1]})", f"Hom Alt\n(N={counts[2]})"]
+            [
+                f"Ref/Ref\n(N={counts[0]})",
+                f"Het\n(N={counts[1]})",
+                f"Hom Alt\n(N={counts[2]})"
+            ]
         )
+
         ax0.set_ylabel(Y_LABELS[TYPE])
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
         title = f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp}"
 
         if pp_h4 and not missing(pp_h4):
-            try: title += f" | PP.H4={float(pp_h4):.4f}"
-            except: title += f" | PP.H4={pp_h4}"
+            try:
+                title += f" | PP.H4={float(pp_h4):.4f}"
+            except:
+                title += f" | PP.H4={pp_h4}"
 
         ax0.set_title(title, fontsize=13)
         ax0.spines["top"].set_visible(False)
@@ -651,12 +833,18 @@ for tissue, tissue_hits in hits_by_tissue.items():
                     linewidth=2.5, color=TRACK_COLORS[g]
                 )
             else:
-                ax.text(0.5, 0.5, "No subjects", transform=ax.transAxes, ha="center", va="center")
+                ax.text(
+                    0.5, 0.5, "No subjects",
+                    transform=ax.transAxes, ha="center", va="center"
+                )
 
             ax.axvspan(trait_start, trait_end, alpha=0.12, color="#999999")
 
             if snp_pos is not None and plot_start <= snp_pos <= plot_end:
-                ax.axvline(snp_pos, linestyle="--", linewidth=1.3, alpha=0.8, color="black")
+                ax.axvline(
+                    snp_pos, linestyle="--",
+                    linewidth=1.3, alpha=0.8, color="black"
+                )
 
             ax.set_xlim(plot_start, plot_end)
             ax.set_ylim(0, ymax)
@@ -677,7 +865,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-        # No "dashed line = rs..." text here anymore.
         fig.text(
             0.5, 0.015,
             f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | "
@@ -692,6 +879,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
         print(f"  PDF: {pdf}")
         print(f"  PNG: {png}")
         print(f"  TSV: {subject_tsv}")
+
         total_plotted += 1
 
 print(f"\n{'=' * 60}")
