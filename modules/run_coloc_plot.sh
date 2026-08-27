@@ -15,6 +15,7 @@ ROOT="/home/zw529/donglab/data/target_ALS"
 MR_DIR="${ROOT}/MR"
 METADATA="${ROOT}/targetALS_rnaseq_metadata.csv"
 GTF="/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf"
+RAW_FILE="${ROOT}/QTL/plink/joint_all_chrs_matrixEQTL.raw"
 
 FLANK_FRAC=0.20
 FLANK_MIN=2000
@@ -40,13 +41,13 @@ COLOC="${MR_DIR}/${TYPE}_SuSiE_coloc_summary.tsv"
 OUTDIR="${MR_DIR}/coloc_raw_plots/${TYPE}"
 mkdir -p "$OUTDIR"
 
-[[ -f "$COLOC" ]] || { echo "ERROR: missing $COLOC"; exit 1; }
-[[ -f "$METADATA" ]] || { echo "ERROR: missing $METADATA"; exit 1; }
-[[ -f "$GTF" ]] || { echo "ERROR: missing $GTF"; exit 1; }
+for f in "$COLOC" "$METADATA" "$GTF" "$RAW_FILE"; do
+    [[ -f "$f" ]] || { echo "ERROR: missing $f"; exit 1; }
+done
 
 module load deepTools 2>/dev/null || true
 
-export TYPE ROOT METADATA COLOC OUTDIR GTF
+export TYPE ROOT METADATA COLOC OUTDIR GTF RAW_FILE
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
 export MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
@@ -69,7 +70,9 @@ except ImportError as e:
 warnings.filterwarnings("ignore")
 
 TYPE, ROOT = os.environ["TYPE"], Path(os.environ["ROOT"])
-METADATA, COLOC, OUTDIR, GTF = map(Path, [os.environ["METADATA"], os.environ["COLOC"], os.environ["OUTDIR"], os.environ["GTF"]])
+METADATA, COLOC, OUTDIR, GTF, RAW_FILE = map(
+    Path, [os.environ["METADATA"], os.environ["COLOC"], os.environ["OUTDIR"], os.environ["GTF"], os.environ["RAW_FILE"]]
+)
 FLANK_FRAC, FLANK_MIN, FLANK_MAX = float(os.environ["FLANK_FRAC"]), int(os.environ["FLANK_MIN"]), int(os.environ["FLANK_MAX"])
 BIGWIG_BIN_BP, MAX_TRACK_POINTS = int(os.environ["BIGWIG_BIN_BP"]), int(os.environ["MAX_TRACK_POINTS"])
 CIRC_COORD_TOL = int(os.environ["CIRC_COORD_TOL"])
@@ -86,6 +89,7 @@ Y_LABELS = {"eQTL": "Z-score normalized expression", "sQTL": "Percent spliced in
 # ============================================================
 
 def norm(s): return re.sub(r"[^a-z0-9]", "", str(s).lower())
+def chr_key(s): return re.sub(r"^chr", "", str(s), flags=re.I).upper()
 def safe_name(s): return re.sub(r"[^A-Za-z0-9._+-]+", "_", str(s))[:180]
 def strip_gene_version(x): return re.sub(r"\.\d+$", "", str(x))
 def tissue_equal(a, b): return norm(a) == norm(b)
@@ -113,6 +117,23 @@ def find_header(headers, aliases, required=True):
         if any(norm(a) and norm(a) in norm(h) for a in aliases): return h
     if required: raise KeyError(f"Could not find {aliases}. Available: {headers}")
     return None
+
+# ============================================================
+# PLINK COUNTED ALLELES
+# ============================================================
+
+raw_alleles = {}
+
+with open(RAW_FILE) as fh:
+    for col in fh.readline().split():
+        m = re.match(r"^(?:chr)?([^:]+):(\d+):([ACGT]+):([ACGT]+)_([ACGT]+)$", col, re.I)
+        if m:
+            chrom, pos, ref, alt, counted = m.groups()
+            raw_alleles[(chr_key(chrom), int(pos))] = {
+                "ref": ref.upper(), "alt": alt.upper(), "counted": counted.upper()
+            }
+
+print(f"PLINK RAW allele mappings: {len(raw_alleles):,}")
 
 # ============================================================
 # COLOC SUMMARY
@@ -165,7 +186,6 @@ def get_rin(row):
 
 def metadata_for_qtl_id(qtl_id, tissue):
     qtl_id, rows = str(qtl_id), metadata
-
     if meta_tissue_col:
         tissue_rows = [r for r in metadata if tissue_equal(r.get(meta_tissue_col, ""), tissue)]
         if tissue_rows: rows = tissue_rows
@@ -261,9 +281,7 @@ def load_location_table(path, kind):
     for r in rows:
         try:
             out[str(r[idc])] = {
-                "chr": str(r[cc]),
-                "start": int(float(r[sc])),
-                "end": int(float(r[ec])),
+                "chr": str(r[cc]), "start": int(float(r[sc])), "end": int(float(r[ec])),
                 "strand": str(r[strandc]) if strandc and not missing(r.get(strandc)) else None
             }
         except: pass
@@ -416,11 +434,13 @@ def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
 
 def parse_gtf_attrs(s):
     attrs = {}
+
     for item in s.strip().split(";"):
         item = item.strip()
         if not item: continue
         p = item.split(" ", 1)
         if len(p) == 2: attrs[p[0]] = p[1].strip().strip('"')
+
     return attrs
 
 def load_reference_exons(gtf, chrom, start, end):
@@ -443,9 +463,7 @@ def load_reference_exons(gtf, chrom, start, end):
             a = parse_gtf_attrs(f[8])
 
             exons.append({
-                "start": exon_start,
-                "end": exon_end,
-                "strand": f[6],
+                "start": exon_start, "end": exon_end, "strand": f[6],
                 "gene": a.get("gene_name", a.get("gene_id", "Unknown")),
                 "gene_id": a.get("gene_id", "")
             })
@@ -459,10 +477,8 @@ def merge_intervals(intervals):
     merged = [list(intervals[0])]
 
     for s, e in intervals[1:]:
-        if s <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
+        if s <= merged[-1][1]: merged[-1][1] = max(merged[-1][1], e)
+        else: merged.append([s, e])
 
     return merged
 
@@ -537,11 +553,13 @@ def possible_snps(hit):
 
     return out
 
-def genotype_group(value):
+def genotype_group(value, flip=False):
     try: x = float(value)
     except: return None
 
+    if flip: x = 2 - x
     if not np.isfinite(x) or x < -0.1 or x > 2.1: return None
+
     return int(np.clip(np.rint(x), 0, 2))
 
 # ============================================================
@@ -566,7 +584,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
         phenotype_file, trait_location_file = qtl_dir / f"circ_{tissue}.txt", qtl_dir / "circ_location.txt"
 
     snp_file, snp_location_file = qtl_dir / f"snp_{tissue}.txt", qtl_dir / "snp_location.txt"
-    missing_files = [p for p in [phenotype_file, trait_location_file, snp_file] if not p.exists()]
+    missing_files = [p for p in [phenotype_file, trait_location_file, snp_file, snp_location_file] if not p.exists()]
 
     if missing_files:
         print("SKIPPING TISSUE: missing " + ", ".join(map(str, missing_files)))
@@ -579,7 +597,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
     phenotype_rows = extract_matrix_rows(phenotype_file, events)
     genotype_rows = extract_matrix_rows(snp_file, all_snps)
     trait_locations = load_location_table(trait_location_file, "trait")
-    snp_locations = load_location_table(snp_location_file, "snp") if snp_location_file.exists() else {}
+    snp_locations = load_location_table(snp_location_file, "snp")
 
     for index, hit in enumerate(tissue_hits, 1):
         event, pp_h4 = hit[event_col].strip(), hit.get("max_PP_H4", "")
@@ -600,6 +618,23 @@ for tissue, tissue_hits in hits_by_tissue.items():
         if genotype is None:
             print("  SKIP: candidate SNP absent from genotype matrix"); total_skipped += 1; continue
 
+        # Convert this SNP's MatrixEQTL counted-allele dosage to ALT dosage.
+        if snp not in snp_locations:
+            print(f"  SKIP: no genomic position for {snp}"); total_skipped += 1; continue
+
+        snp_chr, snp_pos = snp_locations[snp]
+        allele = raw_alleles.get((chr_key(snp_chr), int(snp_pos)))
+
+        if allele is None or allele["counted"] not in {allele["ref"], allele["alt"]}:
+            print(f"  SKIP: allele orientation unavailable for {snp}"); total_skipped += 1; continue
+
+        flip_genotype = allele["counted"] == allele["ref"]
+        print(
+            f"  SNP alleles: REF={allele['ref']} ALT={allele['alt']} "
+            f"PLINK_counted={allele['counted']} | "
+            f"{'flipping to ALT dosage' if flip_genotype else 'already ALT dosage'}"
+        )
+
         loc = find_location(trait_locations, event)
         if loc is None:
             print("  SKIP: coordinates unavailable"); total_skipped += 1; continue
@@ -615,18 +650,13 @@ for tissue, tissue_hits in hits_by_tissue.items():
         x = np.linspace(plot_start, plot_end, n_bins, endpoint=False)
         x += (plot_end - plot_start) / n_bins / 2
 
-        snp_pos = None
-        if snp in snp_locations:
-            snp_chr, p = snp_locations[snp]
-            if norm(snp_chr) == norm(chrom): snp_pos = p
-
         reference_exons = load_reference_exons(GTF, chrom, plot_start, plot_end)
         print(f"  GENCODE v49 overlapping exons: {len(reference_exons)}")
 
         records = []
 
         for qid in [q for q in phenotype if q in genotype]:
-            g = genotype_group(genotype[qid])
+            g = genotype_group(genotype[qid], flip=flip_genotype)
             if g is None: continue
 
             try: pheno = float(phenotype[qid])
@@ -703,18 +733,19 @@ for tissue, tissue_hits in hits_by_tissue.items():
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow([
-                "tissue", "qtl_type", "event", "gene_symbol", "snp", "qtl_id", "subject_id",
-                "metadata_sample_id", "filesystem_sample_id", "genotype_group", "genotype_label",
-                "genotype_raw", "phenotype", "track_source", "circ_reads", "linear_reads",
-                "circ_percent_file", "circ_match_type", "circ_matched_start", "circ_matched_end",
-                "circ_quant_source"
+                "tissue", "qtl_type", "event", "gene_symbol", "snp", "ref", "alt", "plink_counted_allele",
+                "qtl_id", "subject_id", "metadata_sample_id", "filesystem_sample_id",
+                "genotype_group", "genotype_label", "genotype_raw", "phenotype",
+                "track_source", "circ_reads", "linear_reads", "circ_percent_file",
+                "circ_match_type", "circ_matched_start", "circ_matched_end", "circ_quant_source"
             ])
 
             for r in complete:
                 writer.writerow([
-                    tissue, TYPE, event, symbol, snp, r["qtl_id"], r["subject_id"], r["sample_id"],
-                    r["sample_fs_id"], r["genotype"], GENOTYPE_LABELS[r["genotype"]],
-                    r["genotype_raw"], r["phenotype"], r["track_source"],
+                    tissue, TYPE, event, symbol, snp, allele["ref"], allele["alt"], allele["counted"],
+                    r["qtl_id"], r["subject_id"], r["sample_id"], r["sample_fs_id"],
+                    r["genotype"], GENOTYPE_LABELS[r["genotype"]], r["genotype_raw"],
+                    r["phenotype"], r["track_source"],
                     "" if r["circ_reads"] is None else r["circ_reads"],
                     "" if r["linear_reads"] is None else r["linear_reads"],
                     "" if r["circ_percent_file"] is None else r["circ_percent_file"],
@@ -732,12 +763,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
         # ============================================================
 
         fig = plt.figure(figsize=(16, 8.5))
-        gs = fig.add_gridspec(
-            3, 3,
-            height_ratios=[1.0, 1.75, 0.42],
-            hspace=0.16,
-            wspace=0.08
-        )
+        gs = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.75, 0.42], hspace=0.16, wspace=0.08)
 
         # ---------- TOP: MatrixEQTL phenotype ----------
 
@@ -763,7 +789,10 @@ for tissue, tissue_hits in hits_by_tissue.items():
         ax0.set_ylabel(Y_LABELS[TYPE])
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
-        title = f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp}"
+        title = (
+            f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp} | "
+            f"REF={allele['ref']} ALT={allele['alt']}"
+        )
 
         if pp_h4 and not missing(pp_h4):
             try: title += f" | PP.H4={float(pp_h4):.4f}"
@@ -790,7 +819,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
             ax.axvspan(trait_start, trait_end, alpha=0.12, color="#999999")
 
-            if snp_pos is not None and plot_start <= snp_pos <= plot_end:
+            if plot_start <= snp_pos <= plot_end:
                 ax.axvline(snp_pos, linestyle="--", linewidth=1.3, alpha=0.8, color="black")
 
             if TYPE == "cQTL":
@@ -800,26 +829,18 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 if gr and qgr:
                     cv = np.asarray([r["circ_reads"] for r in qgr])
                     lv = np.asarray([r["linear_reads"] for r in qgr])
-
                     annotation = (
                         f"Mean circ reads = {np.mean(cv):.2f}\n"
                         f"Mean linear reads = {np.mean(lv):.2f}\n"
                         f"Circ+ samples = {int(np.sum(cv > 0))}/{len(qgr)}\n"
                         f"Circ quant rows = {len(qgr)}/{len(gr)}"
                     )
-
-                    ax.text(
-                        0.02, 0.96, annotation,
-                        transform=ax.transAxes, ha="left", va="top",
-                        fontsize=9, color="black"
-                    )
+                    ax.text(0.02, 0.96, annotation, transform=ax.transAxes,
+                            ha="left", va="top", fontsize=9, color="black")
 
                 elif gr:
-                    ax.text(
-                        0.02, 0.96, f"Circ quant rows = 0/{len(gr)}",
-                        transform=ax.transAxes, ha="left", va="top",
-                        fontsize=9, color="black"
-                    )
+                    ax.text(0.02, 0.96, f"Circ quant rows = 0/{len(gr)}",
+                            transform=ax.transAxes, ha="left", va="top", fontsize=9, color="black")
 
             ax.set_xlim(plot_start, plot_end)
             ax.set_ylim(0, ymax)
@@ -832,7 +853,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-            # GENCODE track directly under THIS genotype panel.
             draw_reference_track(ax_ref, reference_exons, plot_start, plot_end, show_ylabel=(g == 0))
             ax_ref.set_xlabel(f"{chrom} genomic position")
 
