@@ -2,6 +2,7 @@
 ###########################################
 # _cQTL_boxplot.R
 # Lightweight version adapted for circular RNA percentages
+# Converts PLINK counted-allele dosage to ALT dosage for plotting
 ###########################################
 
 suppressPackageStartupMessages({
@@ -19,6 +20,10 @@ circ_file <- args[3]
 cov_file  <- args[4]
 out_dir   <- args[5]
 tissue    <- args[6]
+
+# Existing files needed only to orient 0/1/2 as ALT dosage
+snp_loc  <- file.path(dirname(snp_file), "snp_location.txt")
+RAW_FILE <- "/home/zw529/donglab/data/target_ALS/QTL/plink/joint_all_chrs_matrixEQTL.raw"
 
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_cQTL_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_cQTL_boxplots_colored.pdf"))
@@ -40,6 +45,25 @@ cov_mat  <- fread(cov_file, header=TRUE)
 setnames(circ_mat, names(circ_mat)[1], "circ_id")
 setnames(snp_mat, names(snp_mat)[1], "snpid")
 
+# Recover REF/ALT and PLINK-counted allele for all SNPs once
+snp_map <- fread(snp_loc)
+raw_cols <- scan(RAW_FILE, what=character(), nlines=1, quiet=TRUE)
+raw_cols <- raw_cols[grepl("^[^:]+:[0-9]+:[ACGT]+:[ACGT]+_[ACGT]+$", raw_cols)]
+
+alleles <- data.table(raw_col=raw_cols)
+alleles[, c("variant", "counted") := tstrsplit(raw_col, "_", fixed=TRUE)]
+alleles[, c("chr", "pos", "ref", "alt") := tstrsplit(variant, ":", fixed=TRUE)]
+alleles[, chr := sub("^chr", "", chr)]
+snp_map[, `:=`(chr_key=sub("^chr", "", as.character(chr)), pos_key=as.character(pos))]
+alleles <- merge(
+  snp_map[, .(snpid, chr_key, pos_key)],
+  alleles[, .(chr_key=chr, pos_key=pos, ref, alt, counted)],
+  by=c("chr_key", "pos_key"), all.x=TRUE
+)
+
+message(sprintf("# Allele mappings recovered: %d / %d SNPs",
+                sum(!is.na(alleles$counted)), nrow(alleles)))
+
 # Process covariates
 cov_first_col <- names(cov_mat)[1]
 als_row <- cov_mat[get(cov_first_col) == "is_als", ]
@@ -57,28 +81,36 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
     pdf(pdf_path, width=12, height=5)
     plots_made <- 0
     pairs_skipped <- 0
-    
+
     for (i in seq_len(nrow(pairs))) {
-        c_id <- pairs$circ_id[i]  # Used to pull data from matrix and title plot
+        c_id <- pairs$circ_id[i]
         S    <- pairs$snpid[i]
-        
-        # Pull rows using the clean circRNA ID match
+
         circ_row <- circ_mat[circ_id == c_id]
         snp_row  <- snp_mat[snpid == S]
-        
+
         if (nrow(circ_row) == 0 || nrow(snp_row) == 0) {
             pairs_skipped <- pairs_skipped + 1
             next
         }
-        
+
         circ_vals <- as.numeric(unlist(circ_row[, -1, with=FALSE], use.names=FALSE))
         snp_vals  <- as.numeric(unlist(snp_row[, -1, with=FALSE], use.names=FALSE))
-        
+
         if (length(circ_vals) == 0 || length(snp_vals) == 0 || length(circ_vals) != length(snp_vals)) {
             pairs_skipped <- pairs_skipped + 1
             next
         }
-        
+
+        # Convert PLINK counted-allele dosage to ALT dosage
+        a <- alleles[snpid == S]
+        if (nrow(a) != 1 || is.na(a$counted[1]) || !(a$counted[1] %in% c(a$ref[1], a$alt[1]))) {
+            message("# WARNING: allele orientation unavailable for ", S, "; skipping.")
+            pairs_skipped <- pairs_skipped + 1
+            next
+        }
+        if (a$counted[1] == a$ref[1]) snp_vals <- 2 - snp_vals
+
         df <- data.frame(
             circ_percent = circ_vals,
             SNP = snp_vals,
@@ -87,7 +119,7 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
             p_cex = if(use_status_colors) p_sizes else rep(0.7, length(circ_vals)),
             stringsAsFactors = FALSE
         )
-        
+
         df <- df[!is.na(df$SNP) & !is.na(df$circ_percent), ]
         if (nrow(df) < 5) {
             pairs_skipped <- pairs_skipped + 1
@@ -102,44 +134,54 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         }
 
         par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
-        
+
         # Additive Model
         add_counts <- table(factor(df$SNP, levels=0:2))
         add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", add_counts, ")")
         df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
-        boxplot(circ_percent ~ SNP_f, data=df, col="lightgreen", outline=FALSE, 
+
+        boxplot(circ_percent ~ SNP_f, data=df, col="lightgreen", outline=FALSE,
                 ylab="circRNA Percentage (%)", xlab="Genotype",
                 main=paste0("Additive Model\n(p = ", get_p(circ_percent ~ SNP, df), ")"))
-        points(jitter(as.numeric(df$SNP_f), amount=0.15), df$circ_percent, pch=df$p_pch, col=df$p_col, cex=df$p_cex)
-        if (use_status_colors) legend("topleft", legend = c("ALS", "Control"), col = c("red", "#9932CC"), pch = c(16, 18), pt.cex = c(0.7, 1.1), bty = "n", cex = 0.8)
-        
+        points(jitter(as.numeric(df$SNP_f), amount=0.15), df$circ_percent,
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        if (use_status_colors) legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+                                      pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
+
         # Dominant Model
         df$dom_val <- ifelse(df$SNP > 0, 1, 0)
         dom_counts <- table(factor(df$dom_val, levels=0:1))
         dom_labels <- paste0(c("Ref/Ref", "Any Alt"), "\n(N=", dom_counts, ")")
         df$dom_f <- factor(df$dom_val, levels=0:1, labels=dom_labels)
-        boxplot(circ_percent ~ dom_f, data=df, col="lightblue", outline=FALSE, 
+
+        boxplot(circ_percent ~ dom_f, data=df, col="lightblue", outline=FALSE,
                 ylab="circRNA Percentage (%)", xlab="Genotype",
                 main=paste0("Dominant Model\n(p = ", get_p(circ_percent ~ dom_val, df), ")"))
-        points(jitter(as.numeric(df$dom_f), amount=0.15), df$circ_percent, pch=df$p_pch, col=df$p_col, cex=df$p_cex)
-        if (use_status_colors) legend("topleft", legend = c("ALS", "Control"), col = c("red", "#9932CC"), pch = c(16, 18), pt.cex = c(0.7, 1.1), bty = "n", cex = 0.8)
+        points(jitter(as.numeric(df$dom_f), amount=0.15), df$circ_percent,
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        if (use_status_colors) legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+                                      pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
 
         # Recessive Model
         df$rec_val <- ifelse(df$SNP == 2, 1, 0)
         rec_counts <- table(factor(df$rec_val, levels=0:1))
         rec_labels <- paste0(c("Non-Hom Alt", "Hom Alt"), "\n(N=", rec_counts, ")")
         df$rec_f <- factor(df$rec_val, levels=0:1, labels=rec_labels)
-        boxplot(circ_percent ~ rec_f, data=df, col="lightpink", outline=FALSE, 
+
+        boxplot(circ_percent ~ rec_f, data=df, col="lightpink", outline=FALSE,
                 ylab="circRNA Percentage (%)", xlab="Genotype",
                 main=paste0("Recessive Model\n(p = ", get_p(circ_percent ~ rec_val, df), ")"))
-        points(jitter(as.numeric(df$rec_f), amount=0.15), df$circ_percent, pch=df$p_pch, col=df$p_col, cex=df$p_cex)
-        if (use_status_colors) legend("topleft", legend = c("ALS", "Control"), col = c("red", "#9932CC"), pch = c(16, 18), pt.cex = c(0.7, 1.1), bty = "n", cex = 0.8)
-        
-        # Label the top of the page cleanly using the unique circRNA identifier
-        mtext(paste("circRNA:", c_id, "| SNP:", S), outer=TRUE, cex=1.0, font=2, line=0.5)
-        
+        points(jitter(as.numeric(df$rec_f), amount=0.15), df$circ_percent,
+               pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+        if (use_status_colors) legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+                                      pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
+
+        mtext(paste("circRNA:", c_id, "| SNP:", S, "| REF:", a$ref[1], "| ALT:", a$alt[1]),
+              outer=TRUE, cex=1.0, font=2, line=0.5)
+
         plots_made <- plots_made + 1
     }
+
     dev.off()
     message(sprintf("# Plots made: %d, pairs skipped: %d", plots_made, pairs_skipped))
 }
