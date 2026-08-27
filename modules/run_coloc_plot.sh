@@ -2,9 +2,9 @@
 #SBATCH --job-name=run_coloc_plot
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.err
-#SBATCH --time=4:00:00
+#SBATCH --time=1:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=50G
+#SBATCH --mem=40G
 
 # ============================================================
 # PARAMETERS
@@ -19,7 +19,7 @@ FLANK_FRAC=0.20                       # 20% of trait width on each side
 FLANK_MIN=2000                        # minimum flank = 2 kb
 FLANK_MAX=20000                       # maximum flank = 20 kb
 BIGWIG_BIN_BP=25                      # track resolution
-MAX_TRACK_POINTS=2500                 # avoid excessive plotting points
+MAX_TRACK_POINTS=2500
 MAX_HITS=0                            # 0 = all passing colocs
 TISSUE_FILTER=""                      # blank = all tissues
 OVERWRITE=0                           # 1 = remake existing plots
@@ -52,7 +52,7 @@ export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS
 export MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
 python - <<'PY'
-import os, re, csv, sys, glob, math, warnings
+import os, re, csv, sys, math, warnings
 from pathlib import Path
 from collections import defaultdict
 
@@ -85,15 +85,20 @@ TISSUE_FILTER = os.environ["TISSUE_FILTER"].strip()
 OVERWRITE = int(os.environ["OVERWRITE"])
 DPI = int(os.environ["DPI"])
 
-# PLINK additive dosage convention used by the QTL matrices:
-# 0 = Ref/Ref, 1 = Het, 2 = Hom Alt
 GENOTYPE_LABELS = {0: "Ref/Ref", 1: "Het", 2: "Hom Alt"}
 
-# Colorblind-safe palette: blue / purple / gray.
-GENOTYPE_COLORS = {
-    0: "#0072B2",
-    1: "#CC79A7",
-    2: "#666666"
+# Top phenotype plot colors, matched to the existing boxplot style.
+TOP_COLORS = {
+    0: "#90EE90",   # light green
+    1: "#ADD8E6",   # light blue
+    2: "#FFB6C1"    # pink
+}
+
+# Bottom sequencing tracks kept darker for visibility.
+TRACK_COLORS = {
+    0: "#228B22",
+    1: "#4682B4",
+    2: "#C75B7A"
 }
 
 # ============================================================
@@ -130,7 +135,7 @@ def tissue_display(tissue):
 
 def genomic_formatter(x, pos=None):
     if abs(x) >= 1_000_000:
-        return f"{x / 1_000_000:.1f} Mb"
+        return f"{x / 1_000_000:.3f} Mb"
     if abs(x) >= 1_000:
         return f"{x / 1_000:.1f} kb"
     return f"{x:.0f}"
@@ -153,7 +158,7 @@ def find_header(headers, aliases, required=True):
     return None
 
 # ============================================================
-# COLOC SUMMARY
+# COLOCALIZATION SUMMARY
 # ============================================================
 
 with open(COLOC, newline="") as fh:
@@ -224,7 +229,6 @@ def get_rin(row):
         return -1.0
 
 def metadata_for_qtl_id(qtl_id, tissue):
-    """Use exact sample if matrix ID is a sample; otherwise highest-RIN sample for subject+tissue."""
     qtl_id = str(qtl_id)
     tissue_rows = metadata
 
@@ -248,7 +252,6 @@ def metadata_for_qtl_id(qtl_id, tissue):
 # ============================================================
 
 def extract_matrix_rows(path, wanted):
-    """Read only requested rows instead of loading entire MatrixEQTL matrix."""
     wanted = set(str(x) for x in wanted)
     wanted_nover = {strip_gene_version(x) for x in wanted}
     result = {}
@@ -287,6 +290,7 @@ def find_matrix_row(rows, event):
     for rid, values in rows.items():
         if strip_gene_version(rid) == target:
             return values
+
     return None
 
 # ============================================================
@@ -313,6 +317,7 @@ def load_location_table(path, kind):
                 headers.append("end")
             if n >= 5:
                 headers.append("strand")
+
             while len(headers) < n:
                 headers.append(f"extra{len(headers)}")
 
@@ -326,6 +331,7 @@ def load_location_table(path, kind):
                 all_lines.append(split_line(line, delim))
 
     rows = []
+
     for fields in all_lines:
         if len(fields) < len(headers):
             fields += [""] * (len(headers) - len(fields))
@@ -356,9 +362,11 @@ def load_location_table(path, kind):
     strand_col = find_header(headers, ["strand"], required=False)
 
     out = {}
+
     for r in rows:
         try:
             rid = str(r[id_col])
+
             out[rid] = {
                 "chr": str(r[chr_col]),
                 "start": int(float(r[start_col])),
@@ -380,6 +388,7 @@ def parse_event_coordinates(event):
 
     for pat in patterns:
         m = re.search(pat, str(event))
+
         if m:
             return {
                 "chr": m.group(1),
@@ -387,6 +396,7 @@ def parse_event_coordinates(event):
                 "end": int(m.group(3)),
                 "strand": m.group(4) if len(m.groups()) >= 4 else None
             }
+
     return None
 
 def find_location(locations, event):
@@ -394,6 +404,7 @@ def find_location(locations, event):
         return locations[event]
 
     target = strip_gene_version(event)
+
     for rid, loc in locations.items():
         if strip_gene_version(rid) == target:
             return loc
@@ -401,7 +412,7 @@ def find_location(locations, event):
     return parse_event_coordinates(event)
 
 # ============================================================
-# SAMPLE DIRECTORY
+# SAMPLE DIRECTORY RESOLUTION
 # ============================================================
 
 processed_cache = {}
@@ -412,6 +423,7 @@ def resolve_sample_dir(tissue, sample_id):
 
     for candidate in candidates:
         p = processed / candidate
+
         if p.is_dir():
             return p
 
@@ -419,10 +431,12 @@ def resolve_sample_dir(tissue, sample_id):
 
     if key not in processed_cache:
         lookup = {}
+
         if processed.is_dir():
             for p in processed.iterdir():
                 if p.is_dir():
                     lookup[norm(p.name)] = p
+
         processed_cache[key] = lookup
 
     return processed_cache[key].get(norm(sample_id))
@@ -440,6 +454,7 @@ def bw_chrom(bw, chrom):
         return chrom[3:]
     if "chr" + chrom in chroms:
         return "chr" + chrom
+
     return None
 
 def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
@@ -451,18 +466,24 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
             return None
 
         bw = pyBigWig.open(str(path))
+
         try:
             c = bw_chrom(bw, chrom)
+
             if c is None:
                 return None
 
             vals = bw.stats(c, int(start), int(end), nBins=int(n_bins), type="mean")
-            return np.abs(np.asarray([0.0 if v is None else float(v) for v in vals], dtype=float))
+
+            return np.abs(
+                np.asarray([0.0 if v is None else float(v) for v in vals], dtype=float)
+            )
         finally:
             bw.close()
 
     if strand == "+":
         return read_one(plus), str(plus)
+
     if strand == "-":
         return read_one(minus), str(minus)
 
@@ -508,6 +529,7 @@ def resolve_bam_chrom(bam, chrom):
         return chrom[3:]
     if "chr" + chrom in refs:
         return "chr" + chrom
+
     return None
 
 def mapped_reads_from_star(sample_dir):
@@ -517,17 +539,20 @@ def mapped_reads_from_star(sample_dir):
         return None
 
     key = str(star)
+
     if key in bam_mapped_cache:
         return bam_mapped_cache[key]
 
     try:
         if not ensure_bam_index(star):
             return None
+
         with pysam.AlignmentFile(str(star), "rb") as bam:
             n = float(bam.mapped)
 
         bam_mapped_cache[key] = n
         return n
+
     except Exception:
         return None
 
@@ -542,6 +567,7 @@ def bin_array(values, n_bins):
 
     for i in range(n_bins):
         a, b = edges[i], edges[i + 1]
+
         if b > a:
             out[i] = np.mean(values[a:b])
 
@@ -561,6 +587,7 @@ def remap_bam_vector(sample_dir, chrom, start, end, n_bins):
     try:
         with pysam.AlignmentFile(str(bam_path), "rb") as bam:
             c = resolve_bam_chrom(bam, chrom)
+
             if c is None:
                 return None, str(bam_path)
 
@@ -612,6 +639,7 @@ def possible_snps(hit):
 
     for x in candidates:
         x = str(x).strip()
+
         if x and x not in seen:
             seen.add(x)
             out.append(x)
@@ -630,7 +658,7 @@ def genotype_group(value):
     return int(np.clip(np.rint(x), 0, 2))
 
 # ============================================================
-# PROCESS TISSUE BY TISSUE
+# PROCESS BY TISSUE
 # ============================================================
 
 hits_by_tissue = defaultdict(list)
@@ -655,9 +683,11 @@ for tissue, tissue_hits in hits_by_tissue.items():
     if TYPE == "eQTL":
         phenotype_file = qtl_dir / f"expression_{tissue}.txt"
         trait_location_file = qtl_dir / "gene_location.txt"
+
     elif TYPE == "sQTL":
         phenotype_file = qtl_dir / f"splicing_{tissue}.txt"
         trait_location_file = qtl_dir / "splicing_location.txt"
+
     else:
         phenotype_file = qtl_dir / f"circ_{tissue}.txt"
         trait_location_file = qtl_dir / "circ_location.txt"
@@ -665,16 +695,26 @@ for tissue, tissue_hits in hits_by_tissue.items():
     snp_file = qtl_dir / f"snp_{tissue}.txt"
     snp_location_file = qtl_dir / "snp_location.txt"
 
-    missing_files = [p for p in [phenotype_file, trait_location_file, snp_file] if not p.exists()]
+    missing_files = [
+        p for p in [phenotype_file, trait_location_file, snp_file]
+        if not p.exists()
+    ]
 
     if missing_files:
         print("SKIPPING TISSUE: missing input files:")
+
         for p in missing_files:
             print(f"  {p}")
+
         total_skipped += len(tissue_hits)
         continue
 
-    events = {h[event_col].strip() for h in tissue_hits if not missing(h.get(event_col))}
+    events = {
+        h[event_col].strip()
+        for h in tissue_hits
+        if not missing(h.get(event_col))
+    }
+
     all_snps = set()
 
     for h in tissue_hits:
@@ -688,7 +728,12 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
     print("Reading trait locations...")
     trait_locations = load_location_table(trait_location_file, "trait")
-    snp_locations = load_location_table(snp_location_file, "snp") if snp_location_file.exists() else {}
+
+    snp_locations = (
+        load_location_table(snp_location_file, "snp")
+        if snp_location_file.exists()
+        else {}
+    )
 
     for index, hit in enumerate(tissue_hits, 1):
 
@@ -742,7 +787,12 @@ for tissue, tissue_hits in hits_by_tissue.items():
         plot_end = trait_end + flank
         plot_width = plot_end - plot_start
 
-        n_bins = int(min(MAX_TRACK_POINTS, max(50, math.ceil(plot_width / BIGWIG_BIN_BP))))
+        n_bins = int(
+            min(
+                MAX_TRACK_POINTS,
+                max(50, math.ceil(plot_width / BIGWIG_BIN_BP))
+            )
+        )
 
         x = np.linspace(plot_start, plot_end, n_bins, endpoint=False)
         x += (plot_end - plot_start) / n_bins / 2
@@ -754,18 +804,20 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         if snp in snp_locations:
             snp_chr, possible_pos = snp_locations[snp]
+
             if norm(snp_chr) == norm(chrom):
                 snp_pos = possible_pos
 
         # ----------------------------------------------------
-        # Build candidate subject list
-        # genotype + phenotype + metadata
+        # Candidate subjects:
+        # genotype + phenotype + metadata + sample directory
         # ----------------------------------------------------
 
         common_ids = [qid for qid in phenotype if qid in genotype]
         subject_records = []
 
         for qid in common_ids:
+
             g = genotype_group(genotype[qid])
 
             if g is None:
@@ -807,10 +859,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 "track_source": None
             })
 
-        # ----------------------------------------------------
-        # Extract tracks
-        # ----------------------------------------------------
-
         print(f"  Candidate subjects before track QC: {len(subject_records)}")
         print("  Extracting RNA-seq tracks...")
 
@@ -828,14 +876,13 @@ for tissue, tissue_hits in hits_by_tissue.items():
             r["track"] = vec
             r["track_source"] = source
 
-        # ====================================================
-        # COMPLETE-CASE FILTER
+        # ----------------------------------------------------
+        # COMPLETE CASES ONLY
         #
-        # IMPORTANT:
-        # A subject is now retained ONLY if their sequencing
-        # track exists. The SAME subjects are therefore used
-        # in BOTH the raw phenotype and RNA-seq panels.
-        # ====================================================
+        # These exact subjects are used for BOTH:
+        #   1. phenotype dots
+        #   2. sequencing tracks
+        # ----------------------------------------------------
 
         complete_records = [
             r for r in subject_records
@@ -852,24 +899,28 @@ for tissue, tissue_hits in hits_by_tissue.items():
         }
 
         print(f"  Complete subjects retained: {len(complete_records)}")
-        print(f"  Subjects removed for missing/unusable tracks: {dropped}")
+        print(f"  Removed for missing/unusable tracks: {dropped}")
         print(
-            f"  COMPLETE GENOTYPE COUNTS: "
-            f"Ref/Ref={counts[0]}, Het={counts[1]}, Hom Alt={counts[2]}"
+            f"  COUNTS: Ref/Ref={counts[0]}, "
+            f"Het={counts[1]}, Hom Alt={counts[2]}"
         )
 
         if not complete_records:
-            print("  SKIP: no complete subjects with genotype + phenotype + sequencing track")
+            print("  SKIP: no complete subjects")
             total_skipped += 1
             continue
 
         tracks_by_group = {
-            g: [r["track"] for r in complete_records if r["genotype"] == g]
+            g: [
+                r["track"]
+                for r in complete_records
+                if r["genotype"] == g
+            ]
             for g in [0, 1, 2]
         }
 
         # ----------------------------------------------------
-        # Output names
+        # OUTPUT
         # ----------------------------------------------------
 
         label = symbol if symbol else event
@@ -882,10 +933,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
         if not OVERWRITE and pdf.exists() and png.exists():
             print("  EXISTS; skipping plot")
             continue
-
-        # ----------------------------------------------------
-        # Complete-case audit table
-        # ----------------------------------------------------
 
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
@@ -906,7 +953,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 ])
 
         # ----------------------------------------------------
-        # Shared coverage Y-axis across all genotype panels
+        # SHARED LOWER-PANEL Y-AXIS
         # ----------------------------------------------------
 
         all_track_values = [
@@ -921,9 +968,9 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         ymax *= 1.05
 
-        # ----------------------------------------------------
-        # Plot
-        # ----------------------------------------------------
+        # ====================================================
+        # PLOT
+        # ====================================================
 
         fig = plt.figure(figsize=(16, 8))
 
@@ -936,13 +983,13 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         # ====================================================
         # TOP: RAW PHENOTYPE
-        # Only complete subjects appear here.
         # ====================================================
 
         ax0 = fig.add_subplot(gs[0, :])
         rng = np.random.default_rng(12345)
 
         for g in [0, 1, 2]:
+
             vals = np.asarray([
                 r["phenotype"]
                 for r in complete_records
@@ -953,17 +1000,36 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 continue
 
             jitter = rng.normal(0, 0.055, size=len(vals))
-
-            ax0.scatter(
-                np.full(len(vals), g) + jitter, vals,
-                s=24, alpha=0.60, color=GENOTYPE_COLORS[g]
-            )
-
             mean_val = np.mean(vals)
 
+            ax0.scatter(
+                np.full(len(vals), g) + jitter,
+                vals,
+                s=24,
+                alpha=0.65,
+                color=TOP_COLORS[g],
+                edgecolor="none"
+            )
+
+            # Mean horizontal bar.
             ax0.plot(
-                [g - 0.18, g + 0.18], [mean_val, mean_val],
-                linewidth=3, color=GENOTYPE_COLORS[g]
+                [g - 0.18, g + 0.18],
+                [mean_val, mean_val],
+                linewidth=3,
+                color=TOP_COLORS[g]
+            )
+
+            # Black mean annotation above the upper-left side
+            # of each group's mean bar.
+            ax0.annotate(
+                f"Mean = {mean_val:.4f}",
+                xy=(g - 0.18, mean_val),
+                xytext=(0, 7),
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
+                fontsize=8.5,
+                color="black"
             )
 
         ax0.set_xticks(
@@ -977,8 +1043,16 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         ax0.set_ylabel("Raw expression phenotype")
 
-        title_event = f"{symbol} ({event})" if symbol and symbol != event else event
-        title = f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp}"
+        title_event = (
+            f"{symbol} ({event})"
+            if symbol and symbol != event
+            else event
+        )
+
+        title = (
+            f"{tissue_display(tissue)} | "
+            f"{TYPE} | {title_event} | {snp}"
+        )
 
         if pp_h4 and not missing(pp_h4):
             try:
@@ -992,7 +1066,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         # ====================================================
         # BOTTOM: RNA-SEQ TRACKS
-        # Exactly same complete subjects as top panel.
         # ====================================================
 
         for g in [0, 1, 2]:
@@ -1002,70 +1075,105 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
             for arr in group_tracks:
                 ax.plot(
-                    x, arr,
+                    x,
+                    arr,
                     linewidth=0.65,
-                    alpha=0.18,
-                    color=GENOTYPE_COLORS[g]
+                    alpha=0.16,
+                    color=TRACK_COLORS[g]
                 )
 
             if group_tracks:
-                mean_track = np.nanmean(np.vstack(group_tracks), axis=0)
+                mean_track = np.nanmean(
+                    np.vstack(group_tracks),
+                    axis=0
+                )
 
                 ax.plot(
-                    x, mean_track,
-                    linewidth=2.4,
-                    color=GENOTYPE_COLORS[g],
+                    x,
+                    mean_track,
+                    linewidth=2.5,
+                    color=TRACK_COLORS[g],
                     label="Group mean"
                 )
             else:
                 ax.text(
-                    0.5, 0.5, "No subjects",
+                    0.5, 0.5,
+                    "No subjects",
                     transform=ax.transAxes,
-                    ha="center", va="center"
+                    ha="center",
+                    va="center"
                 )
 
-            # Shaded region = phenotype/event locus.
-            ax.axvspan(trait_start, trait_end, alpha=0.12, color="#999999")
+            # Shaded region = affected trait locus.
+            ax.axvspan(
+                trait_start,
+                trait_end,
+                alpha=0.12,
+                color="#999999"
+            )
 
-            # Dashed line = coloc SNP, if SNP position lies inside plotted region.
-            if snp_pos is not None and plot_start <= snp_pos <= plot_end:
+            # Dashed black line = coloc SNP.
+            if (
+                snp_pos is not None
+                and plot_start <= snp_pos <= plot_end
+            ):
                 ax.axvline(
                     snp_pos,
                     linestyle="--",
                     linewidth=1.3,
                     alpha=0.8,
-                    color="#000000"
+                    color="black"
                 )
 
             ax.set_xlim(plot_start, plot_end)
 
-            # Same Y-axis across Ref/Ref, Het, Hom Alt.
+            # EXACT SAME y-axis for Ref/Ref, Het and Hom Alt.
             ax.set_ylim(0, ymax)
 
-            ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})")
-            ax.set_xlabel(f"{chrom} genomic position")
+            ax.set_title(
+                f"{GENOTYPE_LABELS[g]} (N={counts[g]})"
+            )
+
+            ax.set_xlabel(
+                f"{chrom} genomic position"
+            )
 
             if g == 0:
                 if TYPE == "cQTL":
-                    ax.set_ylabel("Remapped read coverage\n(RPM-normalized)")
+                    ax.set_ylabel(
+                        "Remapped read coverage\n"
+                        "(RPM-normalized)"
+                    )
                 else:
-                    ax.set_ylabel("Normalized RNA-seq read density")
+                    ax.set_ylabel(
+                        "Normalized RNA-seq read density"
+                    )
             else:
                 ax.tick_params(labelleft=False)
 
-            # Compact genomic coordinates: e.g. 15.4 Mb instead of 15400000.
-            ax.xaxis.set_major_formatter(FuncFormatter(genomic_formatter))
-            ax.locator_params(axis="x", nbins=5)
+            # Genomic coordinates displayed with 3 decimal Mb
+            # precision, e.g. 134.873 Mb.
+            ax.xaxis.set_major_formatter(
+                FuncFormatter(genomic_formatter)
+            )
+
+            # Keep labels sparse enough to avoid overlap.
+            ax.locator_params(
+                axis="x",
+                nbins=5
+            )
 
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
         fig.text(
-            0.5, 0.015,
+            0.5,
+            0.015,
             (
                 f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | "
                 f"flank: {flank:,} bp each side | "
-                f"shaded region = trait locus | dashed line = {snp}"
+                f"shaded region = trait locus | "
+                f"dashed line = {snp}"
             ),
             ha="center",
             fontsize=9
