@@ -20,8 +20,7 @@ FLANK_MIN=2000
 FLANK_MAX=20000
 BIGWIG_BIN_BP=25
 MAX_TRACK_POINTS=2500
-CIRC_JUNCTION_TOL=2                  # bp tolerance for circ back-splice breakpoints
-MAX_HITS=0                           # 0 = all passing colocs
+MAX_HITS=0                            # 0 = all passing colocs
 TISSUE_FILTER=""                     # blank = all tissues
 OVERWRITE=0
 DPI=180
@@ -45,7 +44,7 @@ mkdir -p "$OUTDIR"
 module load deepTools 2>/dev/null || true
 
 export TYPE ROOT METADATA COLOC OUTDIR
-export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_JUNCTION_TOL
+export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS
 export MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
 python - <<'PY'
@@ -69,13 +68,13 @@ TYPE, ROOT = os.environ["TYPE"], Path(os.environ["ROOT"])
 METADATA, COLOC, OUTDIR = map(Path, [os.environ["METADATA"], os.environ["COLOC"], os.environ["OUTDIR"]])
 FLANK_FRAC, FLANK_MIN, FLANK_MAX = float(os.environ["FLANK_FRAC"]), int(os.environ["FLANK_MIN"]), int(os.environ["FLANK_MAX"])
 BIGWIG_BIN_BP, MAX_TRACK_POINTS = int(os.environ["BIGWIG_BIN_BP"]), int(os.environ["MAX_TRACK_POINTS"])
-CIRC_JUNCTION_TOL = int(os.environ["CIRC_JUNCTION_TOL"])
 MAX_HITS, TISSUE_FILTER = int(os.environ["MAX_HITS"]), os.environ["TISSUE_FILTER"].strip()
 OVERWRITE, DPI = int(os.environ["OVERWRITE"]), int(os.environ["DPI"])
 
 GENOTYPE_LABELS = {0: "Ref/Ref", 1: "Het", 2: "Hom Alt"}
 TOP_COLORS = {0: "#90EE90", 1: "#ADD8E6", 2: "#FFB6C1"}
 TRACK_COLORS = {0: "#228B22", 1: "#4682B4", 2: "#C75B7A"}
+
 Y_LABELS = {
     "eQTL": "Z-score normalized expression",
     "sQTL": "Percent spliced in",
@@ -161,6 +160,7 @@ def get_rin(row):
 
 def metadata_for_qtl_id(qtl_id, tissue):
     qtl_id, rows = str(qtl_id), metadata
+
     if meta_tissue_col:
         tissue_rows = [r for r in metadata if tissue_equal(r.get(meta_tissue_col, ""), tissue)]
         if tissue_rows: rows = tissue_rows
@@ -194,6 +194,7 @@ def extract_matrix_rows(path, wanted):
 
             vals = fields[1:] + [""] * max(0, len(samples) - len(fields[1:]))
             result[rid] = dict(zip(samples, vals[:len(samples)]))
+
     return result
 
 def find_matrix_row(rows, event):
@@ -257,20 +258,23 @@ def load_location_table(path, kind):
                 "strand": str(r[strandc]) if strandc and not missing(r.get(strandc)) else None
             }
         except: pass
+
     return out
 
 def parse_event_coordinates(event):
-    patterns = [
-        r"(chr[^:]+):(\d+)-(\d+):([+-])", r"(chr[^:]+):(\d+):(\d+):([+-])",
-        r"(chr[^:]+):(\d+)-(\d+)", r"(chr[^:]+):(\d+):(\d+)"
-    ]
-    for pat in patterns:
+    for pat in [
+        r"(chr[^:]+):(\d+)-(\d+):([+-])",
+        r"(chr[^:]+):(\d+):(\d+):([+-])",
+        r"(chr[^:]+):(\d+)-(\d+)",
+        r"(chr[^:]+):(\d+):(\d+)"
+    ]:
         m = re.search(pat, str(event))
         if m:
             return {
                 "chr": m.group(1), "start": int(m.group(2)), "end": int(m.group(3)),
                 "strand": m.group(4) if len(m.groups()) >= 4 else None
             }
+
     return None
 
 def find_location(locations, event):
@@ -279,16 +283,15 @@ def find_location(locations, event):
     return next((loc for rid, loc in locations.items() if strip_gene_version(rid) == target), parse_event_coordinates(event))
 
 # ============================================================
-# SAMPLE DIRECTORIES / DASH-UNDERSCORE RESOLUTION
+# SAMPLE DIRECTORY RESOLUTION
 # ============================================================
 
 processed_cache = {}
 
 def resolve_sample_dir(tissue, sample_id):
     processed = ROOT / tissue / "RNAseq" / "Processed"
-    candidates = [sample_id, sample_id.replace("-", "_"), sample_id.replace("_", "-")]
 
-    for candidate in candidates:
+    for candidate in [sample_id, sample_id.replace("-", "_"), sample_id.replace("_", "-")]:
         p = processed / candidate
         if p.is_dir(): return p
 
@@ -313,10 +316,12 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
 
     def read_one(path):
         if not path.exists(): return None
+
         bw = pyBigWig.open(str(path))
         try:
             c = bw_chrom(bw, chrom)
             if c is None: return None
+
             vals = bw.stats(c, int(start), int(end), nBins=int(n_bins), type="mean")
             return np.abs(np.asarray([0.0 if v is None else float(v) for v in vals]))
         finally:
@@ -326,56 +331,52 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
     if strand == "-": return read_one(minus), str(minus)
 
     a, b = read_one(plus), read_one(minus)
+
     if a is None and b is None: return None, None
     if a is None: return b, str(minus)
     if b is None: return a, str(plus)
+
     return a + b, f"{plus};{minus}"
 
 # ============================================================
-# cQTL BACK-SPLICE SUPPORT FROM STAR CHIMERIC JUNCTIONS
+# cQTL QUANTIFICATION — SAME SOURCE AS cQTL PHENOTYPE
 # ============================================================
 
-def chimeric_junction_file(sample_dir):
-    # sample_dir.name is the ACTUAL filesystem name, so dash/underscore
-    # differences from metadata no longer matter here.
-    sample = sample_dir.name
-    return sample_dir / "remap_chimeric" / f"{sample}.remap.Chimeric.out.junction"
+def circ_quant_file(sample_dir):
+    return sample_dir / "circularRNA_known_circ_percentage.txt"
 
-def count_circ_junction_reads(path, chrom, start, end, strand, tolerance=CIRC_JUNCTION_TOL):
+def read_circ_quant(path, chrom, start, end, strand):
     """
-    Count unique reads whose two STAR chimeric breakpoints match the
-    circRNA back-splice boundaries. Either breakpoint ordering is accepted.
-    A count of zero is valid; None means the junction file itself is missing.
+    Read exact circRNA quantification generated by the upstream circRNA
+    pipeline. Returns circ_reads, linear_reads and circ_percent.
     """
-    if not path.exists(): return None
-
-    read_names = set()
+    if not path.exists():
+        return None
 
     try:
         with open(path) as fh:
-            for line in fh:
-                f = line.rstrip("\n").split("\t")
-                if len(f) < 10: continue
+            reader = csv.DictReader(fh, delimiter="\t")
 
+            for row in reader:
                 try:
-                    chr1, pos1, str1 = f[0], int(f[1]), f[2]
-                    chr2, pos2, str2 = f[3], int(f[4]), f[5]
-                except (ValueError, IndexError):
+                    if (
+                        norm(row["chrom"]) == norm(chrom)
+                        and int(float(row["start"])) == int(start)
+                        and int(float(row["end"])) == int(end)
+                        and str(row["strand"]).strip() == str(strand).strip()
+                    ):
+                        return {
+                            "circ_reads": float(row["circ_reads"]),
+                            "linear_reads": float(row["linear_reads"]),
+                            "circ_percent": float(row["circ_percent"])
+                        }
+                except (ValueError, KeyError, TypeError):
                     continue
 
-                if norm(chr1) != norm(chrom) or norm(chr2) != norm(chrom): continue
-                if strand in {"+", "-"} and (str1 != strand or str2 != strand): continue
-
-                direct = abs(pos1 - start) <= tolerance and abs(pos2 - end) <= tolerance
-                reverse = abs(pos1 - end) <= tolerance and abs(pos2 - start) <= tolerance
-
-                if direct or reverse: read_names.add(f[9])
-
-        return len(read_names)
-
     except Exception as e:
-        print(f"    WARNING: could not read chimeric junction file {path}: {e}")
-        return None
+        print(f"    WARNING: could not read circ quantification file {path}: {e}")
+
+    return None
 
 # ============================================================
 # SNP SELECTION
@@ -403,11 +404,13 @@ def possible_snps(hit):
     out = []
     for x in map(str.strip, candidates):
         if x and x not in out: out.append(x)
+
     return out
 
 def genotype_group(value):
     try: x = float(value)
     except: return None
+
     if not np.isfinite(x) or x < -0.1 or x > 2.1: return None
     return int(np.clip(np.rint(x), 0, 2))
 
@@ -451,27 +454,39 @@ for tissue, tissue_hits in hits_by_tissue.items():
     for index, hit in enumerate(tissue_hits, 1):
         event, pp_h4 = hit[event_col].strip(), hit.get("max_PP_H4", "")
         symbol = hit.get(symbol_col, "").strip() if symbol_col else ""
+
         print(f"\n[{index}/{len(tissue_hits)}] {tissue} | {event} | {symbol}")
 
         phenotype = find_matrix_row(phenotype_rows, event)
+
         if phenotype is None:
-            print("  SKIP: phenotype missing"); total_skipped += 1; continue
+            print("  SKIP: phenotype missing")
+            total_skipped += 1
+            continue
 
         snp = genotype = None
+
         for candidate in possible_snps(hit):
             if candidate in genotype_rows:
                 snp, genotype = candidate, genotype_rows[candidate]
                 break
 
         if genotype is None:
-            print("  SKIP: candidate SNP absent from genotype matrix"); total_skipped += 1; continue
+            print("  SKIP: candidate SNP absent from genotype matrix")
+            total_skipped += 1
+            continue
 
         loc = find_location(trait_locations, event)
+
         if loc is None:
-            print("  SKIP: coordinates unavailable"); total_skipped += 1; continue
+            print("  SKIP: coordinates unavailable")
+            total_skipped += 1
+            continue
 
         chrom = loc["chr"]
-        trait_start, trait_end, strand = min(loc["start"], loc["end"]), max(loc["start"], loc["end"]), loc.get("strand")
+        trait_start, trait_end = min(loc["start"], loc["end"]), max(loc["start"], loc["end"])
+        strand = loc.get("strand")
+
         flank = min(int(max(FLANK_MIN, math.ceil(max(1, trait_end - trait_start) * FLANK_FRAC))), FLANK_MAX)
         plot_start, plot_end = max(0, trait_start - flank), trait_end + flank
         n_bins = int(min(MAX_TRACK_POINTS, max(50, math.ceil((plot_end - plot_start) / BIGWIG_BIN_BP))))
@@ -480,6 +495,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
         x += (plot_end - plot_start) / n_bins / 2
 
         snp_pos = None
+
         if snp in snp_locations:
             snp_chr, p = snp_locations[snp]
             if norm(snp_chr) == norm(chrom): snp_pos = p
@@ -493,12 +509,15 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
             try: pheno = float(phenotype[qid])
             except: continue
+
             if not np.isfinite(pheno): continue
 
             meta = metadata_for_qtl_id(qid, tissue)
             if meta is None: continue
 
-            sample_id, subject_id = str(meta.get(sample_col, "")).strip(), str(meta.get(subject_col, "")).strip()
+            sample_id = str(meta.get(sample_col, "")).strip()
+            subject_id = str(meta.get(subject_col, "")).strip()
+
             if not sample_id: continue
 
             sample_dir = resolve_sample_dir(tissue, sample_id)
@@ -508,32 +527,36 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 "qtl_id": qid, "subject_id": subject_id, "sample_id": sample_id,
                 "sample_fs_id": sample_dir.name, "genotype": g, "genotype_raw": genotype[qid],
                 "phenotype": pheno, "sample_dir": sample_dir, "track": None,
-                "track_source": None, "circ_reads": None, "junction_source": None
+                "track_source": None, "circ_reads": None, "linear_reads": None,
+                "circ_percent_file": None, "circ_quant_source": None
             })
 
         print(f"  Candidate subjects before track QC: {len(records)}")
 
-        # All QTL types get normalized RNA-seq coverage.
-        # cQTL additionally gets exact back-splice read support.
         for r in records:
             r["track"], r["track_source"] = bigwig_vector(
                 r["sample_dir"], chrom, plot_start, plot_end, strand, n_bins
             )
 
             if TYPE == "cQTL":
-                jf = chimeric_junction_file(r["sample_dir"])
-                r["junction_source"] = str(jf)
-                r["circ_reads"] = count_circ_junction_reads(
-                    jf, chrom, trait_start, trait_end, strand
-                )
+                qfile = circ_quant_file(r["sample_dir"])
+                r["circ_quant_source"] = str(qfile)
+                q = read_circ_quant(qfile, chrom, trait_start, trait_end, strand)
 
-        # Exact same complete subjects are used in top and bottom panels.
-        # cQTL requires the junction file to exist/read successfully.
+                if q is not None:
+                    r["circ_reads"] = q["circ_reads"]
+                    r["linear_reads"] = q["linear_reads"]
+                    r["circ_percent_file"] = q["circ_percent"]
+
+        # Exact same complete subjects are used in BOTH phenotype and track panels.
         if TYPE == "cQTL":
             complete = [
                 r for r in records
                 if r["track"] is not None and len(r["track"]) == n_bins
-                and np.all(np.isfinite(r["track"])) and r["circ_reads"] is not None
+                and np.all(np.isfinite(r["track"]))
+                and r["circ_reads"] is not None
+                and r["linear_reads"] is not None
+                and r["circ_percent_file"] is not None
             ]
         else:
             complete = [
@@ -543,33 +566,58 @@ for tissue, tissue_hits in hits_by_tissue.items():
             ]
 
         counts = {g: sum(r["genotype"] == g for r in complete) for g in [0, 1, 2]}
+
         print(f"  Complete subjects: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
 
-        if TYPE == "cQTL":
-            for g in [0, 1, 2]:
-                cr = [r["circ_reads"] for r in complete if r["genotype"] == g]
-                print(f"  {GENOTYPE_LABELS[g]} back-splice reads: mean={np.mean(cr):.3f}, total={sum(cr)}" if cr else f"  {GENOTYPE_LABELS[g]} back-splice reads: no subjects")
-
         if not complete:
-            print("  SKIP: no complete subjects"); total_skipped += 1; continue
+            print("  SKIP: no complete subjects")
+            total_skipped += 1
+            continue
+
+        if TYPE == "cQTL":
+            diffs = [abs(r["phenotype"] - r["circ_percent_file"]) for r in complete]
+            print(f"  Max phenotype vs circ_percent difference: {max(diffs):.6g}")
+
+            for g in [0, 1, 2]:
+                gr = [r for r in complete if r["genotype"] == g]
+
+                if not gr:
+                    print(f"  {GENOTYPE_LABELS[g]} circ quant: no subjects")
+                    continue
+
+                circ_vals = np.asarray([r["circ_reads"] for r in gr])
+                linear_vals = np.asarray([r["linear_reads"] for r in gr])
+
+                print(
+                    f"  {GENOTYPE_LABELS[g]} circ quant: "
+                    f"mean circ={np.mean(circ_vals):.3f}, "
+                    f"mean linear={np.mean(linear_vals):.3f}, "
+                    f"circ+={int(np.sum(circ_vals > 0))}/{len(gr)}"
+                )
 
         tracks = {g: [r["track"] for r in complete if r["genotype"] == g] for g in [0, 1, 2]}
 
         label = symbol if symbol else event
         basename = safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
-        pdf, png = OUTDIR / f"{basename}.pdf", OUTDIR / f"{basename}.png"
+
+        pdf = OUTDIR / f"{basename}.pdf"
+        png = OUTDIR / f"{basename}.png"
+        svg = OUTDIR / f"{basename}.svg"
         subject_tsv = OUTDIR / f"{basename}.subjects.tsv"
 
-        if not OVERWRITE and pdf.exists() and png.exists():
-            print("  EXISTS; skipping"); continue
+        if not OVERWRITE and pdf.exists() and png.exists() and svg.exists():
+            print("  EXISTS; skipping")
+            continue
 
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
+
             writer.writerow([
                 "tissue", "qtl_type", "event", "gene_symbol", "snp", "qtl_id", "subject_id",
                 "metadata_sample_id", "filesystem_sample_id", "genotype_group", "genotype_label",
-                "genotype_raw", "phenotype", "track_source", "backsplice_reads", "junction_source"
+                "genotype_raw", "phenotype", "track_source", "circ_reads", "linear_reads",
+                "circ_percent_file", "circ_quant_source"
             ])
 
             for r in complete:
@@ -578,7 +626,9 @@ for tissue, tissue_hits in hits_by_tissue.items():
                     r["sample_fs_id"], r["genotype"], GENOTYPE_LABELS[r["genotype"]],
                     r["genotype_raw"], r["phenotype"], r["track_source"],
                     "" if r["circ_reads"] is None else r["circ_reads"],
-                    "" if r["junction_source"] is None else r["junction_source"]
+                    "" if r["linear_reads"] is None else r["linear_reads"],
+                    "" if r["circ_percent_file"] is None else r["circ_percent_file"],
+                    "" if r["circ_quant_source"] is None else r["circ_quant_source"]
                 ])
 
         ymax = max(float(np.nanmax(r["track"])) for r in complete)
@@ -597,20 +647,34 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         for g in [0, 1, 2]:
             vals = np.asarray([r["phenotype"] for r in complete if r["genotype"] == g])
+
             if not len(vals): continue
 
-            mean_val, jitter = np.mean(vals), rng.normal(0, 0.055, size=len(vals))
-            ax0.scatter(np.full(len(vals), g) + jitter, vals, s=24, alpha=0.65, color=TOP_COLORS[g], edgecolor="none")
-            ax0.plot([g - 0.18, g + 0.18], [mean_val, mean_val], linewidth=3, color=TOP_COLORS[g])
+            mean_val = np.mean(vals)
+            jitter = rng.normal(0, 0.055, size=len(vals))
+
+            ax0.scatter(
+                np.full(len(vals), g) + jitter, vals,
+                s=24, alpha=0.65, color=TOP_COLORS[g], edgecolor="none"
+            )
+
+            ax0.plot(
+                [g - 0.18, g + 0.18], [mean_val, mean_val],
+                linewidth=3, color=TOP_COLORS[g]
+            )
+
             ax0.annotate(
-                f"Mean = {mean_val:.4f}", xy=(g - 0.18, mean_val), xytext=(0, 7),
-                textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color="black"
+                f"Mean = {mean_val:.4f}",
+                xy=(g - 0.18, mean_val), xytext=(0, 7),
+                textcoords="offset points", ha="left", va="bottom",
+                fontsize=8.5, color="black"
             )
 
         ax0.set_xticks(
             [0, 1, 2],
             [f"Ref/Ref\n(N={counts[0]})", f"Het\n(N={counts[1]})", f"Hom Alt\n(N={counts[2]})"]
         )
+
         ax0.set_ylabel(Y_LABELS[TYPE])
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
@@ -627,13 +691,17 @@ for tissue, tissue_hits in hits_by_tissue.items():
         # ---------- BOTTOM: normalized genomic coverage ----------
 
         for g in [0, 1, 2]:
-            ax, group_tracks = fig.add_subplot(gs[1, g]), tracks[g]
+            ax = fig.add_subplot(gs[1, g])
+            group_tracks = tracks[g]
 
             for arr in group_tracks:
                 ax.plot(x, arr, linewidth=0.65, alpha=0.16, color=TRACK_COLORS[g])
 
             if group_tracks:
-                ax.plot(x, np.nanmean(np.vstack(group_tracks), axis=0), linewidth=2.5, color=TRACK_COLORS[g])
+                ax.plot(
+                    x, np.nanmean(np.vstack(group_tracks), axis=0),
+                    linewidth=2.5, color=TRACK_COLORS[g]
+                )
             else:
                 ax.text(0.5, 0.5, "No subjects", transform=ax.transAxes, ha="center", va="center")
 
@@ -642,13 +710,24 @@ for tissue, tissue_hits in hits_by_tissue.items():
             if snp_pos is not None and plot_start <= snp_pos <= plot_end:
                 ax.axvline(snp_pos, linestyle="--", linewidth=1.3, alpha=0.8, color="black")
 
-            # Circ-specific evidence from STAR Chimeric.out.junction.
             if TYPE == "cQTL":
-                circ_counts = [r["circ_reads"] for r in complete if r["genotype"] == g]
-                if circ_counts:
+                group_records = [r for r in complete if r["genotype"] == g]
+
+                if group_records:
+                    circ_vals = np.asarray([r["circ_reads"] for r in group_records])
+                    linear_vals = np.asarray([r["linear_reads"] for r in group_records])
+                    circ_positive = int(np.sum(circ_vals > 0))
+
+                    annotation = (
+                        f"Mean circ reads = {np.mean(circ_vals):.2f}\n"
+                        f"Mean linear reads = {np.mean(linear_vals):.2f}\n"
+                        f"Circ+ samples = {circ_positive}/{len(group_records)}"
+                    )
+
                     ax.text(
-                        0.02, 0.96, f"Mean back-splice reads = {np.mean(circ_counts):.2f}",
-                        transform=ax.transAxes, ha="left", va="top", fontsize=9, color="black"
+                        0.02, 0.96, annotation,
+                        transform=ax.transAxes, ha="left", va="top",
+                        fontsize=9, color="black"
                     )
 
             ax.set_xlim(plot_start, plot_end)
@@ -672,11 +751,14 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         fig.savefig(pdf, bbox_inches="tight")
         fig.savefig(png, dpi=DPI, bbox_inches="tight")
+        fig.savefig(svg, bbox_inches="tight")
         plt.close(fig)
 
         print(f"  PDF: {pdf}")
         print(f"  PNG: {png}")
+        print(f"  SVG: {svg}")
         print(f"  TSV: {subject_tsv}")
+
         total_plotted += 1
 
 print(f"\n{'=' * 60}")
