@@ -731,8 +731,13 @@ for tissue, tissue_hits in hits_by_tissue.items():
         # PLOT
         # ============================================================
 
-        fig = plt.figure(figsize=(16, 8.5))
-        gs = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.75, 0.42], hspace=0.16, wspace=0.08)
+        fig = plt.figure(figsize=(16, 8.7))
+        gs = fig.add_gridspec(
+            3, 3,
+            height_ratios=[1.0, 1.55, 0.42],
+            hspace=0.24,
+            wspace=0.08
+        )
 
         # ---------- TOP: MatrixEQTL phenotype ----------
 
