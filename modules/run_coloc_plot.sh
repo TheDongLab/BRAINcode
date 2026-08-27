@@ -20,7 +20,7 @@ FLANK_MIN=2000
 FLANK_MAX=20000
 BIGWIG_BIN_BP=25
 MAX_TRACK_POINTS=2500
-CIRC_COORD_TOL=3                      # exact match first; +/-3 bp fallback only
+CIRC_COORD_TOL=3                      # exact match first; +/-3 bp fallback
 MAX_HITS=0                            # 0 = all passing colocs
 TISSUE_FILTER=""                      # blank = all tissues
 OVERWRITE=0
@@ -234,6 +234,7 @@ def load_location_table(path, kind):
         idc = find_header(headers, ["snpid", "snp_id", "rsid", "id"])
         cc = find_header(headers, ["chr", "chrom", "chromosome"])
         pc = find_header(headers, ["pos", "position", "start"])
+
         return {
             str(r[idc]): (str(r[cc]), int(float(r[pc])))
             for r in rows if not missing(r.get(idc)) and not missing(r.get(cc)) and not missing(r.get(pc))
@@ -304,7 +305,7 @@ def resolve_sample_dir(tissue, sample_id):
     return processed_cache[key].get(norm(sample_id))
 
 # ============================================================
-# NORMALIZED BIGWIG
+# NORMALIZED BIGWIG — ALL SUBJECTS / ALL QTL TYPES
 # ============================================================
 
 def bw_chrom(bw, chrom):
@@ -332,14 +333,16 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
     if strand == "-": return read_one(minus), str(minus)
 
     a, b = read_one(plus), read_one(minus)
+
     if a is None and b is None: return None, None
     if a is None: return b, str(minus)
     if b is None: return a, str(plus)
+
     return a + b, f"{plus};{minus}"
 
 # ============================================================
 # cQTL QUANTIFICATION
-# Exact processed coordinates first, +/- tolerance fallback.
+# Used ONLY for annotation; does NOT determine plot inclusion.
 # ============================================================
 
 def circ_quant_file(sample_dir):
@@ -348,7 +351,7 @@ def circ_quant_file(sample_dir):
 def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
     if not path.exists(): return None
 
-    exact_match, nearby_matches = None, []
+    exact, nearby = None, []
 
     try:
         with open(path) as fh:
@@ -356,30 +359,28 @@ def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
 
             for row in reader:
                 try:
-                    row_chr = row["chrom"]
-                    row_start, row_end = int(float(row["start"])), int(float(row["end"]))
-                    row_strand = str(row["strand"]).strip()
+                    rchr = row["chrom"]
+                    rstart, rend = int(float(row["start"])), int(float(row["end"]))
+                    rstrand = str(row["strand"]).strip()
 
-                    if norm(row_chr) != norm(chrom): continue
-                    if strand in {"+", "-"} and row_strand != str(strand).strip(): continue
+                    if norm(rchr) != norm(chrom): continue
+                    if strand in {"+", "-"} and rstrand != str(strand).strip(): continue
 
                     result = {
                         "circ_reads": float(row["circ_reads"]),
                         "linear_reads": float(row["linear_reads"]),
                         "circ_percent": float(row["circ_percent"]),
-                        "matched_start": row_start,
-                        "matched_end": row_end,
-                        "match_type": None
+                        "matched_start": rstart, "matched_end": rend, "match_type": None
                     }
 
-                    if row_start == int(start) and row_end == int(end):
+                    if rstart == int(start) and rend == int(end):
                         result["match_type"] = "exact"
-                        exact_match = result
+                        exact = result
                         break
 
-                    if abs(row_start - int(start)) <= tolerance and abs(row_end - int(end)) <= tolerance:
+                    if abs(rstart - int(start)) <= tolerance and abs(rend - int(end)) <= tolerance:
                         result["match_type"] = "tolerance"
-                        nearby_matches.append(result)
+                        nearby.append(result)
 
                 except (ValueError, KeyError, TypeError):
                     continue
@@ -388,23 +389,15 @@ def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
         print(f"    WARNING: could not read circ quantification file {path}: {e}")
         return None
 
-    if exact_match is not None:
-        return exact_match
+    if exact is not None: return exact
+    if not nearby: return None
 
-    if not nearby_matches:
-        return None
-
-    # If multiple rows fall inside the tolerance, choose the closest
-    # coordinate pair deterministically rather than taking the last row.
-    nearby_matches.sort(
-        key=lambda r: (
-            abs(r["matched_start"] - int(start)) + abs(r["matched_end"] - int(end)),
-            abs(r["matched_start"] - int(start)),
-            abs(r["matched_end"] - int(end))
-        )
-    )
-
-    return nearby_matches[0]
+    nearby.sort(key=lambda r: (
+        abs(r["matched_start"] - int(start)) + abs(r["matched_end"] - int(end)),
+        abs(r["matched_start"] - int(start)),
+        abs(r["matched_end"] - int(end))
+    ))
+    return nearby[0]
 
 # ============================================================
 # SNP SELECTION
@@ -490,6 +483,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
             print("  SKIP: phenotype missing"); total_skipped += 1; continue
 
         snp = genotype = None
+
         for candidate in possible_snps(hit):
             if candidate in genotype_rows:
                 snp, genotype = candidate, genotype_rows[candidate]
@@ -518,7 +512,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
             snp_chr, p = snp_locations[snp]
             if norm(snp_chr) == norm(chrom): snp_pos = p
 
-        # genotype + phenotype + metadata + filesystem sample
         records = []
 
         for qid in [q for q in phenotype if q in genotype]:
@@ -565,70 +558,59 @@ for tissue, tissue_hits in hits_by_tissue.items():
                     r["circ_percent_file"], r["circ_match_type"] = q["circ_percent"], q["match_type"]
                     r["circ_matched_start"], r["circ_matched_end"] = q["matched_start"], q["matched_end"]
 
-        # Diagnostics BEFORE complete-case filtering.
-        n_track = sum(r["track"] is not None and len(r["track"]) == n_bins for r in records)
+        n_track = sum(
+            r["track"] is not None and len(r["track"]) == n_bins and np.all(np.isfinite(r["track"]))
+            for r in records
+        )
         print(f"  Usable bigWig tracks: {n_track}/{len(records)}")
 
         if TYPE == "cQTL":
             n_quant = sum(r["circ_reads"] is not None for r in records)
             n_exact = sum(r["circ_match_type"] == "exact" for r in records)
             n_tol = sum(r["circ_match_type"] == "tolerance" for r in records)
-
             print(f"  Circ quant rows found: {n_quant}/{len(records)}")
             print(f"  Circ coordinate matches: exact={n_exact}, tolerance-rescued={n_tol}")
 
-            if n_quant == 0 and records:
-                example = records[0]
-                print(
-                    f"  DEBUG: no circ quant matches. Requested "
-                    f"{chrom}:{trait_start}-{trait_end}:{strand}; "
-                    f"example file={circ_quant_file(example['sample_dir'])}"
-                )
-
-        # SAME complete subjects in BOTH top and bottom plots.
-        if TYPE == "cQTL":
-            complete = [
-                r for r in records
-                if r["track"] is not None and len(r["track"]) == n_bins
-                and np.all(np.isfinite(r["track"]))
-                and r["circ_reads"] is not None and r["linear_reads"] is not None
-                and r["circ_percent_file"] is not None
-            ]
-        else:
-            complete = [
-                r for r in records
-                if r["track"] is not None and len(r["track"]) == n_bins
-                and np.all(np.isfinite(r["track"]))
-            ]
+        # IMPORTANT:
+        # Circ quant availability does NOT filter subjects.
+        # Inclusion is based only on a valid normalized RNA-seq track.
+        complete = [
+            r for r in records
+            if r["track"] is not None and len(r["track"]) == n_bins
+            and np.all(np.isfinite(r["track"]))
+        ]
 
         counts = {g: sum(r["genotype"] == g for r in complete) for g in [0, 1, 2]}
 
-        print(f"  Complete subjects: {len(complete)}")
+        print(f"  Complete subjects used in plots: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
 
         if not complete:
-            print("  SKIP: no complete subjects"); total_skipped += 1; continue
+            print("  SKIP: no subjects with usable tracks"); total_skipped += 1; continue
 
         if TYPE == "cQTL":
-            diffs = [abs(r["phenotype"] - r["circ_percent_file"]) for r in complete]
-            print(f"  Max phenotype vs circ_percent difference: {max(diffs):.6g}")
+            quant_records = [r for r in complete if r["circ_percent_file"] is not None]
+
+            if quant_records:
+                diffs = [abs(r["phenotype"] - r["circ_percent_file"]) for r in quant_records]
+                print(f"  Max phenotype vs matched circ_percent difference: {max(diffs):.6g}")
 
             for g in [0, 1, 2]:
                 gr = [r for r in complete if r["genotype"] == g]
+                qgr = [r for r in gr if r["circ_reads"] is not None]
 
                 if not gr:
-                    print(f"  {GENOTYPE_LABELS[g]} circ quant: no subjects")
-                    continue
-
-                circ_vals = np.asarray([r["circ_reads"] for r in gr])
-                linear_vals = np.asarray([r["linear_reads"] for r in gr])
-
-                print(
-                    f"  {GENOTYPE_LABELS[g]} circ quant: "
-                    f"mean circ={np.mean(circ_vals):.3f}, "
-                    f"mean linear={np.mean(linear_vals):.3f}, "
-                    f"circ+={int(np.sum(circ_vals > 0))}/{len(gr)}"
-                )
+                    print(f"  {GENOTYPE_LABELS[g]}: no subjects")
+                elif not qgr:
+                    print(f"  {GENOTYPE_LABELS[g]} circ quant: 0/{len(gr)} rows found")
+                else:
+                    cv = np.asarray([r["circ_reads"] for r in qgr])
+                    lv = np.asarray([r["linear_reads"] for r in qgr])
+                    print(
+                        f"  {GENOTYPE_LABELS[g]} circ quant: matched={len(qgr)}/{len(gr)}, "
+                        f"mean circ={np.mean(cv):.3f}, mean linear={np.mean(lv):.3f}, "
+                        f"circ+={int(np.sum(cv > 0))}/{len(qgr)}"
+                    )
 
         tracks = {g: [r["track"] for r in complete if r["genotype"] == g] for g in [0, 1, 2]}
 
@@ -646,7 +628,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
-
             writer.writerow([
                 "tissue", "qtl_type", "event", "gene_symbol", "snp", "qtl_id", "subject_id",
                 "metadata_sample_id", "filesystem_sample_id", "genotype_group", "genotype_label",
@@ -679,7 +660,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
         fig = plt.figure(figsize=(16, 8))
         gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 1.8], hspace=0.35, wspace=0.08)
 
-        # ---------- TOP: exact MatrixEQTL phenotype ----------
+        # ---------- TOP: MatrixEQTL phenotype ----------
 
         ax0, rng = fig.add_subplot(gs[0, :]), np.random.default_rng(12345)
 
@@ -716,16 +697,20 @@ for tissue, tissue_hits in hits_by_tissue.items():
         ax0.spines["top"].set_visible(False)
         ax0.spines["right"].set_visible(False)
 
-        # ---------- BOTTOM: normalized genomic coverage ----------
+        # ---------- BOTTOM: normalized non-circ RNA coverage ----------
 
         for g in [0, 1, 2]:
-            ax, group_tracks = fig.add_subplot(gs[1, g]), tracks[g]
+            ax = fig.add_subplot(gs[1, g])
+            group_tracks = tracks[g]
 
             for arr in group_tracks:
                 ax.plot(x, arr, linewidth=0.65, alpha=0.16, color=TRACK_COLORS[g])
 
             if group_tracks:
-                ax.plot(x, np.nanmean(np.vstack(group_tracks), axis=0), linewidth=2.5, color=TRACK_COLORS[g])
+                ax.plot(
+                    x, np.nanmean(np.vstack(group_tracks), axis=0),
+                    linewidth=2.5, color=TRACK_COLORS[g]
+                )
             else:
                 ax.text(0.5, 0.5, "No subjects", transform=ax.transAxes, ha="center", va="center")
 
@@ -734,22 +719,33 @@ for tissue, tissue_hits in hits_by_tissue.items():
             if snp_pos is not None and plot_start <= snp_pos <= plot_end:
                 ax.axvline(snp_pos, linestyle="--", linewidth=1.3, alpha=0.8, color="black")
 
+            # Circ information is annotation ONLY.
             if TYPE == "cQTL":
                 gr = [r for r in complete if r["genotype"] == g]
+                qgr = [r for r in gr if r["circ_reads"] is not None]
 
-                if gr:
-                    circ_vals = np.asarray([r["circ_reads"] for r in gr])
-                    linear_vals = np.asarray([r["linear_reads"] for r in gr])
+                if gr and qgr:
+                    circ_vals = np.asarray([r["circ_reads"] for r in qgr])
+                    linear_vals = np.asarray([r["linear_reads"] for r in qgr])
 
                     annotation = (
                         f"Mean circ reads = {np.mean(circ_vals):.2f}\n"
                         f"Mean linear reads = {np.mean(linear_vals):.2f}\n"
-                        f"Circ+ samples = {int(np.sum(circ_vals > 0))}/{len(gr)}"
+                        f"Circ+ samples = {int(np.sum(circ_vals > 0))}/{len(qgr)}\n"
+                        f"Circ quant rows = {len(qgr)}/{len(gr)}"
                     )
 
                     ax.text(
                         0.02, 0.96, annotation,
-                        transform=ax.transAxes, ha="left", va="top", fontsize=9, color="black"
+                        transform=ax.transAxes, ha="left", va="top",
+                        fontsize=9, color="black"
+                    )
+
+                elif gr:
+                    ax.text(
+                        0.02, 0.96, f"Circ quant rows = 0/{len(gr)}",
+                        transform=ax.transAxes, ha="left", va="top",
+                        fontsize=9, color="black"
                     )
 
             ax.set_xlim(plot_start, plot_end)
