@@ -785,7 +785,10 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color="black"
             )
 
-        ax0.set_xticks([])
+        ax0.set_xlim(-0.5, 2.5)
+        ax0.set_xticks([0, 1, 2])
+        ax0.set_xticklabels([])
+        ax0.tick_params(axis="x", length=3)
         ax0.set_ylabel(Y_LABELS[TYPE])
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
