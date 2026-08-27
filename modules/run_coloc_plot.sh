@@ -731,11 +731,11 @@ for tissue, tissue_hits in hits_by_tissue.items():
         # PLOT
         # ============================================================
 
-        fig = plt.figure(figsize=(16, 8.7))
+        fig = plt.figure(figsize=(16, 8.5))
         gs = fig.add_gridspec(
             3, 3,
-            height_ratios=[1.0, 1.55, 0.42],
-            hspace=0.24,
+            height_ratios=[1.0, 1.75, 0.42],
+            hspace=0.16,
             wspace=0.08
         )
 
@@ -759,10 +759,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
                 textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color="black"
             )
 
-        ax0.set_xticks(
-            [0, 1, 2],
-            [f"Ref/Ref\n(N={counts[0]})", f"Het\n(N={counts[1]})", f"Hom Alt\n(N={counts[2]})"]
-        )
+        ax0.set_xticks([])
         ax0.set_ylabel(Y_LABELS[TYPE])
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
