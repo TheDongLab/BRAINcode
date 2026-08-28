@@ -47,16 +47,21 @@ for f in "$COLOC" "$METADATA" "$GTF" "$RAW_FILE"; do
     [[ -f "$f" ]] || { echo "ERROR: missing $f"; exit 1; }
 done
 
-module load deepTools 2>/dev/null || true
-module load poppler/22.12.0-GCC-12.2.0 2>/dev/null || module load poppler 2>/dev/null || true
+module load deepTools
+PYTHON="$(which python)"
+
+module load poppler/22.12.0-GCC-12.2.0
+
 command -v pdfseparate >/dev/null || { echo "ERROR: pdfseparate unavailable"; exit 1; }
 command -v pdftotext >/dev/null || { echo "ERROR: pdftotext unavailable"; exit 1; }
+
+"$PYTHON" -c 'import numpy, matplotlib, pyBigWig; print("Python plotting stack OK")'
 
 export TYPE ROOT METADATA COLOC OUTDIR GTF RAW_FILE
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
 export MIN_MEAN_JUNCTION_READS MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
-python - <<'PY'
+"$PYTHON" - <<'PY'
 import os, re, csv, sys, math, warnings, subprocess
 from pathlib import Path
 from collections import defaultdict
