@@ -23,7 +23,7 @@ FLANK_MAX=20000
 BIGWIG_BIN_BP=25
 MAX_TRACK_POINTS=2500
 CIRC_COORD_TOL=3
-MIN_MEAN_JUNCTION_READS=0.5
+MIN_MEAN_JUNCTION_RPM=0.01           # roughly raw mean 0.5 at 50M primary reads
 MAX_JUNCTIONS=30
 MAX_HITS=0
 TISSUE_FILTER=""
@@ -39,21 +39,19 @@ COLOC="${MR_DIR}/${TYPE}_SuSiE_coloc_summary.tsv"
 OUTDIR="${MR_DIR}/coloc_raw_plots/${TYPE}"
 mkdir -p "$OUTDIR"
 
-for f in "$COLOC" "$METADATA" "$GTF" "$RAW_FILE"; do
-    [[ -f "$f" ]] || { echo "ERROR: missing $f"; exit 1; }
-done
+for f in "$COLOC" "$METADATA" "$GTF" "$RAW_FILE"; do [[ -f "$f" ]] || { echo "ERROR: missing $f"; exit 1; }; done
 
-# Compatible 2024a stack; suppress Lmod dependency chatter.
 module load deepTools 2>/dev/null || { echo "ERROR: could not load deepTools"; exit 1; }
 module load poppler/25.07.0-GCC-13.3.0 2>/dev/null || { echo "ERROR: could not load Poppler"; exit 1; }
 
 PYTHON="$(command -v python)"
 command -v pdfseparate >/dev/null || { echo "ERROR: pdfseparate unavailable"; exit 1; }
+command -v samtools >/dev/null || { echo "ERROR: samtools unavailable"; exit 1; }
 "$PYTHON" -c 'import numpy,matplotlib,pyBigWig' || { echo "ERROR: Python plotting stack unavailable"; exit 1; }
 
 export TYPE ROOT METADATA COLOC OUTDIR GTF RAW_FILE
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
-export MIN_MEAN_JUNCTION_READS MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI
+export MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
 "$PYTHON" - <<'PY'
 import os,re,csv,sys,math,warnings,subprocess
@@ -78,7 +76,7 @@ TYPE,ROOT=os.environ["TYPE"],Path(os.environ["ROOT"])
 METADATA,COLOC,OUTDIR,GTF,RAW_FILE=map(Path,[os.environ["METADATA"],os.environ["COLOC"],os.environ["OUTDIR"],os.environ["GTF"],os.environ["RAW_FILE"]])
 FLANK_FRAC,FLANK_MIN,FLANK_MAX=float(os.environ["FLANK_FRAC"]),int(os.environ["FLANK_MIN"]),int(os.environ["FLANK_MAX"])
 BIGWIG_BIN_BP,MAX_TRACK_POINTS=int(os.environ["BIGWIG_BIN_BP"]),int(os.environ["MAX_TRACK_POINTS"])
-CIRC_COORD_TOL,MIN_MEAN_JUNCTION_READS=int(os.environ["CIRC_COORD_TOL"]),float(os.environ["MIN_MEAN_JUNCTION_READS"])
+CIRC_COORD_TOL,MIN_MEAN_JUNCTION_RPM=int(os.environ["CIRC_COORD_TOL"]),float(os.environ["MIN_MEAN_JUNCTION_RPM"])
 MAX_JUNCTIONS,MAX_HITS=int(os.environ["MAX_JUNCTIONS"]),int(os.environ["MAX_HITS"])
 TISSUE_FILTER,OVERWRITE,DPI=os.environ["TISSUE_FILTER"].strip(),int(os.environ["OVERWRITE"]),int(os.environ["DPI"])
 
@@ -109,6 +107,10 @@ def genomic_formatter(x,pos=None):
     if abs(x)>=1_000_000:return f"{format_max_sig(x/1_000_000)} Mb"
     if abs(x)>=1_000:return f"{format_max_sig(x/1_000)} kb"
     return format_max_sig(x)
+
+def density_formatter(y,pos=None):
+    if abs(y)<1e-12:return "0"
+    return format_max_sig(abs(y),sig=4)
 
 def find_header(headers,aliases,required=True):
     lookup={norm(h):h for h in headers}
@@ -255,7 +257,6 @@ def find_location(locations,event):
 
 def find_boxplot_page(pairs_file,event,snp):
     if not pairs_file.exists():return None
-    # eQTL file has header => PDF page = NR-1. sQTL/cQTL are headerless => PDF page = NR.
     awk_script='NR>1 && $1==E && $NF==S {print NR-1; exit}' if TYPE=="eQTL" else '$1==E && $NF==S {print NR; exit}'
     try:
         r=subprocess.run(["awk","-v",f"E={event}","-v",f"S={snp}",awk_script,str(pairs_file)],capture_output=True,text=True,check=True)
@@ -268,23 +269,22 @@ def extract_boxplot(source_pdf,pairs_file,event,snp,output_pdf):
     page=find_boxplot_page(pairs_file,event,snp)
     if page is None:print(f"  BOXPLOT FAILED: no exact event+SNP match for {event} + {snp}"); return False
     if output_pdf.exists() and not OVERWRITE:print(f"  BOXPLOT: page {page} -> {output_pdf} [exists]"); return True
-
     try:
-        # pdfseparate requires %d in output template, so write directly to OUTDIR then rename.
         pattern=output_pdf.with_name(output_pdf.stem+"_%d.pdf")
         subprocess.run(["pdfseparate","-f",str(page),"-l",str(page),str(source_pdf),str(pattern)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
         extracted=Path(str(pattern).replace("%d",str(page)))
         if not extracted.exists():print(f"  BOXPLOT FAILED: page {page} extraction failed"); return False
-        extracted.replace(output_pdf)
-        print(f"  BOXPLOT: page {page} -> {output_pdf}"); return True
+        extracted.replace(output_pdf); print(f"  BOXPLOT: page {page} -> {output_pdf}"); return True
     except Exception as e:
         print(f"  BOXPLOT FAILED: {e}"); return False
 
 # ============================================================
-# SAMPLE DIRECTORY + BIGWIG
+# SAMPLE DIRECTORY + PRIMARY READ DEPTH
 # ============================================================
 
 processed_cache={}
+primary_read_cache={}
+
 def resolve_sample_dir(tissue,sample_id):
     processed=ROOT/tissue/"RNAseq"/"Processed"
     for candidate in [sample_id,sample_id.replace("-","_"),sample_id.replace("_","-")]:
@@ -294,11 +294,32 @@ def resolve_sample_dir(tissue,sample_id):
     if key not in processed_cache:processed_cache[key]={norm(p.name):p for p in processed.iterdir() if p.is_dir()} if processed.is_dir() else {}
     return processed_cache[key].get(norm(sample_id))
 
+def primary_bam(sample_dir): return sample_dir/"STAR.Aligned.sortedByCoord.out.bam"
+
+def primary_read_count(sample_dir):
+    bam=primary_bam(sample_dir); key=str(bam)
+    if key in primary_read_cache:return primary_read_cache[key]
+    if not bam.exists():
+        primary_read_cache[key]=None; return None
+    try:
+        n=int(subprocess.check_output(["samtools","view","-F","0x100","-c",str(bam)],text=True).strip())
+        primary_read_cache[key]=n if n>0 else None
+    except Exception:
+        primary_read_cache[key]=None
+    return primary_read_cache[key]
+
+def rpm_value(reads,primary_reads):
+    return float(reads)*1_000_000.0/primary_reads if primary_reads and primary_reads>0 else None
+
+# ============================================================
+# STRAND-SPECIFIC NORMALIZED BIGWIG
+# ============================================================
+
 def bw_chrom(bw,chrom):
     chroms=bw.chroms(); candidates=[chrom,chrom[3:] if chrom.startswith("chr") else "chr"+chrom]
     return next((c for c in candidates if c in chroms),None)
 
-def bigwig_vector(sample_dir,chrom,start,end,strand,n_bins):
+def bigwig_strands(sample_dir,chrom,start,end,n_bins):
     plus=sample_dir/"STAR.Aligned.sortedByCoord.out.plus.normalized.bw"
     minus=sample_dir/"STAR.Aligned.sortedByCoord.out.minus.normalized.bw"
 
@@ -312,20 +333,14 @@ def bigwig_vector(sample_dir,chrom,start,end,strand,n_bins):
             return np.abs(np.asarray([0. if v is None else float(v) for v in vals]))
         finally:bw.close()
 
-    if strand=="+":return read_one(plus),str(plus)
-    if strand=="-":return read_one(minus),str(minus)
-    a,b=read_one(plus),read_one(minus)
-    if a is None and b is None:return None,None
-    if a is None:return b,str(minus)
-    if b is None:return a,str(plus)
-    return a+b,f"{plus};{minus}"
+    return read_one(plus),read_one(minus),str(plus),str(minus)
 
 # ============================================================
-# LEAFCUTTER JUNCTIONS
+# LEAFCUTTER JUNCTIONS — PER-SAMPLE RPM
 # ============================================================
 
 leafcutter_cache={}
-def leafcutter_file(sample_dir):return sample_dir/"leafcutter"/"psi"/f"{sample_dir.name}.leafcutter.PSI.tsv"
+def leafcutter_file(sample_dir): return sample_dir/"leafcutter"/"psi"/f"{sample_dir.name}.leafcutter.PSI.tsv"
 
 def load_leafcutter(path):
     key=str(path)
@@ -344,21 +359,21 @@ def load_leafcutter(path):
     leafcutter_cache[key]=junctions
     return junctions
 
-def mean_junction_reads(group,chrom,start,end,strand):
+def mean_junction_rpm(group,chrom,start,end):
     sums,n_files=defaultdict(float),0
     for r in group:
         junctions=load_leafcutter(leafcutter_file(r["sample_dir"]))
-        if junctions is None:continue
+        primary=r["primary_reads"]
+        if junctions is None or not primary:continue
         n_files+=1
         for (jchr,jstrand,js,je),reads in junctions.items():
-            if jchr!=chr_key(chrom):continue
-            if strand in {"+","-"} and jstrand!=strand:continue
-            if js<start or je>end:continue
-            sums[(js,je)]+=reads
+            if jchr!=chr_key(chrom) or js<start or je>end:continue
+            sums[(jstrand,js,je)] += rpm_value(reads,primary)
 
     if n_files==0:return {},0
-    means={k:v/n_files for k,v in sums.items()}   # absent row = 0
-    means={k:v for k,v in means.items() if v>=MIN_MEAN_JUNCTION_READS}
+    # Missing junction rows contribute zero because every accumulated total is divided by all valid genotype samples.
+    means={k:v/n_files for k,v in sums.items()}
+    means={k:v for k,v in means.items() if v>=MIN_MEAN_JUNCTION_RPM}
     if MAX_JUNCTIONS>0 and len(means)>MAX_JUNCTIONS:
         keep=sorted(means,key=means.get,reverse=True)[:MAX_JUNCTIONS]; means={k:means[k] for k in keep}
     return means,n_files
@@ -437,7 +452,7 @@ def draw_reference_track(ax,exons,plot_start,plot_end):
         genes[gene].append((exon["start"],exon["end"])); strands[gene]=exon["strand"]
 
     if not genes:
-        ax.text(.5,.45,"No GENCODE v49 exons",transform=ax.transAxes,ha="center",va="center",fontsize=8)
+        ax.text(.5,.45,"No GENCODE v49 exons",transform=ax.transAxes,ha="center",va="center",fontsize=9)
     else:
         gene_items=sorted(genes.items(),key=lambda kv:min(s for s,e in kv[1]))
         for y,(gene,intervals) in enumerate(gene_items):
@@ -448,42 +463,47 @@ def draw_reference_track(ax,exons,plot_start,plot_end):
                 s,e=max(s,plot_start),min(e,plot_end)
                 if e>s:ax.add_patch(Rectangle((s,y-.15),e-s,.30,facecolor="black",edgecolor="black",linewidth=.4))
             strand=strands.get(gene,""); label=f"{gene} ({strand})" if strand in {"+","-"} else gene
-            ax.text(plot_start,y+.22,label,fontsize=7.5,ha="left",va="bottom")
+            ax.text(plot_start,y+.22,label,fontsize=8,ha="left",va="bottom")
         ax.set_ylim(-.45,max(.55,len(gene_items)-.25))
 
     ax.set_xlim(plot_start,plot_end); ax.set_yticks([])
-    ax.set_ylabel("GENCODE v49",fontsize=11,labelpad=12)
+    ax.set_ylabel("GENCODE v49",fontsize=12,labelpad=13)
     ax.xaxis.set_major_formatter(FuncFormatter(genomic_formatter)); ax.locator_params(axis="x",nbins=5); ax.tick_params(axis="x",labelsize=11)
     for side in ["top","right","left"]:ax.spines[side].set_visible(False)
 
 # ============================================================
-# SASHIMI ARCS
+# STRAND-AWARE SASHIMI ARCS
 # ============================================================
 
-def draw_linear_arcs(ax,junctions,x,mean_track,coverage_ymax,color):
+def draw_linear_arcs(ax,junctions,x,mean_plus,mean_minus,coverage_max,color):
     span_total=max(1,x[-1]-x[0])
-    for (start,end),reads in sorted(junctions.items(),key=lambda z:z[0][1]-z[0][0]):
-        left_y,right_y=float(np.interp(start,x,mean_track)),float(np.interp(end,x,mean_track))
-        span_frac=min(1.,max(0.,(end-start)/span_total)); peak=coverage_ymax*(1.05+.42*math.sqrt(span_frac)); mid=(start+end)/2
-        path=MplPath([(start,left_y),(mid,peak),(end,right_y)],[MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
-        lw=min(4.,max(.7,math.log(reads+1,2)))
-        ax.add_patch(PathPatch(path,facecolor="none",edgecolor=color,linewidth=lw,alpha=.9))
+    for (strand,start,end),rpm in sorted(junctions.items(),key=lambda z:z[0][2]-z[0][1]):
+        span_frac=min(1.,max(0.,(end-start)/span_total)); mid=(start+end)/2
+        if strand=="-":
+            left_y=-float(np.interp(start,x,mean_minus)); right_y=-float(np.interp(end,x,mean_minus))
+            base=min(left_y,right_y); apex=-coverage_max*(1.05+.42*math.sqrt(span_frac))
+            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],[MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
+            label_y=base+.58*(apex-base)
+        else:
+            left_y=float(np.interp(start,x,mean_plus)); right_y=float(np.interp(end,x,mean_plus))
+            base=max(left_y,right_y); apex=coverage_max*(1.05+.42*math.sqrt(span_frac))
+            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],[MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
+            label_y=base+.58*(apex-base)
 
-        # Put the mean junction-read count INSIDE the upper arc.
-        base=max(left_y,right_y)
-        label_y=base+.58*(peak-base)
-        ax.text(mid,label_y,f"{reads:.2f}",ha="center",va="center",fontsize=7,
+        lw=min(4.,max(.7,math.log(rpm+1,2)))
+        ax.add_patch(PathPatch(path,facecolor="none",edgecolor=color,linewidth=lw,alpha=.9))
+        ax.text(mid,label_y,f"{rpm:.3f}",ha="center",va="center",fontsize=7,
                 bbox=dict(facecolor="white",edgecolor="none",alpha=.88,pad=.45))
 
-def draw_circ_arc(ax,start,end,mean_reads,coverage_ymax,color):
-    if mean_reads<=0:return
-    depth=-.30*coverage_ymax
-    path=MplPath([(start,0),(start,depth),(end,depth),(end,0)],[MplPath.MOVETO,MplPath.CURVE4,MplPath.CURVE4,MplPath.CURVE4])
-    lw=min(4.,max(.7,math.log(mean_reads+1,2)))
+def draw_circ_arc(ax,start,end,mean_rpm,coverage_max,color,strand):
+    if mean_rpm<=0:return
+    # Circular arc sits farther outward than ordinary junction arcs on the event's transcription strand.
+    sign=-1 if strand=="-" else 1
+    outer=sign*coverage_max*1.72
+    path=MplPath([(start,0),(start,outer),(end,outer),(end,0)],[MplPath.MOVETO,MplPath.CURVE4,MplPath.CURVE4,MplPath.CURVE4])
+    lw=min(4.,max(.7,math.log(mean_rpm+1,2)))
     ax.add_patch(PathPatch(path,facecolor="none",edgecolor=color,linewidth=lw,alpha=.95))
-
-    # Put mean circular-junction reads INSIDE the lower arc.
-    ax.text((start+end)/2,depth*.58,f"{mean_reads:.2f}",ha="center",va="center",fontsize=7,
+    ax.text((start+end)/2,outer*.63,f"{mean_rpm:.3f}",ha="center",va="center",fontsize=7,
             bbox=dict(facecolor="white",edgecolor="none",alpha=.88,pad=.45))
 
 # ============================================================
@@ -568,7 +588,8 @@ for tissue,tissue_hits in hits_by_tissue.items():
         flank=min(int(max(FLANK_MIN,math.ceil(max(1,trait_end-trait_start)*FLANK_FRAC))),FLANK_MAX)
         plot_start,plot_end=max(0,trait_start-flank),trait_end+flank
         n_bins=int(min(MAX_TRACK_POINTS,max(50,math.ceil((plot_end-plot_start)/BIGWIG_BIN_BP))))
-        x=np.linspace(plot_start,plot_end,n_bins,endpoint=False)+(plot_end-plot_start)/n_bins/2
+        actual_bin_bp=(plot_end-plot_start)/n_bins
+        x=np.linspace(plot_start,plot_end,n_bins,endpoint=False)+actual_bin_bp/2
         reference_exons=load_reference_exons(GTF,chrom,plot_start,plot_end)
 
         label=symbol if symbol else event; basename=safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
@@ -596,13 +617,16 @@ for tissue,tissue_hits in hits_by_tissue.items():
 
             records.append({"qtl_id":qid,"subject_id":subject_id,"sample_id":sample_id,"sample_fs_id":sample_dir.name,
                             "genotype":g,"genotype_raw":genotype[qid],"phenotype":pheno,"sample_dir":sample_dir,
-                            "track":None,"track_source":None,"circ_reads":None,"linear_reads":None,"circ_percent_file":None,
+                            "primary_reads":None,"plus_track":None,"minus_track":None,"plus_source":None,"minus_source":None,
+                            "circ_reads":None,"circ_rpm":None,"linear_reads":None,"circ_percent_file":None,
                             "circ_quant_source":None,"circ_match_type":None,"circ_matched_start":None,"circ_matched_end":None})
 
         print(f"  Candidate subjects before track QC: {len(records)}")
 
         for r in records:
-            r["track"],r["track_source"]=bigwig_vector(r["sample_dir"],chrom,plot_start,plot_end,strand,n_bins)
+            r["primary_reads"]=primary_read_count(r["sample_dir"])
+            r["plus_track"],r["minus_track"],r["plus_source"],r["minus_source"]=bigwig_strands(r["sample_dir"],chrom,plot_start,plot_end,n_bins)
+
             if TYPE=="cQTL":
                 qfile=circ_quant_file(r["sample_dir"]); r["circ_quant_source"]=str(qfile)
                 q=read_circ_quant(qfile,chrom,trait_start,trait_end,strand)
@@ -610,56 +634,68 @@ for tissue,tissue_hits in hits_by_tissue.items():
                     r["circ_reads"],r["linear_reads"]=q["circ_reads"],q["linear_reads"]
                     r["circ_percent_file"],r["circ_match_type"]=q["circ_percent"],q["match_type"]
                     r["circ_matched_start"],r["circ_matched_end"]=q["matched_start"],q["matched_end"]
+                    r["circ_rpm"]=rpm_value(q["circ_reads"],r["primary_reads"])
 
-        complete=[r for r in records if r["track"] is not None and len(r["track"])==n_bins and np.all(np.isfinite(r["track"]))]
+        complete=[r for r in records if r["plus_track"] is not None and r["minus_track"] is not None and len(r["plus_track"])==n_bins and len(r["minus_track"])==n_bins
+                  and np.all(np.isfinite(r["plus_track"])) and np.all(np.isfinite(r["minus_track"]))]
         counts={g:sum(r["genotype"]==g for r in complete) for g in [0,1,2]}
+
         print(f"  Complete subjects used in density plots: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
-        if not complete:print("  SKIP DENSITY: no subjects with usable tracks"); total_skipped+=1; continue
+        if TYPE in {"sQTL","cQTL"}:
+            n_primary=sum(r["primary_reads"] is not None for r in complete)
+            print(f"  Samples with primary-read denominator: {n_primary}/{len(complete)}")
+        if not complete:print("  SKIP DENSITY: no subjects with usable strand-specific tracks"); total_skipped+=1; continue
 
         groups={g:[r for r in complete if r["genotype"]==g] for g in [0,1,2]}
-        mean_tracks={g:np.nanmean(np.vstack([r["track"] for r in groups[g]]),axis=0) if groups[g] else np.zeros(n_bins) for g in [0,1,2]}
+        mean_plus={g:np.nanmean(np.vstack([r["plus_track"] for r in groups[g]]),axis=0) if groups[g] else np.zeros(n_bins) for g in [0,1,2]}
+        mean_minus={g:np.nanmean(np.vstack([r["minus_track"] for r in groups[g]]),axis=0) if groups[g] else np.zeros(n_bins) for g in [0,1,2]}
 
         junctions,junction_denoms={},{}
         if TYPE in {"sQTL","cQTL"}:
             for g in [0,1,2]:
-                junctions[g],junction_denoms[g]=mean_junction_reads(groups[g],chrom,plot_start,plot_end,strand)
-                if groups[g]:print(f"  {GENOTYPE_LABELS[g]} LeafCutter files: {junction_denoms[g]}/{len(groups[g])}; junctions plotted={len(junctions[g])}")
+                junctions[g],junction_denoms[g]=mean_junction_rpm(groups[g],chrom,plot_start,plot_end)
+                if groups[g]:print(f"  {GENOTYPE_LABELS[g]} normalized LeafCutter samples: {junction_denoms[g]}/{len(groups[g])}; junctions plotted={len(junctions[g])}")
 
-        circ_means={g:0. for g in [0,1,2]}
+        circ_means={g:0. for g in [0,1,2]}; circ_denoms={g:0 for g in [0,1,2]}
         if TYPE=="cQTL":
             for g in [0,1,2]:
-                if groups[g]:circ_means[g]=sum(0. if r["circ_reads"] is None else float(r["circ_reads"]) for r in groups[g])/len(groups[g])
+                valid=[r for r in groups[g] if r["primary_reads"]]
+                circ_denoms[g]=len(valid)
+                if valid:
+                    # Missing circRNA row contributes zero RPM.
+                    circ_means[g]=sum(0. if r["circ_rpm"] is None else float(r["circ_rpm"]) for r in valid)/len(valid)
+
             n_quant=sum(r["circ_reads"] is not None for r in complete)
             n_exact=sum(r["circ_match_type"]=="exact" for r in complete); n_tol=sum(r["circ_match_type"]=="tolerance" for r in complete)
             print(f"  Circ quant rows found: {n_quant}/{len(complete)}")
             print(f"  Circ coordinate matches: exact={n_exact}, tolerance-rescued={n_tol}")
-            print("  Mean circ reads: "+" | ".join(f"{GENOTYPE_LABELS[g]}={circ_means[g]:.3f}" for g in [0,1,2]))
+            print("  Mean circ RPM: "+" | ".join(f"{GENOTYPE_LABELS[g]}={circ_means[g]:.4f}" for g in [0,1,2]))
 
         with open(subject_tsv,"w",newline="") as fh:
             writer=csv.writer(fh,delimiter="\t")
             writer.writerow(["tissue","qtl_type","event","gene_symbol","snp","ref","alt","plink_counted_allele","qtl_id","subject_id",
                              "metadata_sample_id","filesystem_sample_id","genotype_group","genotype_label","genotype_raw","phenotype",
-                             "track_source","circ_reads","linear_reads","circ_percent_file","circ_match_type","circ_matched_start",
-                             "circ_matched_end","circ_quant_source"])
+                             "primary_reads","plus_track_source","minus_track_source","circ_reads","circ_rpm","linear_reads",
+                             "circ_percent_file","circ_match_type","circ_matched_start","circ_matched_end","circ_quant_source"])
             for r in complete:
                 writer.writerow([tissue,TYPE,event,symbol,snp,allele["ref"],allele["alt"],allele["counted"],r["qtl_id"],r["subject_id"],
                                  r["sample_id"],r["sample_fs_id"],r["genotype"],GENOTYPE_LABELS[r["genotype"]],r["genotype_raw"],r["phenotype"],
-                                 r["track_source"],"" if r["circ_reads"] is None else r["circ_reads"],"" if r["linear_reads"] is None else r["linear_reads"],
-                                 "" if r["circ_percent_file"] is None else r["circ_percent_file"],"" if r["circ_match_type"] is None else r["circ_match_type"],
-                                 "" if r["circ_matched_start"] is None else r["circ_matched_start"],"" if r["circ_matched_end"] is None else r["circ_matched_end"],
-                                 "" if r["circ_quant_source"] is None else r["circ_quant_source"]])
+                                 "" if r["primary_reads"] is None else r["primary_reads"],r["plus_source"],r["minus_source"],
+                                 "" if r["circ_reads"] is None else r["circ_reads"],"" if r["circ_rpm"] is None else r["circ_rpm"],
+                                 "" if r["linear_reads"] is None else r["linear_reads"],"" if r["circ_percent_file"] is None else r["circ_percent_file"],
+                                 "" if r["circ_match_type"] is None else r["circ_match_type"],"" if r["circ_matched_start"] is None else r["circ_matched_start"],
+                                 "" if r["circ_matched_end"] is None else r["circ_matched_end"],"" if r["circ_quant_source"] is None else r["circ_quant_source"]])
 
         if not OVERWRITE and density_pdf.exists() and density_png.exists() and density_svg.exists():
             print("  DENSITY EXISTS; skipping"); continue
 
-        coverage_ymax=max(float(np.nanmax(mean_tracks[g])) for g in [0,1,2] if groups[g])
-        coverage_ymax=1. if not np.isfinite(coverage_ymax) or coverage_ymax<=0 else coverage_ymax*1.05
+        coverage_max=max(max(float(np.nanmax(mean_plus[g])),float(np.nanmax(mean_minus[g]))) for g in [0,1,2] if groups[g])
+        coverage_max=1. if not np.isfinite(coverage_max) or coverage_max<=0 else coverage_max*1.05
         has_linear_arcs=TYPE in {"sQTL","cQTL"} and any(junctions.get(g) for g in [0,1,2])
         has_circ_arcs=TYPE=="cQTL" and any(circ_means[g]>0 for g in [0,1,2])
-        upper_ylim=coverage_ymax*(1.58 if has_linear_arcs else 1.08)
-        lower_ylim=-.38*coverage_ymax if has_circ_arcs else 0
-        bar_width=(plot_end-plot_start)/n_bins*.92
+        axis_extent=coverage_max*(1.95 if has_circ_arcs else 1.58 if has_linear_arcs else 1.08)
+        bar_width=actual_bin_bp*.92
 
         # ====================================================
         # DENSITY-ONLY PLOT
@@ -671,21 +707,32 @@ for tissue,tissue_hits in hits_by_tissue.items():
 
         for g in [0,1,2]:
             ax=fig.add_subplot(gs[g,0]); axes.append(ax)
-            if groups[g]:
-                mean_track=mean_tracks[g]
-                ax.bar(x,mean_track,width=bar_width,color=TRACK_COLORS[g],alpha=.82,align="center",linewidth=0)
-                if TYPE in {"sQTL","cQTL"}:draw_linear_arcs(ax,junctions[g],x,mean_track,coverage_ymax,TRACK_COLORS[g])
-                if TYPE=="cQTL":draw_circ_arc(ax,trait_start,trait_end,circ_means[g],coverage_ymax,TRACK_COLORS[g])
-            else:ax.text(.5,.45,"No subjects",transform=ax.transAxes,ha="center",va="center",fontsize=11)
 
+            if groups[g]:
+                ax.bar(x,mean_plus[g],width=bar_width,color=TRACK_COLORS[g],alpha=.82,align="center",linewidth=0)
+                ax.bar(x,-mean_minus[g],width=bar_width,color=TRACK_COLORS[g],alpha=.55,align="center",linewidth=0)
+
+                if TYPE in {"sQTL","cQTL"}:
+                    draw_linear_arcs(ax,junctions[g],x,mean_plus[g],mean_minus[g],coverage_max,TRACK_COLORS[g])
+
+                if TYPE=="cQTL":
+                    draw_circ_arc(ax,trait_start,trait_end,circ_means[g],coverage_max,TRACK_COLORS[g],strand)
+            else:
+                ax.text(.5,.5,"No subjects",transform=ax.transAxes,ha="center",va="center",fontsize=12)
+
+            ax.axhline(0,color="#555555",linewidth=.8)
             ax.axvspan(trait_start,trait_end,alpha=.10,color="#999999")
             if plot_start<=snp_pos<=plot_end:ax.axvline(snp_pos,linestyle="--",linewidth=1.3,alpha=.8,color="black")
-            ax.set_xlim(plot_start,plot_end); ax.set_ylim(lower_ylim,upper_ylim)
 
-            # Genotype labels lower inside the panel.
-            ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})",loc="left",fontsize=12,color=TRACK_COLORS[g],y=.84,pad=0)
+            ax.set_xlim(plot_start,plot_end); ax.set_ylim(-axis_extent,axis_extent)
+            ax.yaxis.set_major_formatter(FuncFormatter(density_formatter))
+            ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})",loc="left",fontsize=13,color=TRACK_COLORS[g],y=.84,pad=0)
             ax.tick_params(axis="x",labelbottom=False); ax.tick_params(axis="y",labelsize=11)
             ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+            if g==0:
+                ax.text(.995,.94,"Forward (+)",transform=ax.transAxes,ha="right",va="top",fontsize=10)
+                ax.text(.995,.06,"Reverse (-)",transform=ax.transAxes,ha="right",va="bottom",fontsize=10)
 
         # ---------- ONE SHARED GENCODE TRACK ----------
 
@@ -701,19 +748,21 @@ for tissue,tissue_hits in hits_by_tissue.items():
             try:title+=f" | PP.H4={float(pp_h4):.4f}"
             except:title+=f" | PP.H4={pp_h4}"
 
-        fig.suptitle(title,fontsize=15,y=.995)
-        fig.text(.010,.57,"Mean normalized RNA-seq read density",rotation=90,va="center",fontsize=14)
+        fig.suptitle(title,fontsize=17,y=.995)
+        fig.text(.008,.57,"Mean RPM-normalized RNA-seq read density",rotation=90,va="center",fontsize=15)
+
+        base_footer=(f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | flank: {flank:,} bp each side | shaded region = trait locus | "
+                     f"coverage bin width = {actual_bin_bp:.2f} bp\n"
+                     "Coverage uses the same RPM normalization as the source BigWigs (1e6 / primary alignments); + strand above 0, - strand below 0")
 
         if TYPE=="cQTL":
-            footer=(f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | flank: {flank:,} bp each side | shaded region = trait locus\n"
-                    "Arcs above coverage = mean linear splicing-junction reads | arcs below coverage = mean circular-splicing reads")
+            footer=base_footer+"\nLinear arc labels = mean LeafCutter junction RPM per subject | circular arc label = mean circular-junction RPM per subject"
         elif TYPE=="sQTL":
-            footer=(f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | flank: {flank:,} bp each side | shaded region = trait locus\n"
-                    "Arcs above coverage = mean linear splicing-junction reads")
+            footer=base_footer+"\nArc labels = mean LeafCutter junction RPM per subject"
         else:
-            footer=f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | flank: {flank:,} bp each side | shaded region = trait locus"
+            footer=base_footer
 
-        fig.text(.5,.006,footer,ha="center",va="bottom",fontsize=10)
+        fig.text(.5,.004,footer,ha="center",va="bottom",fontsize=9.5)
 
         fig.savefig(density_pdf,bbox_inches="tight")
         fig.savefig(density_png,dpi=DPI,bbox_inches="tight")
@@ -725,6 +774,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
         print(f"  DENSITY PNG : {density_png}")
         print(f"  DENSITY SVG : {density_svg}")
         print(f"  SUBJECT TSV : {subject_tsv}")
+        print(f"  Coverage bin width: {actual_bin_bp:.2f} bp")
         total_plotted+=1
 
 print(f"\n{'='*60}")
