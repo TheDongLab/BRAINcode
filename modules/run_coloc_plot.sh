@@ -2,7 +2,7 @@
 #SBATCH --job-name=run_coloc_plot
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.err
-#SBATCH --time=1:00:00
+#SBATCH --time=9:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=40G
 
