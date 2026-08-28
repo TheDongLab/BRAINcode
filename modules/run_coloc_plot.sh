@@ -22,7 +22,9 @@ FLANK_MIN=2000
 FLANK_MAX=20000
 BIGWIG_BIN_BP=25
 MAX_TRACK_POINTS=2500
-CIRC_COORD_TOL=3                      # exact first; +/-3 bp fallback
+CIRC_COORD_TOL=3
+MIN_MEAN_JUNCTION_READS=0.5           # draw linear junctions above this mean
+MAX_JUNCTIONS=30                      # strongest junctions per genotype
 MAX_HITS=0                            # 0 = all passing colocs
 TISSUE_FILTER=""                      # blank = all tissues
 OVERWRITE=0
@@ -46,13 +48,16 @@ for f in "$COLOC" "$METADATA" "$GTF" "$RAW_FILE"; do
 done
 
 module load deepTools 2>/dev/null || true
+module load poppler/22.12.0-GCC-12.2.0 2>/dev/null || module load poppler 2>/dev/null || true
+command -v pdfseparate >/dev/null || { echo "ERROR: pdfseparate unavailable"; exit 1; }
+command -v pdftotext >/dev/null || { echo "ERROR: pdftotext unavailable"; exit 1; }
 
 export TYPE ROOT METADATA COLOC OUTDIR GTF RAW_FILE
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
-export MAX_HITS TISSUE_FILTER OVERWRITE DPI
+export MIN_MEAN_JUNCTION_READS MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
 python - <<'PY'
-import os, re, csv, sys, math, warnings
+import os, re, csv, sys, math, warnings, subprocess
 from pathlib import Path
 from collections import defaultdict
 
@@ -62,7 +67,8 @@ try:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Rectangle, PathPatch
+    from matplotlib.path import Path as MplPath
     import pyBigWig
 except ImportError as e:
     sys.exit(f"ERROR: missing Python package: {e}\nNeed numpy, matplotlib and pyBigWig.")
@@ -75,14 +81,12 @@ METADATA, COLOC, OUTDIR, GTF, RAW_FILE = map(
 )
 FLANK_FRAC, FLANK_MIN, FLANK_MAX = float(os.environ["FLANK_FRAC"]), int(os.environ["FLANK_MIN"]), int(os.environ["FLANK_MAX"])
 BIGWIG_BIN_BP, MAX_TRACK_POINTS = int(os.environ["BIGWIG_BIN_BP"]), int(os.environ["MAX_TRACK_POINTS"])
-CIRC_COORD_TOL = int(os.environ["CIRC_COORD_TOL"])
-MAX_HITS, TISSUE_FILTER = int(os.environ["MAX_HITS"]), os.environ["TISSUE_FILTER"].strip()
-OVERWRITE, DPI = int(os.environ["OVERWRITE"]), int(os.environ["DPI"])
+CIRC_COORD_TOL, MIN_MEAN_JUNCTION_READS = int(os.environ["CIRC_COORD_TOL"]), float(os.environ["MIN_MEAN_JUNCTION_READS"])
+MAX_JUNCTIONS, MAX_HITS = int(os.environ["MAX_JUNCTIONS"]), int(os.environ["MAX_HITS"])
+TISSUE_FILTER, OVERWRITE, DPI = os.environ["TISSUE_FILTER"].strip(), int(os.environ["OVERWRITE"]), int(os.environ["DPI"])
 
 GENOTYPE_LABELS = {0: "Ref/Ref", 1: "Het", 2: "Hom Alt"}
-TOP_COLORS = {0: "#90EE90", 1: "#ADD8E6", 2: "#FFB6C1"}
 TRACK_COLORS = {0: "#228B22", 1: "#4682B4", 2: "#C75B7A"}
-Y_LABELS = {"eQTL": "Z-score normalized expression", "sQTL": "Percent spliced in", "cQTL": "Percent circularized"}
 
 # ============================================================
 # HELPERS
@@ -123,7 +127,6 @@ def find_header(headers, aliases, required=True):
 # ============================================================
 
 raw_alleles = {}
-
 with open(RAW_FILE) as fh:
     for col in fh.readline().split():
         m = re.match(r"^(?:chr)?([^:]+):(\d+):([ACGT]+):([ACGT]+)_([ACGT]+)$", col, re.I)
@@ -189,10 +192,8 @@ def metadata_for_qtl_id(qtl_id, tissue):
     if meta_tissue_col:
         tissue_rows = [r for r in metadata if tissue_equal(r.get(meta_tissue_col, ""), tissue)]
         if tissue_rows: rows = tissue_rows
-
     exact = [r for r in rows if str(r.get(sample_col, "")).strip() == qtl_id]
     if exact: return max(exact, key=get_rin)
-
     subject_rows = [r for r in rows if str(r.get(subject_col, "")).strip() == qtl_id]
     return max(subject_rows, key=get_rin) if subject_rows else None
 
@@ -203,23 +204,18 @@ def metadata_for_qtl_id(qtl_id, tissue):
 def extract_matrix_rows(path, wanted):
     wanted, result = set(map(str, wanted)), {}
     wanted_nover = {strip_gene_version(x) for x in wanted}
-
     with open(path) as fh:
         first = fh.readline()
         delim = detect_delimiter(first)
         samples = split_line(first, delim)[1:]
-
         for line in fh:
             if not line.strip(): continue
             fields = split_line(line, delim)
             if len(fields) < 2: continue
-
             rid = fields[0].strip()
             if rid not in wanted and strip_gene_version(rid) not in wanted_nover: continue
-
             vals = fields[1:] + [""] * max(0, len(samples) - len(fields[1:]))
             result[rid] = dict(zip(samples, vals[:len(samples)]))
-
     return result
 
 def find_matrix_row(rows, event):
@@ -258,7 +254,6 @@ def load_location_table(path, kind):
         idc = find_header(headers, ["snpid", "snp_id", "rsid", "id"])
         cc = find_header(headers, ["chr", "chrom", "chromosome"])
         pc = find_header(headers, ["pos", "position", "start"])
-
         return {
             str(r[idc]): (str(r[cc]), int(float(r[pc])))
             for r in rows if not missing(r.get(idc)) and not missing(r.get(cc)) and not missing(r.get(pc))
@@ -269,15 +264,12 @@ def load_location_table(path, kind):
         "sQTL": ["junction_id", "junctionid", "splicing_id", "event_id", "phenotype_id", "id"],
         "cQTL": ["circ_id", "circid", "circrna_id", "event_id", "phenotype_id", "id"]
     }
-
     idc = find_header(headers, aliases[TYPE])
     cc = find_header(headers, ["chr", "chrom", "chromosome"])
     sc = find_header(headers, ["start", "left", "begin", "donor"])
     ec = find_header(headers, ["end", "right", "stop", "acceptor"])
     strandc = find_header(headers, ["strand"], required=False)
-
     out = {}
-
     for r in rows:
         try:
             out[str(r[idc])] = {
@@ -285,7 +277,6 @@ def load_location_table(path, kind):
                 "strand": str(r[strandc]) if strandc and not missing(r.get(strandc)) else None
             }
         except: pass
-
     return out
 
 def parse_event_coordinates(event):
@@ -301,17 +292,94 @@ def parse_event_coordinates(event):
                 "chr": m.group(1), "start": int(m.group(2)), "end": int(m.group(3)),
                 "strand": m.group(4) if len(m.groups()) >= 4 else None
             }
-
     return None
 
 def find_location(locations, event):
     if event in locations: return locations[event]
     target = strip_gene_version(event)
-
     return next(
         (loc for rid, loc in locations.items() if strip_gene_version(rid) == target),
         parse_event_coordinates(event)
     )
+
+# ============================================================
+# EXISTING COLORED BOXPLOT EXTRACTION
+# ============================================================
+
+def find_boxplot_page(pairs_file, event, snp):
+    if not pairs_file.exists(): return None
+    fallback, page = [], 0
+
+    with open(pairs_file) as fh:
+        first = True
+        for line in fh:
+            if not line.strip(): continue
+            fields = line.rstrip("\r\n").split("\t") if "\t" in line else line.split()
+            if len(fields) < 2: continue
+
+            if first:
+                first = False
+                if norm(fields[-1]) in {"snpid", "snp"}:
+                    continue
+
+            page += 1
+            row_event, row_snp = fields[0].strip(), fields[-1].strip()
+
+            if row_event == event and row_snp == snp:
+                return page
+
+            if row_snp == snp and strip_gene_version(row_event) == strip_gene_version(event):
+                fallback.append(page)
+
+    return fallback[0] if len(fallback) == 1 else None
+
+def extract_boxplot(source_pdf, pairs_file, event, snp, output_pdf):
+    if not source_pdf.exists() or not pairs_file.exists():
+        print(f"  BOXPLOT: source missing ({source_pdf} or {pairs_file})")
+        return False
+
+    page = find_boxplot_page(pairs_file, event, snp)
+    if page is None:
+        print(f"  BOXPLOT: no unique event+SNP match for {event} + {snp}")
+        return False
+
+    if output_pdf.exists() and not OVERWRITE:
+        print(f"  BOXPLOT: {output_pdf} [exists]")
+        return True
+
+    pattern = output_pdf.with_name(output_pdf.stem + "_tmp_%d.pdf")
+
+    try:
+        subprocess.run(
+            ["pdfseparate", "-f", str(page), "-l", str(page), str(source_pdf), str(pattern)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        )
+        extracted = Path(str(pattern).replace("%d", str(page)))
+        if not extracted.exists():
+            print(f"  BOXPLOT: extraction failed for page {page}")
+            return False
+
+        extracted.replace(output_pdf)
+
+        verify = subprocess.run(
+            ["pdftotext", str(output_pdf), "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        ).stdout
+
+        event_ok = event in verify or strip_gene_version(event) in verify
+        snp_ok = snp in verify
+
+        if not event_ok or not snp_ok:
+            output_pdf.unlink(missing_ok=True)
+            print(f"  BOXPLOT: page {page} failed event+SNP verification")
+            return False
+
+        print(f"  BOXPLOT: page {page} -> {output_pdf}")
+        return True
+
+    except Exception as e:
+        print(f"  BOXPLOT: extraction error: {e}")
+        return False
 
 # ============================================================
 # SAMPLE DIRECTORY RESOLUTION
@@ -347,12 +415,10 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
 
     def read_one(path):
         if not path.exists(): return None
-
         bw = pyBigWig.open(str(path))
         try:
             c = bw_chrom(bw, chrom)
             if c is None: return None
-
             vals = bw.stats(c, int(start), int(end), nBins=int(n_bins), type="mean")
             return np.abs(np.asarray([0.0 if v is None else float(v) for v in vals]))
         finally:
@@ -362,15 +428,75 @@ def bigwig_vector(sample_dir, chrom, start, end, strand, n_bins):
     if strand == "-": return read_one(minus), str(minus)
 
     a, b = read_one(plus), read_one(minus)
-
     if a is None and b is None: return None, None
     if a is None: return b, str(minus)
     if b is None: return a, str(plus)
-
     return a + b, f"{plus};{minus}"
 
 # ============================================================
-# cQTL QUANTIFICATION — ANNOTATION ONLY
+# LEAFCUTTER JUNCTION READS
+# ============================================================
+
+leafcutter_cache = {}
+
+def leafcutter_file(sample_dir):
+    return sample_dir / "leafcutter" / "psi" / f"{sample_dir.name}.leafcutter.PSI.tsv"
+
+def load_leafcutter(path):
+    key = str(path)
+    if key in leafcutter_cache: return leafcutter_cache[key]
+    if not path.exists():
+        leafcutter_cache[key] = None
+        return None
+
+    junctions = {}
+    try:
+        with open(path) as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                try:
+                    k = (
+                        chr_key(row["chrom"]), str(row["strand"]).strip(),
+                        int(float(row["start"])), int(float(row["end"]))
+                    )
+                    junctions[k] = junctions.get(k, 0.0) + float(row["reads"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+    except Exception:
+        junctions = None
+
+    leafcutter_cache[key] = junctions
+    return junctions
+
+def mean_junction_reads(group, chrom, start, end, strand):
+    sums, n_files = defaultdict(float), 0
+
+    for r in group:
+        junctions = load_leafcutter(leafcutter_file(r["sample_dir"]))
+        if junctions is None: continue
+        n_files += 1
+
+        for (jchr, jstrand, js, je), reads in junctions.items():
+            if jchr != chr_key(chrom): continue
+            if strand in {"+", "-"} and jstrand != strand: continue
+            if js < start or je > end: continue
+            sums[(js, je)] += reads
+
+    if n_files == 0: return {}, 0
+
+    # Junction absent from an existing PSI file contributes zero:
+    # dividing by all available genotype PSI files implements this.
+    means = {k: v / n_files for k, v in sums.items()}
+    means = {k: v for k, v in means.items() if v >= MIN_MEAN_JUNCTION_READS}
+
+    if MAX_JUNCTIONS > 0 and len(means) > MAX_JUNCTIONS:
+        keep = sorted(means, key=means.get, reverse=True)[:MAX_JUNCTIONS]
+        means = {k: means[k] for k in keep}
+
+    return means, n_files
+
+# ============================================================
+# cQTL QUANTIFICATION
 # ============================================================
 
 def circ_quant_file(sample_dir):
@@ -378,7 +504,6 @@ def circ_quant_file(sample_dir):
 
 def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
     if not path.exists(): return None
-
     exact, nearby = None, []
 
     try:
@@ -391,7 +516,7 @@ def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
                     rstart, rend = int(float(row["start"])), int(float(row["end"]))
                     rstrand = str(row["strand"]).strip()
 
-                    if norm(rchr) != norm(chrom): continue
+                    if chr_key(rchr) != chr_key(chrom): continue
                     if strand in {"+", "-"} and rstrand != str(strand).strip(): continue
 
                     result = {
@@ -425,33 +550,28 @@ def read_circ_quant(path, chrom, start, end, strand, tolerance=CIRC_COORD_TOL):
         abs(r["matched_start"] - int(start)),
         abs(r["matched_end"] - int(end))
     ))
-
     return nearby[0]
 
 # ============================================================
-# GENCODE v49 EXON TRACK
+# GENCODE v49 TRACK
 # ============================================================
 
 def parse_gtf_attrs(s):
     attrs = {}
-
     for item in s.strip().split(";"):
         item = item.strip()
         if not item: continue
         p = item.split(" ", 1)
         if len(p) == 2: attrs[p[0]] = p[1].strip().strip('"')
-
     return attrs
 
 def load_reference_exons(gtf, chrom, start, end):
     exons = []
-
     with open(gtf) as fh:
         for line in fh:
             if not line or line.startswith("#"): continue
             f = line.rstrip("\n").split("\t")
-
-            if len(f) < 9 or f[2] != "exon" or norm(f[0]) != norm(chrom): continue
+            if len(f) < 9 or f[2] != "exon" or chr_key(f[0]) != chr_key(chrom): continue
 
             try:
                 exon_start, exon_end = int(f[3]) - 1, int(f[4])
@@ -459,7 +579,6 @@ def load_reference_exons(gtf, chrom, start, end):
                 continue
 
             if exon_end < start or exon_start > end: continue
-
             a = parse_gtf_attrs(f[8])
 
             exons.append({
@@ -472,7 +591,6 @@ def load_reference_exons(gtf, chrom, start, end):
 
 def merge_intervals(intervals):
     if not intervals: return []
-
     intervals = sorted((int(s), int(e)) for s, e in intervals)
     merged = [list(intervals[0])]
 
@@ -482,7 +600,7 @@ def merge_intervals(intervals):
 
     return merged
 
-def draw_reference_track(ax, exons, plot_start, plot_end, show_ylabel=False):
+def draw_reference_track(ax, exons, plot_start, plot_end):
     genes, strands = defaultdict(list), {}
 
     for exon in exons:
@@ -491,8 +609,8 @@ def draw_reference_track(ax, exons, plot_start, plot_end, show_ylabel=False):
         strands[gene] = exon["strand"]
 
     if not genes:
-        ax.text(0.5, 0.45, "No GENCODE v49 exons", transform=ax.transAxes, ha="center", va="center", fontsize=7)
-
+        ax.text(0.5, 0.45, "No GENCODE v49 exons",
+                transform=ax.transAxes, ha="center", va="center", fontsize=7)
     else:
         gene_items = sorted(genes.items(), key=lambda kv: min(s for s, e in kv[1]))
 
@@ -506,7 +624,10 @@ def draw_reference_track(ax, exons, plot_start, plot_end, show_ylabel=False):
             for s, e in merged:
                 s, e = max(s, plot_start), min(e, plot_end)
                 if e <= s: continue
-                ax.add_patch(Rectangle((s, y - 0.15), e - s, 0.30, facecolor="black", edgecolor="black", linewidth=0.4))
+                ax.add_patch(Rectangle(
+                    (s, y - 0.15), e - s, 0.30,
+                    facecolor="black", edgecolor="black", linewidth=0.4
+                ))
 
             strand = strands.get(gene, "")
             label = f"{gene} ({strand})" if strand in {"+", "-"} else gene
@@ -516,13 +637,53 @@ def draw_reference_track(ax, exons, plot_start, plot_end, show_ylabel=False):
 
     ax.set_xlim(plot_start, plot_end)
     ax.set_yticks([])
-    ax.set_ylabel("GENCODE v49" if show_ylabel else "", fontsize=8)
-    ax.set_xlabel("")
+    ax.set_ylabel("GENCODE v49", fontsize=8)
     ax.xaxis.set_major_formatter(FuncFormatter(genomic_formatter))
-    ax.locator_params(axis="x", nbins=4)
+    ax.locator_params(axis="x", nbins=5)
 
     for side in ["top", "right", "left"]:
         ax.spines[side].set_visible(False)
+
+# ============================================================
+# SASHIMI-STYLE ARCS
+# ============================================================
+
+def draw_linear_arcs(ax, junctions, x, mean_track, coverage_ymax, color):
+    span_total = max(1, x[-1] - x[0])
+
+    for (start, end), reads in sorted(junctions.items(), key=lambda z: z[0][1] - z[0][0]):
+        left_y = float(np.interp(start, x, mean_track))
+        right_y = float(np.interp(end, x, mean_track))
+        span_frac = min(1.0, max(0.0, (end - start) / span_total))
+        peak = coverage_ymax * (1.05 + 0.42 * math.sqrt(span_frac))
+        mid = (start + end) / 2
+
+        path = MplPath(
+            [(start, left_y), (mid, peak), (end, right_y)],
+            [MplPath.MOVETO, MplPath.CURVE3, MplPath.CURVE3]
+        )
+        lw = min(4.0, max(0.7, math.log(reads + 1, 2)))
+        ax.add_patch(PathPatch(path, facecolor="none", edgecolor=color, linewidth=lw, alpha=0.9))
+        ax.text(
+            mid, peak, f"{reads:.2f}",
+            ha="center", va="bottom", fontsize=7,
+            bbox=dict(facecolor="white", edgecolor="none", pad=0.5)
+        )
+
+def draw_circ_arc(ax, start, end, mean_reads, coverage_ymax, color):
+    if mean_reads <= 0: return
+    depth = -0.30 * coverage_ymax
+    path = MplPath(
+        [(start, 0), (start, depth), (end, depth), (end, 0)],
+        [MplPath.MOVETO, MplPath.CURVE4, MplPath.CURVE4, MplPath.CURVE4]
+    )
+    lw = min(4.0, max(0.7, math.log(mean_reads + 1, 2)))
+    ax.add_patch(PathPatch(path, facecolor="none", edgecolor=color, linewidth=lw, alpha=0.95))
+    ax.text(
+        (start + end) / 2, depth * 0.90, f"{mean_reads:.2f}",
+        ha="center", va="top", fontsize=7,
+        bbox=dict(facecolor="white", edgecolor="none", pad=0.5)
+    )
 
 # ============================================================
 # SNP SELECTION
@@ -542,7 +703,8 @@ def possible_snps(hit):
         if col in hit and not missing(hit[col]): candidates.append(hit[col])
 
     for k, v in hit.items():
-        if "topsnp" in norm(k) and "gwas" not in norm(k) and not missing(v): candidates.append(v)
+        if "topsnp" in norm(k) and "gwas" not in norm(k) and not missing(v):
+            candidates.append(v)
 
     if "candidate_SNPs" in hit and not missing(hit["candidate_SNPs"]):
         candidates += [x for x in hit["candidate_SNPs"].split(";") if x]
@@ -567,24 +729,36 @@ def genotype_group(value, flip=False):
 # ============================================================
 
 hits_by_tissue = defaultdict(list)
-for hit in hits: hits_by_tissue[hit.get(tissue_col, "").strip()].append(hit)
+for hit in hits:
+    hits_by_tissue[hit.get(tissue_col, "").strip()].append(hit)
 
-total_plotted = total_skipped = 0
+total_plotted = total_skipped = total_boxplots = 0
 
 for tissue, tissue_hits in hits_by_tissue.items():
     print(f"\n{'=' * 60}\nTISSUE: {tissue}\nPASSING HITS: {len(tissue_hits)}\n{'=' * 60}")
 
     qtl_dir = ROOT / tissue / TYPE
+    results_dir = qtl_dir / "results"
 
     if TYPE == "eQTL":
-        phenotype_file, trait_location_file = qtl_dir / f"expression_{tissue}.txt", qtl_dir / "gene_location.txt"
+        phenotype_file = qtl_dir / f"expression_{tissue}.txt"
+        trait_location_file = qtl_dir / "gene_location.txt"
     elif TYPE == "sQTL":
-        phenotype_file, trait_location_file = qtl_dir / f"splicing_{tissue}.txt", qtl_dir / "splicing_location.txt"
+        phenotype_file = qtl_dir / f"splicing_{tissue}.txt"
+        trait_location_file = qtl_dir / "splicing_location.txt"
     else:
-        phenotype_file, trait_location_file = qtl_dir / f"circ_{tissue}.txt", qtl_dir / "circ_location.txt"
+        phenotype_file = qtl_dir / f"circ_{tissue}.txt"
+        trait_location_file = qtl_dir / "circ_location.txt"
 
-    snp_file, snp_location_file = qtl_dir / f"snp_{tissue}.txt", qtl_dir / "snp_location.txt"
-    missing_files = [p for p in [phenotype_file, trait_location_file, snp_file, snp_location_file] if not p.exists()]
+    snp_file = qtl_dir / f"snp_{tissue}.txt"
+    snp_location_file = qtl_dir / "snp_location.txt"
+    boxplot_pairs = results_dir / f"{tissue}_{TYPE}.top_for_boxplot.txt"
+    colored_boxplots = results_dir / f"{tissue}_all_sig_{TYPE}_boxplots_colored.pdf"
+
+    missing_files = [
+        p for p in [phenotype_file, trait_location_file, snp_file, snp_location_file]
+        if not p.exists()
+    ]
 
     if missing_files:
         print("SKIPPING TISSUE: missing " + ", ".join(map(str, missing_files)))
@@ -618,7 +792,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
         if genotype is None:
             print("  SKIP: candidate SNP absent from genotype matrix"); total_skipped += 1; continue
 
-        # Convert this SNP's MatrixEQTL counted-allele dosage to ALT dosage.
         if snp not in snp_locations:
             print(f"  SKIP: no genomic position for {snp}"); total_skipped += 1; continue
 
@@ -629,6 +802,7 @@ for tissue, tissue_hits in hits_by_tissue.items():
             print(f"  SKIP: allele orientation unavailable for {snp}"); total_skipped += 1; continue
 
         flip_genotype = allele["counted"] == allele["ref"]
+
         print(
             f"  SNP alleles: REF={allele['ref']} ALT={allele['alt']} "
             f"PLINK_counted={allele['counted']} | "
@@ -642,16 +816,26 @@ for tissue, tissue_hits in hits_by_tissue.items():
         chrom = loc["chr"]
         trait_start, trait_end = min(loc["start"], loc["end"]), max(loc["start"], loc["end"])
         strand = loc.get("strand")
-
         flank = min(int(max(FLANK_MIN, math.ceil(max(1, trait_end - trait_start) * FLANK_FRAC))), FLANK_MAX)
         plot_start, plot_end = max(0, trait_start - flank), trait_end + flank
         n_bins = int(min(MAX_TRACK_POINTS, max(50, math.ceil((plot_end - plot_start) / BIGWIG_BIN_BP))))
-
         x = np.linspace(plot_start, plot_end, n_bins, endpoint=False)
         x += (plot_end - plot_start) / n_bins / 2
 
         reference_exons = load_reference_exons(GTF, chrom, plot_start, plot_end)
         print(f"  GENCODE v49 overlapping exons: {len(reference_exons)}")
+
+        label = symbol if symbol else event
+        basename = safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
+
+        boxplot_out = OUTDIR / f"{basename}.boxplot.pdf"
+        density_pdf = OUTDIR / f"{basename}.density.pdf"
+        density_png = OUTDIR / f"{basename}.density.png"
+        density_svg = OUTDIR / f"{basename}.density.svg"
+        subject_tsv = OUTDIR / f"{basename}.subjects.tsv"
+
+        if extract_boxplot(colored_boxplots, boxplot_pairs, event, snp, boxplot_out):
+            total_boxplots += 1
 
         records = []
 
@@ -668,7 +852,6 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
             sample_id = str(meta.get(sample_col, "")).strip()
             subject_id = str(meta.get(subject_col, "")).strip()
-
             if not sample_id: continue
 
             sample_dir = resolve_sample_dir(tissue, sample_id)
@@ -676,8 +859,9 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
             records.append({
                 "qtl_id": qid, "subject_id": subject_id, "sample_id": sample_id,
-                "sample_fs_id": sample_dir.name, "genotype": g, "genotype_raw": genotype[qid],
-                "phenotype": pheno, "sample_dir": sample_dir, "track": None, "track_source": None,
+                "sample_fs_id": sample_dir.name, "genotype": g,
+                "genotype_raw": genotype[qid], "phenotype": pheno,
+                "sample_dir": sample_dir, "track": None, "track_source": None,
                 "circ_reads": None, "linear_reads": None, "circ_percent_file": None,
                 "circ_quant_source": None, "circ_match_type": None,
                 "circ_matched_start": None, "circ_matched_end": None
@@ -702,50 +886,78 @@ for tissue, tissue_hits in hits_by_tissue.items():
 
         complete = [
             r for r in records
-            if r["track"] is not None and len(r["track"]) == n_bins and np.all(np.isfinite(r["track"]))
+            if r["track"] is not None
+            and len(r["track"]) == n_bins
+            and np.all(np.isfinite(r["track"]))
         ]
 
         counts = {g: sum(r["genotype"] == g for r in complete) for g in [0, 1, 2]}
 
-        print(f"  Complete subjects used in plots: {len(complete)}")
+        print(f"  Complete subjects used in density plots: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
 
         if not complete:
-            print("  SKIP: no subjects with usable tracks"); total_skipped += 1; continue
+            print("  SKIP DENSITY: no subjects with usable tracks")
+            total_skipped += 1
+            continue
 
+        groups = {g: [r for r in complete if r["genotype"] == g] for g in [0, 1, 2]}
+        mean_tracks = {
+            g: np.nanmean(np.vstack([r["track"] for r in groups[g]]), axis=0)
+            if groups[g] else np.zeros(n_bins)
+            for g in [0, 1, 2]
+        }
+
+        junctions, junction_denoms = {}, {}
+        if TYPE in {"sQTL", "cQTL"}:
+            for g in [0, 1, 2]:
+                junctions[g], junction_denoms[g] = mean_junction_reads(
+                    groups[g], chrom, plot_start, plot_end, strand
+                )
+                if groups[g]:
+                    print(
+                        f"  {GENOTYPE_LABELS[g]} LeafCutter files: "
+                        f"{junction_denoms[g]}/{len(groups[g])}; "
+                        f"junctions plotted={len(junctions[g])}"
+                    )
+
+        circ_means = {g: 0.0 for g in [0, 1, 2]}
         if TYPE == "cQTL":
+            for g in [0, 1, 2]:
+                if groups[g]:
+                    # Missing circRNA row contributes zero.
+                    circ_means[g] = sum(
+                        0.0 if r["circ_reads"] is None else float(r["circ_reads"])
+                        for r in groups[g]
+                    ) / len(groups[g])
+
             n_quant = sum(r["circ_reads"] is not None for r in complete)
             n_exact = sum(r["circ_match_type"] == "exact" for r in complete)
             n_tol = sum(r["circ_match_type"] == "tolerance" for r in complete)
             print(f"  Circ quant rows found: {n_quant}/{len(complete)}")
             print(f"  Circ coordinate matches: exact={n_exact}, tolerance-rescued={n_tol}")
-
-        tracks = {g: [r["track"] for r in complete if r["genotype"] == g] for g in [0, 1, 2]}
-
-        label = symbol if symbol else event
-        basename = safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
-        pdf, png, svg = OUTDIR / f"{basename}.pdf", OUTDIR / f"{basename}.png", OUTDIR / f"{basename}.svg"
-        subject_tsv = OUTDIR / f"{basename}.subjects.tsv"
-
-        if not OVERWRITE and pdf.exists() and png.exists() and svg.exists():
-            print("  EXISTS; skipping"); continue
+            print(
+                "  Mean circ reads: "
+                + " | ".join(f"{GENOTYPE_LABELS[g]}={circ_means[g]:.3f}" for g in [0, 1, 2])
+            )
 
         with open(subject_tsv, "w", newline="") as fh:
             writer = csv.writer(fh, delimiter="\t")
             writer.writerow([
-                "tissue", "qtl_type", "event", "gene_symbol", "snp", "ref", "alt", "plink_counted_allele",
-                "qtl_id", "subject_id", "metadata_sample_id", "filesystem_sample_id",
-                "genotype_group", "genotype_label", "genotype_raw", "phenotype",
-                "track_source", "circ_reads", "linear_reads", "circ_percent_file",
-                "circ_match_type", "circ_matched_start", "circ_matched_end", "circ_quant_source"
+                "tissue", "qtl_type", "event", "gene_symbol", "snp", "ref", "alt",
+                "plink_counted_allele", "qtl_id", "subject_id", "metadata_sample_id",
+                "filesystem_sample_id", "genotype_group", "genotype_label",
+                "genotype_raw", "phenotype", "track_source", "circ_reads",
+                "linear_reads", "circ_percent_file", "circ_match_type",
+                "circ_matched_start", "circ_matched_end", "circ_quant_source"
             ])
 
             for r in complete:
                 writer.writerow([
-                    tissue, TYPE, event, symbol, snp, allele["ref"], allele["alt"], allele["counted"],
-                    r["qtl_id"], r["subject_id"], r["sample_id"], r["sample_fs_id"],
-                    r["genotype"], GENOTYPE_LABELS[r["genotype"]], r["genotype_raw"],
-                    r["phenotype"], r["track_source"],
+                    tissue, TYPE, event, symbol, snp, allele["ref"], allele["alt"],
+                    allele["counted"], r["qtl_id"], r["subject_id"], r["sample_id"],
+                    r["sample_fs_id"], r["genotype"], GENOTYPE_LABELS[r["genotype"]],
+                    r["genotype_raw"], r["phenotype"], r["track_source"],
                     "" if r["circ_reads"] is None else r["circ_reads"],
                     "" if r["linear_reads"] is None else r["linear_reads"],
                     "" if r["circ_percent_file"] is None else r["circ_percent_file"],
@@ -755,41 +967,98 @@ for tissue, tissue_hits in hits_by_tissue.items():
                     "" if r["circ_quant_source"] is None else r["circ_quant_source"]
                 ])
 
-        ymax = max(float(np.nanmax(r["track"])) for r in complete)
-        ymax = 1.0 if not np.isfinite(ymax) or ymax <= 0 else ymax * 1.05
+        if not OVERWRITE and density_pdf.exists() and density_png.exists() and density_svg.exists():
+            print("  DENSITY EXISTS; skipping")
+            continue
+
+        coverage_ymax = max(float(np.nanmax(mean_tracks[g])) for g in [0, 1, 2] if groups[g])
+        coverage_ymax = 1.0 if not np.isfinite(coverage_ymax) or coverage_ymax <= 0 else coverage_ymax * 1.05
+        has_linear_arcs = TYPE in {"sQTL", "cQTL"} and any(junctions.get(g) for g in [0, 1, 2])
+        has_circ_arcs = TYPE == "cQTL" and any(circ_means[g] > 0 for g in [0, 1, 2])
+        upper_ylim = coverage_ymax * (1.58 if has_linear_arcs else 1.08)
+        lower_ylim = -0.38 * coverage_ymax if has_circ_arcs else 0
+        bar_width = (plot_end - plot_start) / n_bins * 0.92
 
         # ====================================================
-        # PLOT
+        # DENSITY-ONLY PLOT
         # ============================================================
 
-        fig = plt.figure(figsize=(16, 8.5))
-        gs = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.75, 0.42], hspace=0.16, wspace=0.08)
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(
+            4, 1,
+            height_ratios=[1.0, 1.0, 1.0, 0.72],
+            hspace=0.10
+        )
 
-        # ---------- TOP: MatrixEQTL phenotype ----------
-
-        ax0, rng = fig.add_subplot(gs[0, :]), np.random.default_rng(12345)
+        axes = []
 
         for g in [0, 1, 2]:
-            vals = np.asarray([r["phenotype"] for r in complete if r["genotype"] == g])
-            if not len(vals): continue
+            ax = fig.add_subplot(gs[g, 0])
+            axes.append(ax)
 
-            mean_val, jitter = np.mean(vals), rng.normal(0, 0.055, size=len(vals))
+            if groups[g]:
+                mean_track = mean_tracks[g]
+                ax.bar(
+                    x, mean_track, width=bar_width,
+                    color=TRACK_COLORS[g], alpha=0.82,
+                    align="center", linewidth=0
+                )
 
-            ax0.scatter(
-                np.full(len(vals), g) + jitter, vals,
-                s=24, alpha=0.65, color=TOP_COLORS[g], edgecolor="none"
+                if TYPE in {"sQTL", "cQTL"}:
+                    draw_linear_arcs(
+                        ax, junctions[g], x, mean_track,
+                        coverage_ymax, TRACK_COLORS[g]
+                    )
+
+                if TYPE == "cQTL":
+                    draw_circ_arc(
+                        ax, trait_start, trait_end,
+                        circ_means[g], coverage_ymax,
+                        TRACK_COLORS[g]
+                    )
+            else:
+                ax.text(
+                    0.5, 0.5, "No subjects",
+                    transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10
+                )
+
+            ax.axvspan(trait_start, trait_end, alpha=0.10, color="#999999")
+
+            if plot_start <= snp_pos <= plot_end:
+                ax.axvline(
+                    snp_pos, linestyle="--",
+                    linewidth=1.3, alpha=0.8, color="black"
+                )
+
+            ax.set_xlim(plot_start, plot_end)
+            ax.set_ylim(lower_ylim, upper_ylim)
+            ax.set_title(
+                f"{GENOTYPE_LABELS[g]} (N={counts[g]})",
+                loc="left", fontsize=11, color=TRACK_COLORS[g]
             )
-            ax0.plot([g - 0.18, g + 0.18], [mean_val, mean_val], linewidth=3, color=TOP_COLORS[g])
-            ax0.annotate(
-                f"Mean = {mean_val:.4f}", xy=(g - 0.18, mean_val), xytext=(0, 7),
-                textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color="black"
+
+            if g < 2:
+                ax.tick_params(axis="x", labelbottom=False)
+            else:
+                ax.tick_params(axis="x", labelbottom=False)
+
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+        # ---------- ONE SHARED GENCODE TRACK ----------
+
+        ax_ref = fig.add_subplot(gs[3, 0], sharex=axes[0])
+        draw_reference_track(ax_ref, reference_exons, plot_start, plot_end)
+        ax_ref.axvspan(trait_start, trait_end, alpha=0.10, color="#999999")
+
+        if plot_start <= snp_pos <= plot_end:
+            ax_ref.axvline(
+                snp_pos, linestyle="--",
+                linewidth=1.0, alpha=0.7, color="black"
             )
 
-        ax0.set_xlim(-0.5, 2.5)
-        ax0.set_xticks([0, 1, 2])
-        ax0.set_xticklabels([])
-        ax0.tick_params(axis="x", length=3)
-        ax0.set_ylabel(Y_LABELS[TYPE])
+        ax_ref.set_xlabel(f"{chrom} genomic position")
 
         title_event = f"{symbol} ({event})" if symbol and symbol != event else event
         title = (
@@ -801,64 +1070,12 @@ for tissue, tissue_hits in hits_by_tissue.items():
             try: title += f" | PP.H4={float(pp_h4):.4f}"
             except: title += f" | PP.H4={pp_h4}"
 
-        ax0.set_title(title, fontsize=13)
-        ax0.spines["top"].set_visible(False)
-        ax0.spines["right"].set_visible(False)
-
-        # ---------- MIDDLE + BOTTOM: reads + triplicate GENCODE ----------
-
-        for g in [0, 1, 2]:
-            ax = fig.add_subplot(gs[1, g])
-            ax_ref = fig.add_subplot(gs[2, g], sharex=ax)
-            group_tracks = tracks[g]
-
-            for arr in group_tracks:
-                ax.plot(x, arr, linewidth=0.65, alpha=0.16, color=TRACK_COLORS[g])
-
-            if group_tracks:
-                ax.plot(x, np.nanmean(np.vstack(group_tracks), axis=0), linewidth=2.5, color=TRACK_COLORS[g])
-            else:
-                ax.text(0.5, 0.5, "No subjects", transform=ax.transAxes, ha="center", va="center")
-
-            ax.axvspan(trait_start, trait_end, alpha=0.12, color="#999999")
-
-            if plot_start <= snp_pos <= plot_end:
-                ax.axvline(snp_pos, linestyle="--", linewidth=1.3, alpha=0.8, color="black")
-
-            if TYPE == "cQTL":
-                gr = [r for r in complete if r["genotype"] == g]
-                qgr = [r for r in gr if r["circ_reads"] is not None]
-
-                if gr and qgr:
-                    cv = np.asarray([r["circ_reads"] for r in qgr])
-                    lv = np.asarray([r["linear_reads"] for r in qgr])
-                    annotation = (
-                        f"Mean circ reads = {np.mean(cv):.2f}\n"
-                        f"Mean linear reads = {np.mean(lv):.2f}\n"
-                        f"Circ+ samples = {int(np.sum(cv > 0))}/{len(qgr)}\n"
-                        f"Circ quant rows = {len(qgr)}/{len(gr)}"
-                    )
-                    ax.text(0.02, 0.96, annotation, transform=ax.transAxes,
-                            ha="left", va="top", fontsize=9, color="black")
-
-                elif gr:
-                    ax.text(0.02, 0.96, f"Circ quant rows = 0/{len(gr)}",
-                            transform=ax.transAxes, ha="left", va="top", fontsize=9, color="black")
-
-            ax.set_xlim(plot_start, plot_end)
-            ax.set_ylim(0, ymax)
-            ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})")
-            ax.tick_params(axis="x", labelbottom=False)
-
-            if g == 0: ax.set_ylabel("Normalized RNA-seq read density")
-            else: ax.tick_params(labelleft=False)
-
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-
-            draw_reference_track(ax_ref, reference_exons, plot_start, plot_end, show_ylabel=(g == 0))
-            ax_ref.set_xlabel(f"{chrom} genomic position")
-
+        fig.suptitle(title, fontsize=13, y=0.995)
+        fig.text(
+            0.012, 0.57,
+            "Mean normalized RNA-seq read density",
+            rotation=90, va="center", fontsize=10
+        )
         fig.text(
             0.5, 0.008,
             f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | "
@@ -866,22 +1083,24 @@ for tissue, tissue_hits in hits_by_tissue.items():
             ha="center", fontsize=9
         )
 
-        fig.savefig(pdf, bbox_inches="tight")
-        fig.savefig(png, dpi=DPI, bbox_inches="tight")
-        fig.savefig(svg, bbox_inches="tight")
+        fig.savefig(density_pdf, bbox_inches="tight")
+        fig.savefig(density_png, dpi=DPI, bbox_inches="tight")
+        fig.savefig(density_svg, bbox_inches="tight")
         plt.close(fig)
 
-        print(f"  PDF: {pdf}")
-        print(f"  PNG: {png}")
-        print(f"  SVG: {svg}")
-        print(f"  TSV: {subject_tsv}")
+        print(f"  BOXPLOT PDF : {boxplot_out if boxplot_out.exists() else 'not extracted'}")
+        print(f"  DENSITY PDF : {density_pdf}")
+        print(f"  DENSITY PNG : {density_png}")
+        print(f"  DENSITY SVG : {density_svg}")
+        print(f"  SUBJECT TSV : {subject_tsv}")
         total_plotted += 1
 
 print(f"\n{'=' * 60}")
 print("DONE")
-print(f"QTL type        : {TYPE}")
-print(f"Plots generated : {total_plotted}")
-print(f"Skipped hits    : {total_skipped}")
-print(f"Output          : {OUTDIR}")
+print(f"QTL type           : {TYPE}")
+print(f"Density plots      : {total_plotted}")
+print(f"Boxplots extracted : {total_boxplots}")
+print(f"Skipped hits       : {total_skipped}")
+print(f"Output             : {OUTDIR}")
 print("=" * 60)
 PY
