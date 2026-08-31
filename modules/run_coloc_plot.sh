@@ -23,7 +23,7 @@ FLANK_MAX=20000
 BIGWIG_BIN_BP=25
 MAX_TRACK_POINTS=2500
 CIRC_COORD_TOL=3
-MIN_MEAN_JUNCTION_RPM=0.01           # roughly raw mean 0.5 at 50M primary reads
+MIN_MEAN_JUNCTION_RPM=0.01
 MAX_JUNCTIONS=30
 MAX_HITS=0
 TISSUE_FILTER=""
@@ -46,6 +46,7 @@ module load poppler/25.07.0-GCC-13.3.0 2>/dev/null || { echo "ERROR: could not l
 
 PYTHON="$(command -v python)"
 command -v pdfseparate >/dev/null || { echo "ERROR: pdfseparate unavailable"; exit 1; }
+command -v pdftotext >/dev/null || { echo "ERROR: pdftotext unavailable"; exit 1; }
 command -v samtools >/dev/null || { echo "ERROR: samtools unavailable"; exit 1; }
 "$PYTHON" -c 'import numpy,matplotlib,pyBigWig' || { echo "ERROR: Python plotting stack unavailable"; exit 1; }
 
@@ -255,28 +256,94 @@ def find_location(locations,event):
 # COLORED BOXPLOT EXTRACTION
 # ============================================================
 
-def find_boxplot_page(pairs_file,event,snp):
+def naive_boxplot_page(pairs_file,event,snp):
     if not pairs_file.exists():return None
+    # eQTL has one header row. sQTL/cQTL are headerless.
     awk_script='NR>1 && $1==E && $NF==S {print NR-1; exit}' if TYPE=="eQTL" else '$1==E && $NF==S {print NR; exit}'
     try:
-        r=subprocess.run(["awk","-v",f"E={event}","-v",f"S={snp}",awk_script,str(pairs_file)],capture_output=True,text=True,check=True)
+        r=subprocess.run(["awk","-v",f"E={event}","-v",f"S={snp}",awk_script,str(pairs_file)],
+                         capture_output=True,text=True,check=True)
         return int(r.stdout.strip()) if r.stdout.strip() else None
     except:return None
+
+def pdf_match_text(x):
+    # PDF text extraction can alter spaces, punctuation and Unicode dashes.
+    # Strip everything except letters/numbers so event IDs remain comparable.
+    return re.sub(r"[^a-z0-9]","",str(x).lower())
+
+def search_pdf_window(source_pdf,event,snp,first,last):
+    target_event,target_snp=pdf_match_text(event),pdf_match_text(snp)
+    try:
+        r=subprocess.run(["pdftotext","-f",str(first),"-l",str(last),str(source_pdf),"-"],
+                         capture_output=True,text=True,check=True)
+    except:return None
+
+    for i,text in enumerate(r.stdout.split("\f")):
+        if not text.strip():continue
+        cleaned=pdf_match_text(text)
+        if target_event in cleaned and target_snp in cleaned:return first+i
+    return None
+
+def find_boxplot_page(source_pdf,pairs_file,event,snp):
+    naive=naive_boxplot_page(pairs_file,event,snp)
+    if naive is None:return None
+
+    # Exact page first: free in the common case where nothing was skipped.
+    page=search_pdf_window(source_pdf,event,snp,naive,naive)
+    if page is not None:
+        print(f"  BOXPLOT LOOKUP: pair-file page={naive}, actual PDF page={page}, offset=+0")
+        return page
+
+    # Boxplot-generation skips accumulate slowly, so search around the
+    # expected page rather than parsing a 70k+ page PDF from the beginning.
+    searched=set()
+    for radius in [10,50,250,1000,5000]:
+        first,maxlast=max(1,naive-radius),naive+radius
+        key=(first,maxlast)
+        if key in searched:continue
+        searched.add(key)
+        page=search_pdf_window(source_pdf,event,snp,first,maxlast)
+        if page is not None:
+            print(f"  BOXPLOT LOOKUP: pair-file page={naive}, actual PDF page={page}, offset={page-naive:+d}")
+            return page
+
+    print(f"  BOXPLOT LOOKUP FAILED: {event} + {snp}; pair-file page={naive}")
+    return None
 
 def extract_boxplot(source_pdf,pairs_file,event,snp,output_pdf):
     if not source_pdf.exists():print(f"  BOXPLOT FAILED: colored PDF missing: {source_pdf}"); return False
     if not pairs_file.exists():print(f"  BOXPLOT FAILED: pairs file missing: {pairs_file}"); return False
-    page=find_boxplot_page(pairs_file,event,snp)
-    if page is None:print(f"  BOXPLOT FAILED: no exact event+SNP match for {event} + {snp}"); return False
-    if output_pdf.exists() and not OVERWRITE:print(f"  BOXPLOT: page {page} -> {output_pdf} [exists]"); return True
+
+    page=find_boxplot_page(source_pdf,pairs_file,event,snp)
+    if page is None:
+        print(f"  BOXPLOT FAILED: could not locate actual PDF page for {event} + {snp}")
+        return False
+
     try:
         pattern=output_pdf.with_name(output_pdf.stem+"_%d.pdf")
-        subprocess.run(["pdfseparate","-f",str(page),"-l",str(page),str(source_pdf),str(pattern)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
-        extracted=Path(str(pattern).replace("%d",str(page)))
-        if not extracted.exists():print(f"  BOXPLOT FAILED: page {page} extraction failed"); return False
-        extracted.replace(output_pdf); print(f"  BOXPLOT: page {page} -> {output_pdf}"); return True
+
+        # Remove any temporary extraction from a previous attempt.
+        tmp=Path(str(pattern).replace("%d",str(page)))
+        if tmp.exists():tmp.unlink()
+
+        subprocess.run(["pdfseparate","-f",str(page),"-l",str(page),str(source_pdf),str(pattern)],
+                       check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
+
+        if not tmp.exists():
+            print(f"  BOXPLOT FAILED: page {page} extraction failed")
+            return False
+
+        # Intentionally replace an existing extracted boxplot. Older runs may
+        # contain the wrong page because the old lookup assumed row == PDF page.
+        if output_pdf.exists():output_pdf.unlink()
+        tmp.replace(output_pdf)
+
+        print(f"  BOXPLOT: actual page {page} -> {output_pdf}")
+        return True
+
     except Exception as e:
-        print(f"  BOXPLOT FAILED: {e}"); return False
+        print(f"  BOXPLOT FAILED: {e}")
+        return False
 
 # ============================================================
 # SAMPLE DIRECTORY + PRIMARY READ DEPTH
@@ -371,7 +438,6 @@ def mean_junction_rpm(group,chrom,start,end):
             sums[(jstrand,js,je)] += rpm_value(reads,primary)
 
     if n_files==0:return {},0
-    # Missing junction rows contribute zero because every accumulated total is divided by all valid genotype samples.
     means={k:v/n_files for k,v in sums.items()}
     means={k:v for k,v in means.items() if v>=MIN_MEAN_JUNCTION_RPM}
     if MAX_JUNCTIONS>0 and len(means)>MAX_JUNCTIONS:
@@ -479,6 +545,7 @@ def draw_linear_arcs(ax,junctions,x,mean_plus,mean_minus,coverage_max,color):
     span_total=max(1,x[-1]-x[0])
     for (strand,start,end),rpm in sorted(junctions.items(),key=lambda z:z[0][2]-z[0][1]):
         span_frac=min(1.,max(0.,(end-start)/span_total)); mid=(start+end)/2
+
         if strand=="-":
             left_y=-float(np.interp(start,x,mean_minus)); right_y=-float(np.interp(end,x,mean_minus))
             base=min(left_y,right_y); apex=-coverage_max*(1.05+.42*math.sqrt(span_frac))
@@ -497,7 +564,6 @@ def draw_linear_arcs(ax,junctions,x,mean_plus,mean_minus,coverage_max,color):
 
 def draw_circ_arc(ax,start,end,mean_rpm,coverage_max,color,strand):
     if mean_rpm<=0:return
-    # Circular arc sits farther outward than ordinary junction arcs on the event's transcription strand.
     sign=-1 if strand=="-" else 1
     outer=sign*coverage_max*1.72
     path=MplPath([(start,0),(start,outer),(end,outer),(end,0)],[MplPath.MOVETO,MplPath.CURVE4,MplPath.CURVE4,MplPath.CURVE4])
@@ -642,10 +708,15 @@ for tissue,tissue_hits in hits_by_tissue.items():
 
         print(f"  Complete subjects used in density plots: {len(complete)}")
         print(f"  Ref/Ref={counts[0]} | Het={counts[1]} | Hom Alt={counts[2]}")
+
         if TYPE in {"sQTL","cQTL"}:
             n_primary=sum(r["primary_reads"] is not None for r in complete)
             print(f"  Samples with primary-read denominator: {n_primary}/{len(complete)}")
-        if not complete:print("  SKIP DENSITY: no subjects with usable strand-specific tracks"); total_skipped+=1; continue
+
+        if not complete:
+            print("  SKIP DENSITY: no subjects with usable strand-specific tracks")
+            total_skipped+=1
+            continue
 
         groups={g:[r for r in complete if r["genotype"]==g] for g in [0,1,2]}
         mean_plus={g:np.nanmean(np.vstack([r["plus_track"] for r in groups[g]]),axis=0) if groups[g] else np.zeros(n_bins) for g in [0,1,2]}
@@ -658,16 +729,18 @@ for tissue,tissue_hits in hits_by_tissue.items():
                 if groups[g]:print(f"  {GENOTYPE_LABELS[g]} normalized LeafCutter samples: {junction_denoms[g]}/{len(groups[g])}; junctions plotted={len(junctions[g])}")
 
         circ_means={g:0. for g in [0,1,2]}; circ_denoms={g:0 for g in [0,1,2]}
+
         if TYPE=="cQTL":
             for g in [0,1,2]:
                 valid=[r for r in groups[g] if r["primary_reads"]]
                 circ_denoms[g]=len(valid)
                 if valid:
-                    # Missing circRNA row contributes zero RPM.
                     circ_means[g]=sum(0. if r["circ_rpm"] is None else float(r["circ_rpm"]) for r in valid)/len(valid)
 
             n_quant=sum(r["circ_reads"] is not None for r in complete)
-            n_exact=sum(r["circ_match_type"]=="exact" for r in complete); n_tol=sum(r["circ_match_type"]=="tolerance" for r in complete)
+            n_exact=sum(r["circ_match_type"]=="exact" for r in complete)
+            n_tol=sum(r["circ_match_type"]=="tolerance" for r in complete)
+
             print(f"  Circ quant rows found: {n_quant}/{len(complete)}")
             print(f"  Circ coordinate matches: exact={n_exact}, tolerance-rescued={n_tol}")
             print("  Mean circ RPM: "+" | ".join(f"{GENOTYPE_LABELS[g]}={circ_means[g]:.4f}" for g in [0,1,2]))
@@ -678,6 +751,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
                              "metadata_sample_id","filesystem_sample_id","genotype_group","genotype_label","genotype_raw","phenotype",
                              "primary_reads","plus_track_source","minus_track_source","circ_reads","circ_rpm","linear_reads",
                              "circ_percent_file","circ_match_type","circ_matched_start","circ_matched_end","circ_quant_source"])
+
             for r in complete:
                 writer.writerow([tissue,TYPE,event,symbol,snp,allele["ref"],allele["alt"],allele["counted"],r["qtl_id"],r["subject_id"],
                                  r["sample_id"],r["sample_fs_id"],r["genotype"],GENOTYPE_LABELS[r["genotype"]],r["genotype_raw"],r["phenotype"],
@@ -688,12 +762,15 @@ for tissue,tissue_hits in hits_by_tissue.items():
                                  "" if r["circ_matched_end"] is None else r["circ_matched_end"],"" if r["circ_quant_source"] is None else r["circ_quant_source"]])
 
         if not OVERWRITE and density_pdf.exists() and density_png.exists() and density_svg.exists():
-            print("  DENSITY EXISTS; skipping"); continue
+            print("  DENSITY EXISTS; skipping")
+            continue
 
         coverage_max=max(max(float(np.nanmax(mean_plus[g])),float(np.nanmax(mean_minus[g]))) for g in [0,1,2] if groups[g])
         coverage_max=1. if not np.isfinite(coverage_max) or coverage_max<=0 else coverage_max*1.05
+
         has_linear_arcs=TYPE in {"sQTL","cQTL"} and any(junctions.get(g) for g in [0,1,2])
         has_circ_arcs=TYPE=="cQTL" and any(circ_means[g]>0 for g in [0,1,2])
+
         axis_extent=coverage_max*(1.95 if has_circ_arcs else 1.58 if has_linear_arcs else 1.08)
         bar_width=actual_bin_bp*.92
 
@@ -706,7 +783,8 @@ for tissue,tissue_hits in hits_by_tissue.items():
         axes=[]
 
         for g in [0,1,2]:
-            ax=fig.add_subplot(gs[g,0]); axes.append(ax)
+            ax=fig.add_subplot(gs[g,0])
+            axes.append(ax)
 
             if groups[g]:
                 ax.bar(x,mean_plus[g],width=bar_width,color=TRACK_COLORS[g],alpha=.82,align="center",linewidth=0)
@@ -722,27 +800,41 @@ for tissue,tissue_hits in hits_by_tissue.items():
 
             ax.axhline(0,color="#555555",linewidth=.8)
             ax.axvspan(trait_start,trait_end,alpha=.10,color="#999999")
-            if plot_start<=snp_pos<=plot_end:ax.axvline(snp_pos,linestyle="--",linewidth=1.3,alpha=.8,color="black")
 
-            ax.set_xlim(plot_start,plot_end); ax.set_ylim(-axis_extent,axis_extent)
+            if plot_start<=snp_pos<=plot_end:
+                ax.axvline(snp_pos,linestyle="--",linewidth=1.3,alpha=.8,color="black")
+
+            ax.set_xlim(plot_start,plot_end)
+            ax.set_ylim(-axis_extent,axis_extent)
             ax.yaxis.set_major_formatter(FuncFormatter(density_formatter))
+
             ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})",loc="left",fontsize=13,color=TRACK_COLORS[g],y=.84,pad=0)
-            ax.tick_params(axis="x",labelbottom=False); ax.tick_params(axis="y",labelsize=11)
-            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+            ax.tick_params(axis="x",labelbottom=False)
+            ax.tick_params(axis="y",labelsize=11)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
             ax.text(.995,.94,"Forward (+)",transform=ax.transAxes,ha="right",va="top",fontsize=10)
             ax.text(.995,.06,"Reverse (-)",transform=ax.transAxes,ha="right",va="bottom",fontsize=10)
 
-        # ---------- ONE SHARED GENCODE TRACK ----------
+        # ====================================================
+        # ONE SHARED GENCODE TRACK
+        # ============================================================
 
         ax_ref=fig.add_subplot(gs[3,0],sharex=axes[0])
+
         draw_reference_track(ax_ref,reference_exons,plot_start,plot_end)
         ax_ref.axvspan(trait_start,trait_end,alpha=.10,color="#999999")
-        if plot_start<=snp_pos<=plot_end:ax_ref.axvline(snp_pos,linestyle="--",linewidth=1.,alpha=.7,color="black")
+
+        if plot_start<=snp_pos<=plot_end:
+            ax_ref.axvline(snp_pos,linestyle="--",linewidth=1.,alpha=.7,color="black")
+
         ax_ref.set_xlabel(f"{chrom} genomic position",fontsize=14,labelpad=10)
 
         title_event=f"{symbol} ({event})" if symbol and symbol!=event else event
         title=f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp} | REF={allele['ref']} ALT={allele['alt']}"
+
         if pp_h4 and not missing(pp_h4):
             try:title+=f" | PP.H4={float(pp_h4):.4f}"
             except:title+=f" | PP.H4={pp_h4}"
@@ -774,6 +866,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
         print(f"  DENSITY SVG : {density_svg}")
         print(f"  SUBJECT TSV : {subject_tsv}")
         print(f"  Coverage bin width: ≈{round(actual_bin_bp)} bp (actual {actual_bin_bp:.2f} bp)")
+
         total_plotted+=1
 
 print(f"\n{'='*60}")
