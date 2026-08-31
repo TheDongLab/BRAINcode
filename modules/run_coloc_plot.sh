@@ -85,19 +85,52 @@ GENOTYPE_LABELS={0:"Ref/Ref",1:"Het",2:"Hom Alt"}
 TRACK_COLORS={0:"#228B22",1:"#4682B4",2:"#C75B7A"}
 
 # ============================================================
-# HELPERS
+# HELPERS + TARGETALS TISSUE REMAPPING
 # ============================================================
 
 def norm(s): return re.sub(r"[^a-z0-9]","",str(s).lower())
 def chr_key(s): return re.sub(r"^chr","",str(s),flags=re.I).upper()
 def safe_name(s): return re.sub(r"[^A-Za-z0-9._+-]+","_",str(s))[:180]
 def strip_gene_version(x): return re.sub(r"\.\d+$","",str(x))
-def tissue_equal(a,b): return norm(a)==norm(b)
 def tissue_display(x): return str(x).replace("_"," ")
 def missing(v): return v is None or str(v).strip().lower() in {"","na","nan","none",".","null"}
 def truthy(v): return str(v).strip().lower() in {"true","t","1","yes","y","pass","passed"}
 def detect_delimiter(line): return "\t" if "\t" in line else None
 def split_line(line,delim): return line.rstrip("\r\n").split("\t") if delim=="\t" else line.split()
+
+TISSUE_REMAP={
+    "Motor Cortex Lateral":"Motor_Cortex",
+    "Motor Cortex Medial":"Motor_Cortex",
+    "Lateral Motor Cortex":"Motor_Cortex",
+    "Medial Motor Cortex":"Motor_Cortex",
+    "Primary Motor Cortex L":"Motor_Cortex",
+    "Primary Motor Cortex M":"Motor_Cortex",
+    "Cortex_Motor_Unspecified":"Motor_Cortex",
+    "Cortex_Motor_BA4":"Motor_Cortex",
+    "BA4 Motor Cortex":"Motor_Cortex",
+    "Lateral_motor_cortex":"Motor_Cortex",
+    "Frontal Cortex":"Frontal_Cortex",
+    "Cerebellum":"Cerebellum",
+    "Spinal_Cord_Cervical":"Cervical_Spinal_Cord",
+    "Cervical Spinal Cord":"Cervical_Spinal_Cord",
+    "Cervical_spinal_cord":"Cervical_Spinal_Cord",
+    "Spinal_cord_Cervical":"Cervical_Spinal_Cord",
+    "Lumbar Spinal Cord":"Lumbar_Spinal_Cord",
+    "Thoracic Spinal Cord":"Thoracic_Spinal_Cord",
+    "Spinal_Cord_Lumbosacral":"Lumbar_Spinal_Cord",
+    "Lumbosacral_Spinal_Cord":"Lumbar_Spinal_Cord",
+    "Lumbar_spinal_cord":"Lumbar_Spinal_Cord"
+}
+TISSUE_REMAP_NORM={norm(k):v for k,v in TISSUE_REMAP.items()}
+CANONICAL_TISSUES={"Motor_Cortex","Frontal_Cortex","Cerebellum","Cervical_Spinal_Cord","Lumbar_Spinal_Cord","Thoracic_Spinal_Cord"}
+for t in CANONICAL_TISSUES:TISSUE_REMAP_NORM[norm(t)]=t
+
+def canonical_tissue(x):
+    x=str(x).strip()
+    return TISSUE_REMAP_NORM.get(norm(x),x)
+
+def tissue_equal(a,b):
+    return canonical_tissue(a)==canonical_tissue(b)
 
 def format_max_sig(value,sig=5):
     if value==0:return "0"
@@ -175,8 +208,9 @@ def get_rin(row):
 
 def metadata_for_qtl_id(qtl_id,tissue):
     qtl_id,rows=str(qtl_id),metadata
+    target_tissue=canonical_tissue(tissue)
     if meta_tissue_col:
-        tissue_rows=[r for r in metadata if tissue_equal(r.get(meta_tissue_col,""),tissue)]
+        tissue_rows=[r for r in metadata if canonical_tissue(r.get(meta_tissue_col,""))==target_tissue]
         if tissue_rows:rows=tissue_rows
     exact=[r for r in rows if str(r.get(sample_col,"")).strip()==qtl_id]
     if exact:return max(exact,key=get_rin)
@@ -258,7 +292,6 @@ def find_location(locations,event):
 
 def naive_boxplot_page(pairs_file,event,snp):
     if not pairs_file.exists():return None
-    # eQTL has one header row. sQTL/cQTL are headerless.
     awk_script='NR>1 && $1==E && $NF==S {print NR-1; exit}' if TYPE=="eQTL" else '$1==E && $NF==S {print NR; exit}'
     try:
         r=subprocess.run(["awk","-v",f"E={event}","-v",f"S={snp}",awk_script,str(pairs_file)],
@@ -267,8 +300,6 @@ def naive_boxplot_page(pairs_file,event,snp):
     except:return None
 
 def pdf_match_text(x):
-    # PDF text extraction can alter spaces, punctuation and Unicode dashes.
-    # Strip everything except letters/numbers so event IDs remain comparable.
     return re.sub(r"[^a-z0-9]","",str(x).lower())
 
 def search_pdf_window(source_pdf,event,snp,first,last):
@@ -277,7 +308,6 @@ def search_pdf_window(source_pdf,event,snp,first,last):
         r=subprocess.run(["pdftotext","-f",str(first),"-l",str(last),str(source_pdf),"-"],
                          capture_output=True,text=True,check=True)
     except:return None
-
     for i,text in enumerate(r.stdout.split("\f")):
         if not text.strip():continue
         cleaned=pdf_match_text(text)
@@ -288,21 +318,14 @@ def find_boxplot_page(source_pdf,pairs_file,event,snp):
     naive=naive_boxplot_page(pairs_file,event,snp)
     if naive is None:return None
 
-    # Exact page first: free in the common case where nothing was skipped.
     page=search_pdf_window(source_pdf,event,snp,naive,naive)
     if page is not None:
         print(f"  BOXPLOT LOOKUP: pair-file page={naive}, actual PDF page={page}, offset=+0")
         return page
 
-    # Boxplot-generation skips accumulate slowly, so search around the
-    # expected page rather than parsing a 70k+ page PDF from the beginning.
-    searched=set()
     for radius in [10,50,250,1000,5000]:
-        first,maxlast=max(1,naive-radius),naive+radius
-        key=(first,maxlast)
-        if key in searched:continue
-        searched.add(key)
-        page=search_pdf_window(source_pdf,event,snp,first,maxlast)
+        first,last=max(1,naive-radius),naive+radius
+        page=search_pdf_window(source_pdf,event,snp,first,last)
         if page is not None:
             print(f"  BOXPLOT LOOKUP: pair-file page={naive}, actual PDF page={page}, offset={page-naive:+d}")
             return page
@@ -321,8 +344,6 @@ def extract_boxplot(source_pdf,pairs_file,event,snp,output_pdf):
 
     try:
         pattern=output_pdf.with_name(output_pdf.stem+"_%d.pdf")
-
-        # Remove any temporary extraction from a previous attempt.
         tmp=Path(str(pattern).replace("%d",str(page)))
         if tmp.exists():tmp.unlink()
 
@@ -333,14 +354,10 @@ def extract_boxplot(source_pdf,pairs_file,event,snp,output_pdf):
             print(f"  BOXPLOT FAILED: page {page} extraction failed")
             return False
 
-        # Intentionally replace an existing extracted boxplot. Older runs may
-        # contain the wrong page because the old lookup assumed row == PDF page.
         if output_pdf.exists():output_pdf.unlink()
         tmp.replace(output_pdf)
-
         print(f"  BOXPLOT: actual page {page} -> {output_pdf}")
         return True
-
     except Exception as e:
         print(f"  BOXPLOT FAILED: {e}")
         return False
@@ -349,17 +366,61 @@ def extract_boxplot(source_pdf,pairs_file,event,snp,output_pdf):
 # SAMPLE DIRECTORY + PRIMARY READ DEPTH
 # ============================================================
 
-processed_cache={}
+processed_root_cache={}
+processed_sample_cache={}
 primary_read_cache={}
 
+def processed_roots_for_tissue(tissue):
+    canonical=canonical_tissue(tissue)
+    if canonical in processed_root_cache:return processed_root_cache[canonical]
+
+    roots=[]
+    preferred=ROOT/canonical/"RNAseq"/"Processed"
+    if preferred.is_dir():roots.append(preferred)
+
+    # targetALS contains duplicate/legacy tissue directory spellings.
+    # Search every top-level tissue directory whose name remaps to the
+    # same canonical tissue, e.g.:
+    #   Lumbar_Spinal_Cord/
+    #   Lumbar_spinal_cord/
+    if ROOT.is_dir():
+        for p in ROOT.iterdir():
+            if not p.is_dir() or canonical_tissue(p.name)!=canonical:continue
+            candidate=p/"RNAseq"/"Processed"
+            if candidate.is_dir() and candidate not in roots:roots.append(candidate)
+
+    processed_root_cache[canonical]=roots
+    print(f"  RNAseq roots for {canonical}: "+(" | ".join(map(str,roots)) if roots else "NONE"))
+    return roots
+
 def resolve_sample_dir(tissue,sample_id):
-    processed=ROOT/tissue/"RNAseq"/"Processed"
-    for candidate in [sample_id,sample_id.replace("-","_"),sample_id.replace("_","-")]:
-        p=processed/candidate
-        if p.is_dir():return p
-    key=str(processed)
-    if key not in processed_cache:processed_cache[key]={norm(p.name):p for p in processed.iterdir() if p.is_dir()} if processed.is_dir() else {}
-    return processed_cache[key].get(norm(sample_id))
+    canonical=canonical_tissue(tissue)
+    cache_key=(canonical,norm(sample_id))
+    if cache_key in processed_sample_cache:return processed_sample_cache[cache_key]
+
+    roots=processed_roots_for_tissue(canonical)
+
+    # First try exact/simple hyphen↔underscore forms in every valid tissue root.
+    for processed in roots:
+        for candidate in [sample_id,sample_id.replace("-","_"),sample_id.replace("_","-")]:
+            p=processed/candidate
+            if p.is_dir():
+                processed_sample_cache[cache_key]=p
+                return p
+
+    # Then normalized lookup, still restricted to equivalent tissue roots.
+    target=norm(sample_id)
+    for processed in roots:
+        key=str(processed)
+        if key not in processed_sample_cache:
+            processed_sample_cache[key]={norm(p.name):p for p in processed.iterdir() if p.is_dir()}
+        p=processed_sample_cache[key].get(target)
+        if p is not None:
+            processed_sample_cache[cache_key]=p
+            return p
+
+    processed_sample_cache[cache_key]=None
+    return None
 
 def primary_bam(sample_dir): return sample_dir/"STAR.Aligned.sortedByCoord.out.bam"
 
@@ -602,7 +663,7 @@ def genotype_group(value,flip=False):
 # ============================================================
 
 hits_by_tissue=defaultdict(list)
-for hit in hits:hits_by_tissue[hit.get(tissue_col,"").strip()].append(hit)
+for hit in hits:hits_by_tissue[canonical_tissue(hit.get(tissue_col,"").strip())].append(hit)
 
 total_plotted=total_skipped=total_boxplots=0
 
@@ -621,6 +682,9 @@ for tissue,tissue_hits in hits_by_tissue.items():
     missing_files=[p for p in [phenotype_file,trait_location_file,snp_file,snp_location_file] if not p.exists()]
     if missing_files:
         print("SKIPPING TISSUE: missing "+", ".join(map(str,missing_files))); total_skipped+=len(tissue_hits); continue
+
+    # Show all actual RNA-seq roots that will be searched for this canonical tissue.
+    processed_roots_for_tissue(tissue)
 
     events={h[event_col].strip() for h in tissue_hits if not missing(h.get(event_col))}
     all_snps={s for h in tissue_hits for s in possible_snps(h)}
@@ -678,8 +742,11 @@ for tissue,tissue_hits in hits_by_tissue.items():
             if meta is None:continue
             sample_id=str(meta.get(sample_col,"")).strip(); subject_id=str(meta.get(subject_col,"")).strip()
             if not sample_id:continue
+
             sample_dir=resolve_sample_dir(tissue,sample_id)
-            if sample_dir is None:continue
+            if sample_dir is None:
+                print(f"    SAMPLE DIR MISSING: {qid} | {sample_id} | tissue={tissue}")
+                continue
 
             records.append({"qtl_id":qid,"subject_id":subject_id,"sample_id":sample_id,"sample_fs_id":sample_dir.name,
                             "genotype":g,"genotype_raw":genotype[qid],"phenotype":pheno,"sample_dir":sample_dir,
@@ -729,18 +796,14 @@ for tissue,tissue_hits in hits_by_tissue.items():
                 if groups[g]:print(f"  {GENOTYPE_LABELS[g]} normalized LeafCutter samples: {junction_denoms[g]}/{len(groups[g])}; junctions plotted={len(junctions[g])}")
 
         circ_means={g:0. for g in [0,1,2]}; circ_denoms={g:0 for g in [0,1,2]}
-
         if TYPE=="cQTL":
             for g in [0,1,2]:
                 valid=[r for r in groups[g] if r["primary_reads"]]
                 circ_denoms[g]=len(valid)
-                if valid:
-                    circ_means[g]=sum(0. if r["circ_rpm"] is None else float(r["circ_rpm"]) for r in valid)/len(valid)
+                if valid:circ_means[g]=sum(0. if r["circ_rpm"] is None else float(r["circ_rpm"]) for r in valid)/len(valid)
 
             n_quant=sum(r["circ_reads"] is not None for r in complete)
-            n_exact=sum(r["circ_match_type"]=="exact" for r in complete)
-            n_tol=sum(r["circ_match_type"]=="tolerance" for r in complete)
-
+            n_exact=sum(r["circ_match_type"]=="exact" for r in complete); n_tol=sum(r["circ_match_type"]=="tolerance" for r in complete)
             print(f"  Circ quant rows found: {n_quant}/{len(complete)}")
             print(f"  Circ coordinate matches: exact={n_exact}, tolerance-rescued={n_tol}")
             print("  Mean circ RPM: "+" | ".join(f"{GENOTYPE_LABELS[g]}={circ_means[g]:.4f}" for g in [0,1,2]))
@@ -751,7 +814,6 @@ for tissue,tissue_hits in hits_by_tissue.items():
                              "metadata_sample_id","filesystem_sample_id","genotype_group","genotype_label","genotype_raw","phenotype",
                              "primary_reads","plus_track_source","minus_track_source","circ_reads","circ_rpm","linear_reads",
                              "circ_percent_file","circ_match_type","circ_matched_start","circ_matched_end","circ_quant_source"])
-
             for r in complete:
                 writer.writerow([tissue,TYPE,event,symbol,snp,allele["ref"],allele["alt"],allele["counted"],r["qtl_id"],r["subject_id"],
                                  r["sample_id"],r["sample_fs_id"],r["genotype"],GENOTYPE_LABELS[r["genotype"]],r["genotype_raw"],r["phenotype"],
@@ -767,74 +829,44 @@ for tissue,tissue_hits in hits_by_tissue.items():
 
         coverage_max=max(max(float(np.nanmax(mean_plus[g])),float(np.nanmax(mean_minus[g]))) for g in [0,1,2] if groups[g])
         coverage_max=1. if not np.isfinite(coverage_max) or coverage_max<=0 else coverage_max*1.05
-
         has_linear_arcs=TYPE in {"sQTL","cQTL"} and any(junctions.get(g) for g in [0,1,2])
         has_circ_arcs=TYPE=="cQTL" and any(circ_means[g]>0 for g in [0,1,2])
-
         axis_extent=coverage_max*(1.95 if has_circ_arcs else 1.58 if has_linear_arcs else 1.08)
         bar_width=actual_bin_bp*.92
-
-        # ====================================================
-        # DENSITY-ONLY PLOT
-        # ============================================================
 
         fig=plt.figure(figsize=(16,10))
         gs=fig.add_gridspec(4,1,height_ratios=[1.,1.,1.,.72],hspace=.10)
         axes=[]
 
         for g in [0,1,2]:
-            ax=fig.add_subplot(gs[g,0])
-            axes.append(ax)
+            ax=fig.add_subplot(gs[g,0]); axes.append(ax)
 
             if groups[g]:
                 ax.bar(x,mean_plus[g],width=bar_width,color=TRACK_COLORS[g],alpha=.82,align="center",linewidth=0)
                 ax.bar(x,-mean_minus[g],width=bar_width,color=TRACK_COLORS[g],alpha=.55,align="center",linewidth=0)
-
-                if TYPE in {"sQTL","cQTL"}:
-                    draw_linear_arcs(ax,junctions[g],x,mean_plus[g],mean_minus[g],coverage_max,TRACK_COLORS[g])
-
-                if TYPE=="cQTL":
-                    draw_circ_arc(ax,trait_start,trait_end,circ_means[g],coverage_max,TRACK_COLORS[g],strand)
-            else:
-                ax.text(.5,.5,"No subjects",transform=ax.transAxes,ha="center",va="center",fontsize=12)
+                if TYPE in {"sQTL","cQTL"}:draw_linear_arcs(ax,junctions[g],x,mean_plus[g],mean_minus[g],coverage_max,TRACK_COLORS[g])
+                if TYPE=="cQTL":draw_circ_arc(ax,trait_start,trait_end,circ_means[g],coverage_max,TRACK_COLORS[g],strand)
+            else:ax.text(.5,.5,"No subjects",transform=ax.transAxes,ha="center",va="center",fontsize=12)
 
             ax.axhline(0,color="#555555",linewidth=.8)
             ax.axvspan(trait_start,trait_end,alpha=.10,color="#999999")
-
-            if plot_start<=snp_pos<=plot_end:
-                ax.axvline(snp_pos,linestyle="--",linewidth=1.3,alpha=.8,color="black")
-
-            ax.set_xlim(plot_start,plot_end)
-            ax.set_ylim(-axis_extent,axis_extent)
+            if plot_start<=snp_pos<=plot_end:ax.axvline(snp_pos,linestyle="--",linewidth=1.3,alpha=.8,color="black")
+            ax.set_xlim(plot_start,plot_end); ax.set_ylim(-axis_extent,axis_extent)
             ax.yaxis.set_major_formatter(FuncFormatter(density_formatter))
-
             ax.set_title(f"{GENOTYPE_LABELS[g]} (N={counts[g]})",loc="left",fontsize=13,color=TRACK_COLORS[g],y=.84,pad=0)
-
-            ax.tick_params(axis="x",labelbottom=False)
-            ax.tick_params(axis="y",labelsize=11)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-
+            ax.tick_params(axis="x",labelbottom=False); ax.tick_params(axis="y",labelsize=11)
+            ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
             ax.text(.995,.94,"Forward (+)",transform=ax.transAxes,ha="right",va="top",fontsize=10)
             ax.text(.995,.06,"Reverse (-)",transform=ax.transAxes,ha="right",va="bottom",fontsize=10)
 
-        # ====================================================
-        # ONE SHARED GENCODE TRACK
-        # ============================================================
-
         ax_ref=fig.add_subplot(gs[3,0],sharex=axes[0])
-
         draw_reference_track(ax_ref,reference_exons,plot_start,plot_end)
         ax_ref.axvspan(trait_start,trait_end,alpha=.10,color="#999999")
-
-        if plot_start<=snp_pos<=plot_end:
-            ax_ref.axvline(snp_pos,linestyle="--",linewidth=1.,alpha=.7,color="black")
-
+        if plot_start<=snp_pos<=plot_end:ax_ref.axvline(snp_pos,linestyle="--",linewidth=1.,alpha=.7,color="black")
         ax_ref.set_xlabel(f"{chrom} genomic position",fontsize=14,labelpad=10)
 
         title_event=f"{symbol} ({event})" if symbol and symbol!=event else event
         title=f"{tissue_display(tissue)} | {TYPE} | {title_event} | {snp} | REF={allele['ref']} ALT={allele['alt']}"
-
         if pp_h4 and not missing(pp_h4):
             try:title+=f" | PP.H4={float(pp_h4):.4f}"
             except:title+=f" | PP.H4={pp_h4}"
@@ -866,7 +898,6 @@ for tissue,tissue_hits in hits_by_tissue.items():
         print(f"  DENSITY SVG : {density_svg}")
         print(f"  SUBJECT TSV : {subject_tsv}")
         print(f"  Coverage bin width: ≈{round(actual_bin_bp)} bp (actual {actual_bin_bp:.2f} bp)")
-
         total_plotted+=1
 
 print(f"\n{'='*60}")
