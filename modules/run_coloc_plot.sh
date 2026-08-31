@@ -2,9 +2,9 @@
 #SBATCH --job-name=run_coloc_plot
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.err
-#SBATCH --time=9:00:00
+#SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=40G
+#SBATCH --mem=50G
 
 # ============================================================
 # PARAMETERS
@@ -730,9 +730,8 @@ for tissue,tissue_hits in hits_by_tissue.items():
             ax.tick_params(axis="x",labelbottom=False); ax.tick_params(axis="y",labelsize=11)
             ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
-            if g==0:
-                ax.text(.995,.94,"Forward (+)",transform=ax.transAxes,ha="right",va="top",fontsize=10)
-                ax.text(.995,.06,"Reverse (-)",transform=ax.transAxes,ha="right",va="bottom",fontsize=10)
+            ax.text(.995,.94,"Forward (+)",transform=ax.transAxes,ha="right",va="top",fontsize=10)
+            ax.text(.995,.06,"Reverse (-)",transform=ax.transAxes,ha="right",va="bottom",fontsize=10)
 
         # ---------- ONE SHARED GENCODE TRACK ----------
 
@@ -752,7 +751,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
         fig.text(.008,.57,"Mean RPM-normalized RNA-seq read density",rotation=90,va="center",fontsize=15)
 
         base_footer=(f"Trait: {chrom}:{trait_start:,}-{trait_end:,} | flank: {flank:,} bp each side | shaded region = trait locus | "
-                     f"coverage bin width = {actual_bin_bp:.2f} bp\n"
+                     f"coverage bin width ≈ {round(actual_bin_bp)} bp\n"
                      "Coverage uses the same RPM normalization as the source BigWigs (1e6 / primary alignments); + strand above 0, - strand below 0")
 
         if TYPE=="cQTL":
@@ -774,7 +773,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
         print(f"  DENSITY PNG : {density_png}")
         print(f"  DENSITY SVG : {density_svg}")
         print(f"  SUBJECT TSV : {subject_tsv}")
-        print(f"  Coverage bin width: {actual_bin_bp:.2f} bp")
+        print(f"  Coverage bin width: ≈{round(actual_bin_bp)} bp (actual {actual_bin_bp:.2f} bp)")
         total_plotted+=1
 
 print(f"\n{'='*60}")
