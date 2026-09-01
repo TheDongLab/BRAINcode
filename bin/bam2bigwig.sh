@@ -1,7 +1,9 @@
 #!/bin/bash
 #############################################
 # Author: Xianjun Dong & Zachery Wolfe
-# Version: 0.9 (fixed /tmp/ collision between concurrent jobs by using job-specific temp dirs)
+# Version: 1.0
+# Fix: strand-specific BigWig splitting corrected for
+# targetALS forward-stranded / fr-secondstrand libraries.
 #############################################
 set -euo pipefail
 
@@ -40,38 +42,97 @@ esac
 RPMscale=$(bc <<< "scale=6;1000000/$(samtools view -F 0x100 -c "$inputfile")")
 
 if [ "$split" == "-split" ]; then
-    echo "bam → bw (strand-aware, fr-firststrand)"
+    echo "bam → bw (strand-aware, fr-secondstrand / forward-stranded)"
 
+    # ============================================================
     # PLUS transcription strand
-    # plus.part1 = read2 forward: -f 0x80 -F 0x10
-    # plus.part2 = read1 reverse: -f 0x40 -f 0x10
-    samtools view -bh -f 0x80 -F 0x10 "$inputfile" > "$TMPDIR/plus.part1.bam"
-    samtools view -bh -f 0x40 -f 0x10 "$inputfile" > "$TMPDIR/plus.part2.bam"
-    samtools merge -f "$TMPDIR/plus.bam" "$TMPDIR/plus.part1.bam" "$TMPDIR/plus.part2.bam"
-    bedtools genomecov -ibam "$TMPDIR/plus.bam" -bg -scale "$RPMscale" -split |
-    LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.plus.normalized.bedGraph"
-    bedGraphToBigWig "$bname.plus.normalized.bedGraph" "$CHROMINFO" "$bname.plus.normalized.bw"
+    #
+    # For fr-secondstrand / forward-stranded paired-end RNA-seq:
+    #   transcript +:
+    #     read1 forward
+    #     read2 reverse
+    # ============================================================
 
+    # plus.part1 = read1 forward: -f 0x40 -F 0x10
+    # plus.part2 = read2 reverse: -f 0x80 -f 0x10
+    samtools view -bh -f 0x40 -F 0x10 "$inputfile" > "$TMPDIR/plus.part1.bam"
+    samtools view -bh -f 0x80 -f 0x10 "$inputfile" > "$TMPDIR/plus.part2.bam"
+
+    samtools merge -f \
+        "$TMPDIR/plus.bam" \
+        "$TMPDIR/plus.part1.bam" \
+        "$TMPDIR/plus.part2.bam"
+
+    bedtools genomecov \
+        -ibam "$TMPDIR/plus.bam" \
+        -bg \
+        -scale "$RPMscale" \
+        -split |
+    LC_COLLATE=C sort -k1,1 -k2,2n \
+        > "$bname.plus.normalized.bedGraph"
+
+    bedGraphToBigWig \
+        "$bname.plus.normalized.bedGraph" \
+        "$CHROMINFO" \
+        "$bname.plus.normalized.bw"
+
+    # ============================================================
     # MINUS transcription strand
-    # minus.part1 = read1 forward: -f 0x40 -F 0x10
-    # minus.part2 = read2 reverse: -f 0x80 -f 0x10
-    samtools view -bh -f 0x40 -F 0x10 "$inputfile" > "$TMPDIR/minus.part1.bam"
-    samtools view -bh -f 0x80 -f 0x10 "$inputfile" > "$TMPDIR/minus.part2.bam"
-    samtools merge -f "$TMPDIR/minus.bam" "$TMPDIR/minus.part1.bam" "$TMPDIR/minus.part2.bam"
-    bedtools genomecov -ibam "$TMPDIR/minus.bam" -bg -scale "$RPMscale" -split |
-    LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.minus.normalized.bedGraph"
-    bedGraphToBigWig "$bname.minus.normalized.bedGraph" "$CHROMINFO" "$bname.minus.normalized.bw"
+    #
+    # For fr-secondstrand / forward-stranded paired-end RNA-seq:
+    #   transcript -:
+    #     read1 reverse
+    #     read2 forward
+    # ============================================================
+
+    # minus.part1 = read1 reverse: -f 0x40 -f 0x10
+    # minus.part2 = read2 forward: -f 0x80 -F 0x10
+    samtools view -bh -f 0x40 -f 0x10 "$inputfile" > "$TMPDIR/minus.part1.bam"
+    samtools view -bh -f 0x80 -F 0x10 "$inputfile" > "$TMPDIR/minus.part2.bam"
+
+    samtools merge -f \
+        "$TMPDIR/minus.bam" \
+        "$TMPDIR/minus.part1.bam" \
+        "$TMPDIR/minus.part2.bam"
+
+    bedtools genomecov \
+        -ibam "$TMPDIR/minus.bam" \
+        -bg \
+        -scale "$RPMscale" \
+        -split |
+    LC_COLLATE=C sort -k1,1 -k2,2n \
+        > "$bname.minus.normalized.bedGraph"
+
+    bedGraphToBigWig \
+        "$bname.minus.normalized.bedGraph" \
+        "$CHROMINFO" \
+        "$bname.minus.normalized.bw"
 fi
 
 if [ "$split" == "-nosplit" ]; then
     echo "bam → bw (no strand split)"
+
     if [ "$ext" == "cram" ]; then
         samtools view -b "$inputfile" |
-        bedtools genomecov -ibam stdin -bg -scale "$RPMscale" -split |
-        LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.normalized.bedGraph"
+        bedtools genomecov \
+            -ibam stdin \
+            -bg \
+            -scale "$RPMscale" \
+            -split |
+        LC_COLLATE=C sort -k1,1 -k2,2n \
+            > "$bname.normalized.bedGraph"
     else
-        bedtools genomecov -ibam "$inputfile" -bg -scale "$RPMscale" -split |
-        LC_COLLATE=C sort -k1,1 -k2,2n > "$bname.normalized.bedGraph"
+        bedtools genomecov \
+            -ibam "$inputfile" \
+            -bg \
+            -scale "$RPMscale" \
+            -split |
+        LC_COLLATE=C sort -k1,1 -k2,2n \
+            > "$bname.normalized.bedGraph"
     fi
-    bedGraphToBigWig "$bname.normalized.bedGraph" "$CHROMINFO" "$bname.normalized.bw"
+
+    bedGraphToBigWig \
+        "$bname.normalized.bedGraph" \
+        "$CHROMINFO" \
+        "$bname.normalized.bw"
 fi
