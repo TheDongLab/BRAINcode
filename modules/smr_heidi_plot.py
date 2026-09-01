@@ -52,7 +52,7 @@ TISSUE_REMAP={
 "Spinal_Cord_Cervical":"Cervical_Spinal_Cord","Cervical Spinal Cord":"Cervical_Spinal_Cord","Cervical_spinal_cord":"Cervical_Spinal_Cord",
 "Spinal_cord_Cervical":"Cervical_Spinal_Cord","Lumbar Spinal Cord":"Lumbar_Spinal_Cord","Thoracic Spinal Cord":"Thoracic_Spinal_Cord",
 "Spinal_Cord_Lumbosacral":"Lumbar_Spinal_Cord","Lumbosacral_Spinal_Cord":"Lumbar_Spinal_Cord","Lumbar_spinal_cord":"Lumbar_Spinal_Cord"}
-CANONICAL_TISSUES=["Cerebellum","Frontal_Cortex","Cervical_Spinal_Cord","Lumbar_Spinal_Cord","Motor_Cortex","Thoracic_Spinal_Cord"]
+CANONICAL_TISSUES=["Cerebellum","Frontal_Cortex","Cervical_Spinal_Cord","Lumbar_Spinal_Cord","Motor_Cortex"]
 TISSUE_REMAP_NORM={norm(k):v for k,v in TISSUE_REMAP.items()}
 for t in CANONICAL_TISSUES:TISSUE_REMAP_NORM[norm(t)]=t
 def canonical_tissue(x): x=str(x).strip(); return TISSUE_REMAP_NORM.get(norm(x),x)
@@ -457,8 +457,8 @@ for tissue,hits in hits_by_tissue.items():
         fig.text(.008,.57,"Mean RPM-normalized RNA-seq read density",rotation=90,va="center",fontsize=15)
 
         footer=(f"SMR p={p_smr:.3e} | SMR FDR={fdr:.4g} | HEIDI p={format_p(p_heidi)} | HEIDI SNPs={nheidi if not missing(nheidi) else 'NA'} | HEIDI not used for filtering\n"
-                f"Trait: {chrom}:{tstart:,}-{tend:,} | flank: {flank:,} bp each side | shaded region = trait locus | coverage bin width ≈ {round(binbp)} bp\n"
-                "Coverage uses the same RPM normalization as the source BigWigs (1e6 / primary alignments); + strand above 0, - strand below 0")
+            f"Trait: {chrom}:{tstart:,}-{tend:,} | flank: {flank:,} bp each side | shaded region = trait locus | dashed vertical line = {snp} | coverage bin width ≈ {round(binbp)} bp\n"
+            "Coverage uses the same RPM normalization as the source BigWigs (1e6 / primary alignments); + strand above 0, - strand below 0")
         if TYPE=="cQTL":footer+="\nLinear splice junctions = solid arcs | circular/back-splice junction = dashed arc | labels = mean junction RPM per subject"
         elif TYPE=="sQTL":footer+="\nArc labels = mean LeafCutter junction RPM per subject"
         fig.text(.5,.004,footer,ha="center",va="bottom",fontsize=9.5)
