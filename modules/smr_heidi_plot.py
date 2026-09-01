@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# BOXPLOT_VERSION: EXACT_COPY_OF_ORIGINAL_BASE_R_PARAMETERS__MATCHED_TRACK_SUBJECTS_ONLY
 
 import os,re,csv,sys,math,warnings,subprocess
 from pathlib import Path
@@ -7,9 +8,8 @@ import numpy as np
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
-from matplotlib.patches import Rectangle,PathPatch,Patch
+from matplotlib.patches import Rectangle,PathPatch
 from matplotlib.path import Path as MplPath
-from scipy.stats import t as student_t
 import pyBigWig
 warnings.filterwarnings("ignore")
 
@@ -119,52 +119,105 @@ def find_location(loc,event):
     if event in loc:return loc[event]
     e=strip_gene_version(event);return next((v for k,v in loc.items() if strip_gene_version(k)==e),parse_event_coordinates(event))
 
-def lm_pvalue(x,y):
-    x=np.asarray(x,float);y=np.asarray(y,float);ok=np.isfinite(x)&np.isfinite(y);x,y=x[ok],y[ok]
-    n=len(x)
-    if n<3 or np.var(x)<=0:return "NA"
-    X=np.column_stack([np.ones(n),x])
-    try:
-        beta=np.linalg.lstsq(X,y,rcond=None)[0];res=y-X@beta;df=n-2
-        s2=np.sum(res**2)/df;cov=s2*np.linalg.inv(X.T@X);se=math.sqrt(cov[1,1])
-        if se<=0:return "NA"
-        p=2*student_t.sf(abs(beta[1]/se),df);return f"{p:.3e}"
-    except:return "NA"
-
 def make_matched_boxplot(complete,out,event,snp,symbol,allele,TYPE):
     if len(complete)<5:return False
-    g=np.asarray([r["genotype"] for r in complete],int);y=np.asarray([r["phenotype"] for r in complete],float)
-    als=np.asarray([int(r.get("is_als",0)) for r in complete],int)
-    ylabel={"eQTL":"Expression (Z-score)","sQTL":"Splicing Level (PSI)","cQTL":"circRNA Percentage (%)"}[TYPE]
-    rng=np.random.default_rng(529);fig,axs=plt.subplots(1,3,figsize=(12,5));models=[]
-    models.append(("Additive Model",g,[0,1,2],["Ref/Ref","Het","Hom Alt"],"lightgreen"))
-    dom=(g>0).astype(int);models.append(("Dominant Model",dom,[0,1],["Ref/Ref","Any Alt"],"lightblue"))
-    rec=(g==2).astype(int);models.append(("Recessive Model",rec,[0,1],["Non-Hom Alt","Hom Alt"],"lightpink"))
-    for ax,(title,xv,levels,names,color) in zip(axs,models):
-        vals=[y[xv==z] for z in levels]
-        ax.boxplot(vals,positions=np.arange(1,len(levels)+1),patch_artist=True,showfliers=False,
-                   boxprops=dict(facecolor=color),medianprops=dict(color="black"))
-        for j,z in enumerate(levels,1):
-            idx=np.where(xv==z)[0]
-            if not len(idx):continue
-            xx=j+rng.uniform(-.15,.15,len(idx))
-            for status,marker,size,c in [(1,"o",14,"red"),(0,"D",18,"#9932CC")]:
-                ii=idx[als[idx]==status]
-                if len(ii):
-                    pos=[np.where(idx==k)[0][0] for k in ii]
-                    ax.scatter(xx[pos],y[ii],s=size,c=c,marker=marker,linewidths=0)
-        counts=[int(np.sum(xv==z)) for z in levels]
-        ax.set_xticks(np.arange(1,len(levels)+1));ax.set_xticklabels([f"{n}\n(N={c})" for n,c in zip(names,counts)])
-        ax.set_xlabel("Genotype");ax.set_ylabel(ylabel);ax.set_title(f"{title}\n(p = {lm_pvalue(xv,y)})")
-        ax.plot([],[],marker="o",linestyle="None",color="red",markersize=4,label="ALS")
-        ax.plot([],[],marker="D",linestyle="None",color="#9932CC",markersize=4,label="Control")
-        ax.legend(loc="upper left",frameon=False,fontsize=8)
-    if TYPE=="eQTL":head=f"Gene: {symbol} ({event})" if symbol and symbol!=event else f"Gene: {event}"
-    elif TYPE=="sQTL":head=f"Junction: {event}"
-    else:head=f"circRNA: {event}"
-    fig.suptitle(f"{head} | SNP: {snp} | REF: {allele['ref']} | ALT: {allele['alt']}",fontsize=11,fontweight="bold")
-    fig.tight_layout(rect=[0,0,.995,.91]);fig.savefig(out,bbox_inches="tight");plt.close(fig)
-    print(f"  BOXPLOT REGENERATED: N={len(complete)} -> {out}");return True
+    import tempfile,shlex
+    with tempfile.TemporaryDirectory(prefix="matched_boxplot_") as td:
+        td=Path(td); data=td/"data.tsv"; rfile=td/"boxplot.R"
+        with open(data,"w",newline="") as fh:
+            w=csv.writer(fh,delimiter="\t");w.writerow(["phenotype","SNP","is_als"])
+            for r in complete:w.writerow([r["phenotype"],r["genotype"],r.get("is_als",0)])
+        rcode=r'''suppressPackageStartupMessages({library(data.table)})
+args <- commandArgs(TRUE)
+d <- fread(args[1], header=TRUE)
+out <- args[2]; event <- args[3]; snp <- args[4]; symbol <- args[5]; ref <- args[6]; alt <- args[7]; qtype <- args[8]
+df <- data.frame(
+  phenotype=as.numeric(d$phenotype),
+  SNP=as.numeric(d$SNP),
+  p_col=ifelse(as.numeric(d$is_als) > 0.5, "red", "#9932CC"),
+  p_pch=ifelse(as.numeric(d$is_als) > 0.5, 16, 18),
+  p_cex=ifelse(as.numeric(d$is_als) > 0.5, 0.7, 1.1),
+  stringsAsFactors=FALSE
+)
+df <- df[!is.na(df$SNP) & !is.na(df$phenotype), ]
+
+get_p <- function(formula, data) {
+  tryCatch({
+    fit <- lm(formula, data=data)
+    formatC(summary(fit)$coefficients[2,4], format="e", digits=3)
+  }, error=function(e) "NA")
+}
+
+ylab <- if (qtype=="eQTL") "Expression (Z-score)" else if (qtype=="sQTL") "Splicing Level (PSI)" else "circRNA Percentage (%)"
+
+pdf(out, width=12, height=5)
+par(mfrow=c(1,3), mar=c(5,4,4,2), oma=c(0,0,3,0))
+
+add_counts <- table(factor(df$SNP, levels=0:2))
+add_labels <- paste0(c("Ref/Ref", "Het", "Hom Alt"), "\n(N=", add_counts, ")")
+df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
+
+boxplot(phenotype ~ SNP_f, data=df, col="lightgreen", outline=FALSE,
+        ylab=ylab, xlab="Genotype",
+        main=paste0("Additive Model\n(p = ", get_p(phenotype ~ SNP, df), ")"))
+
+points(jitter(as.numeric(df$SNP_f), amount=0.15), df$phenotype,
+       pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+
+legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+       pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
+
+df$dom_val <- ifelse(df$SNP > 0, 1, 0)
+dom_counts <- table(factor(df$dom_val, levels=0:1))
+dom_labels <- paste0(c("Ref/Ref", "Any Alt"), "\n(N=", dom_counts, ")")
+df$dom_f <- factor(df$dom_val, levels=0:1, labels=dom_labels)
+
+boxplot(phenotype ~ dom_f, data=df, col="lightblue", outline=FALSE,
+        ylab=ylab, xlab="Genotype",
+        main=paste0("Dominant Model\n(p = ", get_p(phenotype ~ dom_val, df), ")"))
+
+points(jitter(as.numeric(df$dom_f), amount=0.15), df$phenotype,
+       pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+
+legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+       pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
+
+df$rec_val <- ifelse(df$SNP == 2, 1, 0)
+rec_counts <- table(factor(df$rec_val, levels=0:1))
+rec_labels <- paste0(c("Non-Hom Alt", "Hom Alt"), "\n(N=", rec_counts, ")")
+df$rec_f <- factor(df$rec_val, levels=0:1, labels=rec_labels)
+
+boxplot(phenotype ~ rec_f, data=df, col="lightpink", outline=FALSE,
+        ylab=ylab, xlab="Genotype",
+        main=paste0("Recessive Model\n(p = ", get_p(phenotype ~ rec_val, df), ")"))
+
+points(jitter(as.numeric(df$rec_f), amount=0.15), df$phenotype,
+       pch=df$p_pch, col=df$p_col, cex=df$p_cex)
+
+legend("topleft", legend=c("ALS", "Control"), col=c("red", "#9932CC"),
+       pch=c(16,18), pt.cex=c(0.7,1.1), bty="n", cex=0.8)
+
+if (qtype=="eQTL") {
+  mtext(paste("Gene:", symbol, "(", event, ") | SNP:", snp, "| REF:", ref, "| ALT:", alt),
+        outer=TRUE, cex=1.0, font=2, line=0.5)
+} else if (qtype=="sQTL") {
+  mtext(paste("Junction:", event, "| SNP:", snp, "| REF:", ref, "| ALT:", alt),
+        outer=TRUE, cex=1.1, font=2, line=0.5)
+} else {
+  mtext(paste("circRNA:", event, "| SNP:", snp, "| REF:", ref, "| ALT:", alt),
+        outer=TRUE, cex=1.0, font=2, line=0.5)
+}
+dev.off()
+'''
+        rfile.write_text(rcode)
+        args=[str(data),str(out),str(event),str(snp),str(symbol),str(allele["ref"]),str(allele["alt"]),TYPE]
+        cmd="module load R >/dev/null 2>&1; Rscript "+shlex.quote(str(rfile))+" "+" ".join(shlex.quote(x) for x in args)
+        try:
+            subprocess.run(["bash","-lc",cmd],check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"  BOXPLOT FAILED: Rscript exited {e.returncode}");return False
+    print(f"  BOXPLOT REGENERATED (exact original R aesthetics): N={len(complete)} -> {out}")
+    return True
 
 processed_root_cache={};processed_sample_cache={};primary_read_cache={}
 def processed_roots_for_tissue(ROOT,tissue):
