@@ -604,18 +604,30 @@ def draw_reference_track(ax,exons,plot_start,plot_end):
 
 def draw_linear_arcs(ax,junctions,x,mean_plus,mean_minus,coverage_max,color):
     span_total=max(1,x[-1]-x[0])
-    for (strand,start,end),rpm in sorted(junctions.items(),key=lambda z:z[0][2]-z[0][1]):
-        span_frac=min(1.,max(0.,(end-start)/span_total)); mid=(start+end)/2
+    items=sorted(junctions.items(),key=lambda z:(z[0][0],(z[0][1]+z[0][2])/2,z[0][2]-z[0][1]))
+
+    for i,((strand,start,end),rpm) in enumerate(items):
+        span_frac=min(1.,max(0.,(end-start)/span_total))
+        mid=(start+end)/2
+
+        # Small deterministic stagger to prevent labels/arcs sitting at same height.
+        stagger=(i%3)*0.10*coverage_max
 
         if strand=="-":
-            left_y=-float(np.interp(start,x,mean_minus)); right_y=-float(np.interp(end,x,mean_minus))
-            base=min(left_y,right_y); apex=-coverage_max*(1.05+.42*math.sqrt(span_frac))
-            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],[MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
+            left_y=-float(np.interp(start,x,mean_minus))
+            right_y=-float(np.interp(end,x,mean_minus))
+            base=min(left_y,right_y)
+            apex=-coverage_max*(1.05+.42*math.sqrt(span_frac))-stagger
+            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],
+                         [MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
             label_y=base+.58*(apex-base)
         else:
-            left_y=float(np.interp(start,x,mean_plus)); right_y=float(np.interp(end,x,mean_plus))
-            base=max(left_y,right_y); apex=coverage_max*(1.05+.42*math.sqrt(span_frac))
-            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],[MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
+            left_y=float(np.interp(start,x,mean_plus))
+            right_y=float(np.interp(end,x,mean_plus))
+            base=max(left_y,right_y)
+            apex=coverage_max*(1.05+.42*math.sqrt(span_frac))+stagger
+            path=MplPath([(start,left_y),(mid,apex),(end,right_y)],
+                         [MplPath.MOVETO,MplPath.CURVE3,MplPath.CURVE3])
             label_y=base+.58*(apex-base)
 
         lw=min(4.,max(.7,math.log(rpm+1,2)))
@@ -629,7 +641,8 @@ def draw_circ_arc(ax,start,end,mean_rpm,coverage_max,color,strand):
     outer=sign*coverage_max*1.72
     path=MplPath([(start,0),(start,outer),(end,outer),(end,0)],[MplPath.MOVETO,MplPath.CURVE4,MplPath.CURVE4,MplPath.CURVE4])
     lw=min(4.,max(.7,math.log(mean_rpm+1,2)))
-    ax.add_patch(PathPatch(path,facecolor="none",edgecolor=color,linewidth=lw,alpha=.95))
+    ax.add_patch(PathPatch(path,facecolor="none",edgecolor=color,linewidth=max(1.4,lw),
+                       linestyle="--",alpha=.95))
     ax.text((start+end)/2,outer*.63,f"{mean_rpm:.3f}",ha="center",va="center",fontsize=7,
             bbox=dict(facecolor="white",edgecolor="none",alpha=.88,pad=.45))
 
@@ -831,7 +844,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
         coverage_max=1. if not np.isfinite(coverage_max) or coverage_max<=0 else coverage_max*1.05
         has_linear_arcs=TYPE in {"sQTL","cQTL"} and any(junctions.get(g) for g in [0,1,2])
         has_circ_arcs=TYPE=="cQTL" and any(circ_means[g]>0 for g in [0,1,2])
-        axis_extent=coverage_max*(1.95 if has_circ_arcs else 1.58 if has_linear_arcs else 1.08)
+        axis_extent=coverage_max*(2.05 if has_circ_arcs else 1.80 if has_linear_arcs else 1.08)
         bar_width=actual_bin_bp*.92
 
         fig=plt.figure(figsize=(16,10))
@@ -879,7 +892,7 @@ for tissue,tissue_hits in hits_by_tissue.items():
                      "Coverage uses the same RPM normalization as the source BigWigs (1e6 / primary alignments); + strand above 0, - strand below 0")
 
         if TYPE=="cQTL":
-            footer=base_footer+"\nLinear arc labels = mean LeafCutter junction RPM per subject | circular arc label = mean circular-junction RPM per subject"
+            footer=base_footer+"\nLinear splice junctions = solid arcs | circular/back-splice junction = dashed arc | labels = mean junction RPM per subject"
         elif TYPE=="sQTL":
             footer=base_footer+"\nArc labels = mean LeafCutter junction RPM per subject"
         else:
