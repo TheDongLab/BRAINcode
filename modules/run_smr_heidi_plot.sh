@@ -29,5 +29,6 @@ for x in pdfseparate pdftotext samtools; do command -v "$x" >/dev/null || { echo
 export TYPE ROOT MR_DIR METADATA OUTDIR GTF RAW_FILE SMR_FDR_THRESHOLD FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS
 export CIRC_COORD_TOL MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-"$PYTHON" "$SCRIPT_DIR/smr_heidi_plot.py"
+PY_SCRIPT="/home/zw529/donglab/pipelines/scripts/QTL/smr_heidi_plot.py"
+[[ -f "$PY_SCRIPT" ]] || { echo "ERROR: missing $PY_SCRIPT"; exit 1; }
+"$PYTHON" "$PY_SCRIPT"
