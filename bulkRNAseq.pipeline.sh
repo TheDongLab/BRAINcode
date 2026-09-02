@@ -210,11 +210,11 @@ if $DRY_RUN; then
         echo "  [$((i+1))] ${MASTER[$i]}"
     done
     echo ""
-    echo "Would submit: --array=1-${COUNT}%50"
+    echo "Would submit: --array=1-${COUNT}%99"
     exit 0
 fi
 
-echo "Submitting array job: 1-${COUNT} (max 50 concurrent)..."
+echo "Submitting array job: 1-${COUNT} (max 99 concurrent)..."
 # Explicitly forward the targeted username argument down to the self-submitted sbatch job
-sbatch --array="1-${COUNT}%50" "$0" "$TARGET_USER"
+sbatch --array="1-${COUNT}%99" "$0" "$TARGET_USER"
 echo "Done. Monitor with: squeue -u $USER"
