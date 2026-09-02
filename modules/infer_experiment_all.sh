@@ -40,7 +40,7 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     done < <(find "$ROOT" -type d -path '*/RNAseq/Processed' -print0 | while IFS= read -r -d '' P; do find "$P" -mindepth 1 -maxdepth 1 -type d; done | sort)
 
     echo "Samples found: $i"
-    sbatch --array="1-${i}%50" "$0"
+    sbatch --array="1-${i}%500" "$0"
     exit 0
 fi
 
