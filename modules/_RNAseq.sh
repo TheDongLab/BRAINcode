@@ -281,7 +281,7 @@ fi
 if [ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
  
-    htseq-count -m intersection-strict -t exon -i gene_id -s yes -q -f bam -r pos \
+    htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam -r pos \
         "$BAM" "$GTF" \
         > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr" && \
  
