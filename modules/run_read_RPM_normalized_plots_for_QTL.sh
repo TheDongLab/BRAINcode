@@ -3,8 +3,8 @@
 # BOXPLOT_VERSION: EXACT_COPY_OF_ORIGINAL_BASE_R_PARAMETERS__MATCHED_TRACK_SUBJECTS_ONLY
 # GENCODE_TRACK_VERSION: ALL_TRANSCRIPTS_TRANSCRIPT_RESOLVED
 #SBATCH --job-name=QTL_read_norm_plots
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_normalization_plots_for_QTL_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_normalization_plots_for_QTL_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
 #SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=50G
@@ -29,9 +29,9 @@ OVERWRITE=0
 DPI=180
 
 # Optional override. Leave blank for automatic result-file detection.
-# Example: QTL_RESULT_FILE="FDR0.05.txt"
-# Example: QTL_RESULT_FILE="cis.txt"
-QTL_RESULT_FILE=""
+# Example: QTL_RESULT_FILE="FDR0.05.txt"   # matches <Tissue>_<TYPE>.FDR0.05.txt inside results/
+# Example: QTL_RESULT_FILE="cis.txt"       # matches <Tissue>_<TYPE>.cis.txt inside results/
+QTL_RESULT_FILE="FDR0.05.txt"
 
 set -euo pipefail
 
@@ -40,7 +40,7 @@ case "$TYPE" in
     *) echo "Usage: sbatch $0 {eQTL|sQTL|cQTL}"; exit 1 ;;
 esac
 
-OUTDIR="${ROOT}/QTL/read_normalization_plots/${TYPE}"
+OUTDIR="${ROOT}/QTL/read_normalization_plots"
 mkdir -p "$OUTDIR"
 
 for f in "$METADATA" "$GTF" "$RAW_FILE"; do
@@ -447,18 +447,71 @@ def metadata_for_qtl_id(qid,tissue):
     z=[r for r in rows if str(r.get(subject_col,"")).strip()==str(qid)]
     return max(z,key=get_rin) if z else None
 
-def resolve_qtl_result_file(qtl_dir):
+def resolve_qtl_result_file(qtl_dir,tissue):
+    result_dir=qtl_dir/"results"
+    if not result_dir.is_dir():
+        return None
+
+    # Explicit override. A short suffix such as "FDR0.05.txt" or "cis.txt"
+    # matches the tissue/type-prefixed filename inside results/.
     if QTL_RESULT_FILE:
         p=Path(QTL_RESULT_FILE)
-        if not p.is_absolute():p=qtl_dir/QTL_RESULT_FILE
-        return p if p.exists() else None
-    exact=[qtl_dir/"FDR0.05.txt",qtl_dir/f"{TYPE}_FDR0.05.txt",qtl_dir/"cis_FDR0.05.txt"]
+
+        if p.is_absolute():
+            return p if p.exists() else None
+
+        exact=result_dir/QTL_RESULT_FILE
+        if exact.exists():
+            return exact
+
+        prefixed=result_dir/f"{tissue}_{TYPE}.{QTL_RESULT_FILE}"
+        if prefixed.exists():
+            return prefixed
+
+        matches=sorted(result_dir.glob(f"*{QTL_RESULT_FILE}"))
+        if matches:
+            preferred=[
+                x for x in matches
+                if x.name.startswith(f"{tissue}_{TYPE}.")
+            ]
+            return preferred[0] if preferred else matches[0]
+
+        return None
+
+    # Default preference: FDR0.05 results.
+    exact=[
+        result_dir/f"{tissue}_{TYPE}.FDR0.05.txt",
+        result_dir/f"{tissue}_{TYPE}_FDR0.05.txt",
+        result_dir/"FDR0.05.txt"
+    ]
     for p in exact:
-        if p.exists():return p
-    fdr_candidates=sorted([p for p in qtl_dir.glob("*.txt") if "fdr" in p.name.lower() and ("0.05" in p.name.lower() or "005" in p.name.lower())])
-    if fdr_candidates:return fdr_candidates[0]
-    for p in [qtl_dir/"full_annotated.txt",qtl_dir/"cis.txt"]:
-        if p.exists():return p
+        if p.exists():
+            return p
+
+    fdr_candidates=sorted([
+        p for p in result_dir.glob("*.txt")
+        if "fdr" in p.name.lower()
+        and ("0.05" in p.name.lower() or "005" in p.name.lower())
+    ])
+    if fdr_candidates:
+        preferred=[
+            x for x in fdr_candidates
+            if tissue.lower() in x.name.lower()
+            and TYPE.lower() in x.name.lower()
+        ]
+        return preferred[0] if preferred else fdr_candidates[0]
+
+    # Fall back to full annotated, then cis.
+    fallback=[
+        result_dir/f"{tissue}_{TYPE}.full_annotated.txt",
+        result_dir/f"{tissue}_{TYPE}.cis.txt",
+        result_dir/"full_annotated.txt",
+        result_dir/"cis.txt"
+    ]
+    for p in fallback:
+        if p.exists():
+            return p
+
     return None
 
 def load_qtl_hits(path,TYPE):
@@ -486,9 +539,9 @@ for tissue in CANONICAL_TISSUES:
     qtl=ROOT/tissue/TYPE
     if not qtl.is_dir():
         print(f"\nSKIP TISSUE: QTL directory missing: {qtl}");continue
-    result_file=resolve_qtl_result_file(qtl)
+    result_file=resolve_qtl_result_file(qtl,tissue)
     if result_file is None:
-        print(f"\nSKIP TISSUE: could not find a QTL result table in {qtl}");continue
+        print(f"\nSKIP TISSUE: could not find a QTL result table in {qtl / 'results'}");continue
     try:hits=load_qtl_hits(result_file,TYPE)
     except Exception as e:
         print(f"\nSKIP TISSUE: failed to parse {result_file}: {e}");continue
@@ -509,7 +562,7 @@ for tissue in CANONICAL_TISSUES:
     events={h["event"] for h in hits};snps={h["snp"] for h in hits}
     pheno_rows=extract_matrix_rows(pheno_file,events);geno_rows=extract_matrix_rows(snp_file,snps)
     trait_locs=load_location_table(loc_file,"trait",TYPE);snp_locs=load_location_table(snp_loc_file,"snp",TYPE)
-    tissue_out=OUTDIR/tissue;tissue_out.mkdir(parents=True,exist_ok=True)
+    tissue_out=OUTDIR/tissue/TYPE;tissue_out.mkdir(parents=True,exist_ok=True)
 
     for i,hit in enumerate(hits,1):
         event,snp,symbol=hit["event"],hit["snp"],hit["symbol"];qtl_p,qtl_fdr=hit["pvalue"],hit["fdr"]
