@@ -5,7 +5,7 @@
 #SBATCH --job-name=QTL_read_norm_plots
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
-#SBATCH --time=23:30:00
+#SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=50G
 
@@ -24,6 +24,14 @@ CIRC_COORD_TOL=3
 MIN_MEAN_JUNCTION_RPM=0.01
 MAX_JUNCTIONS=30
 MAX_HITS=0
+
+# Maximum number of SNP-specific plots per QTL event/gene.
+# eQTL  : max 2 SNPs per gene
+# sQTL  : max 2 SNPs per junction
+# cQTL  : max 2 SNPs per circRNA
+# Set to 0 for no per-event limit.
+MAX_PLOTS_PER_EVENT=2
+
 TISSUE_FILTER=""
 OVERWRITE=0
 DPI=180
@@ -36,11 +44,13 @@ QTL_RESULT_FILE="FDR0.05.txt"
 # Optional gene filter.
 # Leave blank to plot every event in the chosen QTL result file.
 # Accepts gene symbols and/or Ensembl gene IDs, comma-separated.
+# eQTL: direct gene-name/ID match.
+# sQTL/cQTL: keep any genomic event overlapping the requested GENCODE gene span by >=1 bp; strand is not required.
 # Examples:
 #   GENE_FILTER="C9orf72,STX6"
 #   GENE_FILTER="ENSG00000147894,ENSG00000135823"
 #   GENE_FILTER="C9orf72,ENSG00000135823"
-GENE_FILTER="C9orf72,UNC13A,ATXN1,ATXN2,FUS,SOD1,TARDBP,HOMER1"
+GENE_FILTER=""
 
 set -euo pipefail
 
@@ -63,7 +73,7 @@ command -v samtools >/dev/null || { echo "ERROR: samtools unavailable"; exit 1; 
 
 export TYPE ROOT METADATA GTF RAW_FILE OUTDIR
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
-export MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI QTL_RESULT_FILE GENE_FILTER
+export MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS MAX_PLOTS_PER_EVENT TISSUE_FILTER OVERWRITE DPI QTL_RESULT_FILE GENE_FILTER
 
 "$PYTHON" -u - <<'PY'
 import os,re,csv,sys,math,warnings,subprocess
@@ -180,10 +190,58 @@ def load_location_table(path,kind,TYPE):
     return out
 
 def parse_event_coordinates(event):
-    for p in [r"(chr[^:]+):(\d+)-(\d+):([+-])",r"(chr[^:]+):(\d+):(\d+):([+-])",r"(chr[^:]+):(\d+)-(\d+)",r"(chr[^:]+):(\d+):(\d+)"]:
-        m=re.search(p,str(event))
-        if m:return {"chr":m.group(1),"start":int(m.group(2)),"end":int(m.group(3)),"strand":m.group(4) if len(m.groups())>=4 else None}
+    """
+    Parse the coordinate conventions used by the QTL outputs.
+
+    cQTL example:
+      chr10:100164003-100167406:-
+
+    sQTL example:
+      chr10:+:100381448-100394498
+
+    Also accepts a few legacy colon-separated variants.
+    """
+    s=str(event).strip()
+
+    patterns=[
+        # sQTL: chr10:+:100381448-100394498
+        (r"^(chr[^:]+):([+-]):(\d+)-(\d+)$", "strand_first"),
+
+        # cQTL: chr10:100164003-100167406:-
+        (r"^(chr[^:]+):(\d+)-(\d+):([+-])$", "strand_last"),
+
+        # Legacy: chr10:100164003:100167406:-
+        (r"^(chr[^:]+):(\d+):(\d+):([+-])$", "strand_last"),
+
+        # No strand: chr10:100164003-100167406
+        (r"^(chr[^:]+):(\d+)-(\d+)$", "no_strand"),
+
+        # No strand: chr10:100164003:100167406
+        (r"^(chr[^:]+):(\d+):(\d+)$", "no_strand")
+    ]
+
+    for pat,mode in patterns:
+        m=re.match(pat,s)
+        if not m:
+            continue
+
+        if mode=="strand_first":
+            chrom,strand,start,end=m.groups()
+        elif mode=="strand_last":
+            chrom,start,end,strand=m.groups()
+        else:
+            chrom,start,end=m.groups()
+            strand=None
+
+        return {
+            "chr":chrom,
+            "start":int(start),
+            "end":int(end),
+            "strand":strand
+        }
+
     return None
+
 def find_location(loc,event):
     if event in loc:return loc[event]
     e=strip_gene_version(event);return next((v for k,v in loc.items() if strip_gene_version(k)==e),parse_event_coordinates(event))
@@ -428,13 +486,14 @@ def genotype_group(v,flip=False):
 
 TYPE=os.environ["TYPE"];ROOT=Path(os.environ["ROOT"]);METADATA=Path(os.environ["METADATA"]);GTF=Path(os.environ["GTF"]);RAW_FILE=Path(os.environ["RAW_FILE"]);OUTDIR=Path(os.environ["OUTDIR"])
 FLANK_FRAC=float(os.environ["FLANK_FRAC"]);FLANK_MIN=int(os.environ["FLANK_MIN"]);FLANK_MAX=int(os.environ["FLANK_MAX"]);BIGWIG_BIN_BP=int(os.environ["BIGWIG_BIN_BP"]);MAX_TRACK_POINTS=int(os.environ["MAX_TRACK_POINTS"])
-CIRC_COORD_TOL=int(os.environ["CIRC_COORD_TOL"]);MIN_MEAN_JUNCTION_RPM=float(os.environ["MIN_MEAN_JUNCTION_RPM"]);MAX_JUNCTIONS=int(os.environ["MAX_JUNCTIONS"]);MAX_HITS=int(os.environ["MAX_HITS"])
+CIRC_COORD_TOL=int(os.environ["CIRC_COORD_TOL"]);MIN_MEAN_JUNCTION_RPM=float(os.environ["MIN_MEAN_JUNCTION_RPM"]);MAX_JUNCTIONS=int(os.environ["MAX_JUNCTIONS"]);MAX_HITS=int(os.environ["MAX_HITS"]);MAX_PLOTS_PER_EVENT=int(os.environ["MAX_PLOTS_PER_EVENT"])
 TISSUE_FILTER=os.environ["TISSUE_FILTER"].strip();OVERWRITE=int(os.environ["OVERWRITE"]);DPI=int(os.environ["DPI"]);QTL_RESULT_FILE=os.environ["QTL_RESULT_FILE"].strip();GENE_FILTER=os.environ["GENE_FILTER"].strip()
 
 print("="*72, flush=True)
 print(f"STARTING READ-NORMALIZATION PLOTS | TYPE={TYPE}", flush=True)
 print(f"QTL_RESULT_FILE={QTL_RESULT_FILE or 'AUTO'}", flush=True)
 print(f"GENE_FILTER={GENE_FILTER or 'NONE'}", flush=True)
+print(f"MAX_PLOTS_PER_EVENT={MAX_PLOTS_PER_EVENT}", flush=True)
 print("="*72, flush=True)
 
 raw_alleles={}
@@ -548,33 +607,175 @@ def load_qtl_hits(path,TYPE):
         hits.append({"event":event,"snp":snp,"symbol":str(r.get(symbol_col,"")).strip() if symbol_col else "","pvalue":as_float(r.get(p_col)) if p_col else None,"fdr":as_float(r.get(fdr_col)) if fdr_col else None})
     return hits
 
+def build_gene_filter_intervals(gtf,gene_filter):
+    """
+    Resolve requested gene symbols / Ensembl gene IDs against the GENCODE GTF.
+    Returns:
+      requested_raw : original requested names
+      genes_by_chr  : chrom -> list of gene intervals
+    """
+    requested_raw=[x.strip() for x in gene_filter.split(",") if x.strip()]
+    if not requested_raw:
+        return [],{}
+
+    wanted_norm={norm(x) for x in requested_raw}
+    wanted_ens={strip_gene_version(x).upper() for x in requested_raw if x.upper().startswith("ENSG")}
+    genes_by_chr=defaultdict(list)
+
+    with open(gtf) as f:
+        for line in f:
+            if line.startswith("#"):continue
+            x=line.rstrip().split("\t")
+            if len(x)<9 or x[2]!="gene":continue
+
+            a=parse_gtf_attrs(x[8])
+            gid=a.get("gene_id","")
+            gname=a.get("gene_name","")
+            gid_nv=strip_gene_version(gid).upper()
+
+            if norm(gname) not in wanted_norm and norm(gid) not in wanted_norm and gid_nv not in wanted_ens:
+                continue
+
+            genes_by_chr[chr_key(x[0])].append({
+                "chrom":x[0],
+                "start":int(x[3])-1,
+                "end":int(x[4]),
+                "strand":x[6],
+                "gene_name":gname,
+                "gene_id":gid
+            })
+
+    return requested_raw,genes_by_chr
+
+GENE_FILTER_RAW,GENE_FILTER_INTERVALS=build_gene_filter_intervals(GTF,GENE_FILTER)
+
+if GENE_FILTER:
+    print("Resolved gene filter intervals:", flush=True)
+    n_resolved=0
+    for c in sorted(GENE_FILTER_INTERVALS):
+        for g in GENE_FILTER_INTERVALS[c]:
+            print(
+                f"  {g['gene_name']} ({g['gene_id']}) "
+                f"{g['chrom']}:{g['start']+1}-{g['end']} ({g['strand']})",
+                flush=True
+            )
+            n_resolved+=1
+    print(f"Resolved genes     : {n_resolved}", flush=True)
+
+def event_overlaps_requested_gene(event):
+    """
+    Return True when a splicing/circRNA event overlaps a requested
+    GENCODE gene interval by >=1 bp.
+
+    Strand is deliberately NOT used as a filter here: the user's goal is
+    to include every sQTL/cQTL event touching the genomic span of the gene.
+    """
+    loc=parse_event_coordinates(event)
+    if loc is None:
+        return False,None
+
+    c=chr_key(loc["chr"])
+    s,e=sorted([int(loc["start"]),int(loc["end"])])
+
+    for g in GENE_FILTER_INTERVALS.get(c,[]):
+        # Inclusive overlap: even a single shared coordinate is enough.
+        if s <= g["end"] and e >= g["start"]:
+            return True,g
+
+    return False,None
+
 def apply_gene_filter(hits):
     if not GENE_FILTER:
         return hits
 
-    wanted_raw=[x.strip() for x in GENE_FILTER.split(",") if x.strip()]
-    wanted_norm={norm(x) for x in wanted_raw}
-    wanted_ens={strip_gene_version(x).upper() for x in wanted_raw if str(x).upper().startswith("ENSG")}
-
     kept=[]
+
     for h in hits:
         event=str(h.get("event","")).strip()
         symbol=str(h.get("symbol","")).strip()
 
-        event_nv=strip_gene_version(event).upper()
-        symbol_match=bool(symbol) and norm(symbol) in wanted_norm
-        event_match=norm(event) in wanted_norm or event_nv in wanted_ens
+        if TYPE=="eQTL":
+            # eQTL result geneid is the gene symbol / gene identifier itself.
+            direct=(
+                norm(event) in {norm(x) for x in GENE_FILTER_RAW}
+                or norm(symbol) in {norm(x) for x in GENE_FILTER_RAW}
+                or strip_gene_version(event).upper() in {
+                    strip_gene_version(x).upper()
+                    for x in GENE_FILTER_RAW
+                    if x.upper().startswith("ENSG")
+                }
+            )
+            if direct:
+                kept.append(h)
 
-        if symbol_match or event_match:
-            kept.append(h)
+        else:
+            # sQTL / cQTL result IDs are genomic events.
+            # Keep events overlapping the requested GENCODE gene span.
+            ok,g=event_overlaps_requested_gene(event)
+            if ok:
+                h["symbol"]=g["gene_name"] or symbol
+                h["filter_gene_id"]=g["gene_id"]
+                kept.append(h)
 
-    print(f"GENE FILTER      : {', '.join(wanted_raw)}")
-    print(f"ROWS BEFORE      : {len(hits)}")
-    print(f"ROWS AFTER       : {len(kept)}")
+    print(f"GENE FILTER      : {', '.join(GENE_FILTER_RAW)}", flush=True)
+    print(f"ROWS BEFORE      : {len(hits)}", flush=True)
+    print(f"ROWS AFTER       : {len(kept)}", flush=True)
 
     if not kept:
-        print("WARNING: gene filter matched no QTL rows. For sQTL/cQTL this requires a gene_symbol/gene_name field in the result table unless the event ID itself is an Ensembl gene ID.")
+        if TYPE=="eQTL":
+            print("WARNING: no eQTL rows matched the requested gene symbols / Ensembl IDs.", flush=True)
+        else:
+            print("WARNING: no sQTL/cQTL event coordinates overlapped the requested GENCODE gene spans.", flush=True)
 
+    return kept
+
+def limit_plots_per_event(hits,max_per_event):
+    """
+    Keep at most N SNP associations per QTL event.
+    Ranking:
+      1. lowest FDR when available
+      2. lowest nominal p-value
+      3. SNP ID for deterministic ties
+
+    eQTL event = gene
+    sQTL event = junction
+    cQTL event = circRNA
+    """
+    if max_per_event<=0:
+        return hits
+
+    grouped=defaultdict(list)
+    for h in hits:
+        grouped[h["event"]].append(h)
+
+    kept=[]
+    for event,rows in grouped.items():
+        def key(h):
+            fdr=h.get("fdr")
+            p=h.get("pvalue")
+            return (
+                float("inf") if fdr is None else fdr,
+                float("inf") if p is None else p,
+                str(h.get("snp",""))
+            )
+
+        rows=sorted(rows,key=key)
+        kept.extend(rows[:max_per_event])
+
+    # Keep a stable global ordering by event, then statistical strength.
+    kept=sorted(
+        kept,
+        key=lambda h:(
+            str(h["event"]),
+            float("inf") if h.get("fdr") is None else h["fdr"],
+            float("inf") if h.get("pvalue") is None else h["pvalue"],
+            str(h.get("snp",""))
+        )
+    )
+
+    print(f"MAX PER EVENT    : {max_per_event}", flush=True)
+    print(f"UNIQUE EVENTS    : {len(grouped)}", flush=True)
+    print(f"ROWS AFTER CAP   : {len(kept)}", flush=True)
     return kept
 
 total_plotted=total_skipped=total_boxplots=0
@@ -591,9 +792,10 @@ for tissue in CANONICAL_TISSUES:
         print(f"\nSKIP TISSUE: failed to parse {result_file}: {e}");continue
 
     hits=apply_gene_filter(hits)
+    hits=limit_plots_per_event(hits,MAX_PLOTS_PER_EVENT)
     if MAX_HITS>0:hits=hits[:MAX_HITS]
 
-    print(f"\n{'='*72}\nTISSUE          : {tissue}\nQTL TYPE        : {TYPE}\nRESULT FILE     : {result_file}\nQTL ROWS TO PLOT: {len(hits)}\nFILTER          : NONE beyond rows present in result file\n{'='*72}")
+    print(f"\n{'='*72}\nTISSUE          : {tissue}\nQTL TYPE        : {TYPE}\nRESULT FILE     : {result_file}\nQTL ROWS TO PLOT: {len(hits)}\nFILTER          : gene-region filter + per-event SNP cap\n{'='*72}")
     if not hits:continue
 
     if TYPE=="eQTL":pheno_file,loc_file=qtl/f"expression_{tissue}.txt",qtl/"gene_location.txt"
