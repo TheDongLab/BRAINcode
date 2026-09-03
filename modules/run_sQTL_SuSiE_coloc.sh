@@ -16,7 +16,7 @@ command -v Rscript >/dev/null || { echo "ERROR: Rscript unavailable"; exit 1; }
 Rscript -e 'p<-c("data.table","susieR","coloc","ggplot2"); x<-p[!sapply(p,requireNamespace,quietly=TRUE)]; if(length(x)) stop("Missing R packages: ",paste(x,collapse=", "))'
 
 BASE="$HOME/donglab/data/target_ALS"; BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"
-GWAS="$HOME/donglab/data/GCST90027163/GWAS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"; GWAS_ORIG="$HOME/donglab/data/GCST90027163/GWAS/GCST90027163_buildGRCh37.tsv.gz"
+GWAS="$HOME/donglab/references/GWAS/ALS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"; GWAS_ORIG="$HOME/donglab/references/GWAS/ALS/GCST90027163_buildGRCh37.tsv.gz"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
 
 CANDIDATE_MODE="global_fdr"   # global_fdr | tissue_fdr | nominal | all
