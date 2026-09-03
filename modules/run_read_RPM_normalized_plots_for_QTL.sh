@@ -5,7 +5,7 @@
 #SBATCH --job-name=QTL_read_norm_plots
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
-#SBATCH --time=23:00:00
+#SBATCH --time=23:30:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=50G
 
@@ -33,6 +33,15 @@ DPI=180
 # Example: QTL_RESULT_FILE="cis.txt"       # matches <Tissue>_<TYPE>.cis.txt inside results/
 QTL_RESULT_FILE="FDR0.05.txt"
 
+# Optional gene filter.
+# Leave blank to plot every event in the chosen QTL result file.
+# Accepts gene symbols and/or Ensembl gene IDs, comma-separated.
+# Examples:
+#   GENE_FILTER="C9orf72,STX6"
+#   GENE_FILTER="ENSG00000147894,ENSG00000135823"
+#   GENE_FILTER="C9orf72,ENSG00000135823"
+GENE_FILTER="C9orf72,UNC13A,ATXN1,ATXN2,FUS,SOD1,TARDBP,HOMER1"
+
 set -euo pipefail
 
 case "$TYPE" in
@@ -54,9 +63,9 @@ command -v samtools >/dev/null || { echo "ERROR: samtools unavailable"; exit 1; 
 
 export TYPE ROOT METADATA GTF RAW_FILE OUTDIR
 export FLANK_FRAC FLANK_MIN FLANK_MAX BIGWIG_BIN_BP MAX_TRACK_POINTS CIRC_COORD_TOL
-export MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI QTL_RESULT_FILE
+export MIN_MEAN_JUNCTION_RPM MAX_JUNCTIONS MAX_HITS TISSUE_FILTER OVERWRITE DPI QTL_RESULT_FILE GENE_FILTER
 
-"$PYTHON" - <<'PY'
+"$PYTHON" -u - <<'PY'
 import os,re,csv,sys,math,warnings,subprocess
 from pathlib import Path
 from collections import defaultdict
@@ -420,7 +429,13 @@ def genotype_group(v,flip=False):
 TYPE=os.environ["TYPE"];ROOT=Path(os.environ["ROOT"]);METADATA=Path(os.environ["METADATA"]);GTF=Path(os.environ["GTF"]);RAW_FILE=Path(os.environ["RAW_FILE"]);OUTDIR=Path(os.environ["OUTDIR"])
 FLANK_FRAC=float(os.environ["FLANK_FRAC"]);FLANK_MIN=int(os.environ["FLANK_MIN"]);FLANK_MAX=int(os.environ["FLANK_MAX"]);BIGWIG_BIN_BP=int(os.environ["BIGWIG_BIN_BP"]);MAX_TRACK_POINTS=int(os.environ["MAX_TRACK_POINTS"])
 CIRC_COORD_TOL=int(os.environ["CIRC_COORD_TOL"]);MIN_MEAN_JUNCTION_RPM=float(os.environ["MIN_MEAN_JUNCTION_RPM"]);MAX_JUNCTIONS=int(os.environ["MAX_JUNCTIONS"]);MAX_HITS=int(os.environ["MAX_HITS"])
-TISSUE_FILTER=os.environ["TISSUE_FILTER"].strip();OVERWRITE=int(os.environ["OVERWRITE"]);DPI=int(os.environ["DPI"]);QTL_RESULT_FILE=os.environ["QTL_RESULT_FILE"].strip()
+TISSUE_FILTER=os.environ["TISSUE_FILTER"].strip();OVERWRITE=int(os.environ["OVERWRITE"]);DPI=int(os.environ["DPI"]);QTL_RESULT_FILE=os.environ["QTL_RESULT_FILE"].strip();GENE_FILTER=os.environ["GENE_FILTER"].strip()
+
+print("="*72, flush=True)
+print(f"STARTING READ-NORMALIZATION PLOTS | TYPE={TYPE}", flush=True)
+print(f"QTL_RESULT_FILE={QTL_RESULT_FILE or 'AUTO'}", flush=True)
+print(f"GENE_FILTER={GENE_FILTER or 'NONE'}", flush=True)
+print("="*72, flush=True)
 
 raw_alleles={}
 with open(RAW_FILE) as f:
@@ -533,6 +548,35 @@ def load_qtl_hits(path,TYPE):
         hits.append({"event":event,"snp":snp,"symbol":str(r.get(symbol_col,"")).strip() if symbol_col else "","pvalue":as_float(r.get(p_col)) if p_col else None,"fdr":as_float(r.get(fdr_col)) if fdr_col else None})
     return hits
 
+def apply_gene_filter(hits):
+    if not GENE_FILTER:
+        return hits
+
+    wanted_raw=[x.strip() for x in GENE_FILTER.split(",") if x.strip()]
+    wanted_norm={norm(x) for x in wanted_raw}
+    wanted_ens={strip_gene_version(x).upper() for x in wanted_raw if str(x).upper().startswith("ENSG")}
+
+    kept=[]
+    for h in hits:
+        event=str(h.get("event","")).strip()
+        symbol=str(h.get("symbol","")).strip()
+
+        event_nv=strip_gene_version(event).upper()
+        symbol_match=bool(symbol) and norm(symbol) in wanted_norm
+        event_match=norm(event) in wanted_norm or event_nv in wanted_ens
+
+        if symbol_match or event_match:
+            kept.append(h)
+
+    print(f"GENE FILTER      : {', '.join(wanted_raw)}")
+    print(f"ROWS BEFORE      : {len(hits)}")
+    print(f"ROWS AFTER       : {len(kept)}")
+
+    if not kept:
+        print("WARNING: gene filter matched no QTL rows. For sQTL/cQTL this requires a gene_symbol/gene_name field in the result table unless the event ID itself is an Ensembl gene ID.")
+
+    return kept
+
 total_plotted=total_skipped=total_boxplots=0
 for tissue in CANONICAL_TISSUES:
     if TISSUE_FILTER and not tissue_equal(tissue,TISSUE_FILTER):continue
@@ -545,6 +589,8 @@ for tissue in CANONICAL_TISSUES:
     try:hits=load_qtl_hits(result_file,TYPE)
     except Exception as e:
         print(f"\nSKIP TISSUE: failed to parse {result_file}: {e}");continue
+
+    hits=apply_gene_filter(hits)
     if MAX_HITS>0:hits=hits[:MAX_HITS]
 
     print(f"\n{'='*72}\nTISSUE          : {tissue}\nQTL TYPE        : {TYPE}\nRESULT FILE     : {result_file}\nQTL ROWS TO PLOT: {len(hits)}\nFILTER          : NONE beyond rows present in result file\n{'='*72}")
@@ -588,7 +634,7 @@ for tissue in CANONICAL_TISSUES:
         print(f"  GENCODE transcripts in plotted region: {n_transcripts}")
 
         label=symbol if symbol and symbol!=event else event;base=safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
-        boxout=tissue_out/f"{base}.boxplot.pdf";pdf=tissue_out/f"{base}.density.pdf";png=tissue_out/f"{base}.density.png";svg=tissue_out/f"{base}.density.svg";tsv=tissue_out/f"{base}.subjects.tsv"
+        boxout=tissue_out/f"{base}.boxplot.pdf";pdf=tissue_out/f"{base}.density.pdf";png=tissue_out/f"{base}.density.png";tsv=tissue_out/f"{base}.subjects.tsv"
 
         records=[]
         for qid in phenotype.keys()&genotype.keys():
@@ -639,7 +685,7 @@ for tissue in CANONICAL_TISSUES:
             for r in complete:
                 w.writerow([tissue,TYPE,event,symbol,snp,"" if qtl_p is None else qtl_p,"" if qtl_fdr is None else qtl_fdr,allele["ref"],allele["alt"],allele["counted"],r["qtl_id"],r["subject_id"],r["sample_id"],r["sample_fs_id"],r["genotype"],GENOTYPE_LABELS[r["genotype"]],r["genotype_raw"],r["phenotype"],r["is_als"],r["primary_reads"] or "",r["plus_source"],r["minus_source"],r["circ_reads"] or "",r["circ_rpm"] or "",r["linear_reads"] or "",r["circ_percent_file"] or "",r["circ_match_type"] or "",r["circ_matched_start"] or "",r["circ_matched_end"] or "",r["circ_quant_source"] or "",str(result_file)])
 
-        if not OVERWRITE and pdf.exists() and png.exists() and svg.exists():
+        if not OVERWRITE and pdf.exists() and png.exists():
             print("  DENSITY EXISTS; boxplot/TSV refreshed, density skipped");continue
 
         cmax=max(max(float(np.max(plus[g])),float(np.max(minus[g]))) for g in groups if groups[g]);cmax=1 if cmax<=0 else cmax*1.05
@@ -679,7 +725,7 @@ for tissue in CANONICAL_TISSUES:
         elif TYPE=="sQTL":footer+="\nArc labels = mean LeafCutter junction RPM per subject"
         fig.text(.5,.004,footer,ha="center",va="bottom",fontsize=9.5)
 
-        fig.savefig(pdf,bbox_inches="tight");fig.savefig(png,dpi=DPI,bbox_inches="tight");fig.savefig(svg,bbox_inches="tight");plt.close(fig)
+        fig.savefig(pdf,bbox_inches="tight");fig.savefig(png,dpi=DPI,bbox_inches="tight");plt.close(fig)
         print(f"  BOXPLOT PDF : {boxout}\n  DENSITY PDF : {pdf}\n  DENSITY PNG : {png}\n  DENSITY SVG : {svg}\n  SUBJECT TSV : {tsv}")
         total_plotted+=1
 
