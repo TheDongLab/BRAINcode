@@ -15,7 +15,7 @@ SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/eQTL_SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"; EXPR="$BASE/QTL/expression_matrix.txt"
 GENCODE="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf"
-GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
+GWAS_DIR="$HOME/donglab/references/GWAS/ALS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 GWAS_ORIG="$GWAS_DIR/GCST90027163_buildGRCh37.tsv.gz"; GWAS_MA="$GWAS_DIR/ALS_GRCh38_SMR.ma"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
 
