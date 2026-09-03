@@ -1,5 +1,6 @@
 #!/bin/bash
 # BOXPLOT_VERSION: EXACT_COPY_OF_ORIGINAL_BASE_R_PARAMETERS__MATCHED_TRACK_SUBJECTS_ONLY
+# GENCODE_TRACK_VERSION: ALL_TRANSCRIPTS_TRANSCRIPT_RESOLVED
 #SBATCH --job-name=run_coloc_plot
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_coloc_plot.err
@@ -351,29 +352,78 @@ def load_reference_exons(gtf,chrom,start,end):
             if len(x)<9 or x[2]!="exon" or chr_key(x[0])!=chr_key(chrom):continue
             s,e=int(x[3])-1,int(x[4])
             if e<start or s>end:continue
-            a=parse_gtf_attrs(x[8]);out.append({"start":s,"end":e,"strand":x[6],"gene":a.get("gene_name",a.get("gene_id","Unknown"))})
+            a=parse_gtf_attrs(x[8])
+            tid=a.get("transcript_id","")
+            if not tid:continue
+            out.append({
+                "start":s,
+                "end":e,
+                "strand":x[6],
+                "gene":a.get("gene_name",a.get("gene_id","Unknown")),
+                "gene_id":a.get("gene_id",""),
+                "transcript_id":tid,
+                "transcript_name":a.get("transcript_name","")
+            })
     return out
-def merge_intervals(xs):
-    if not xs:return []
-    xs=sorted(xs);out=[list(xs[0])]
-    for s,e in xs[1:]:
-        if s<=out[-1][1]:out[-1][1]=max(out[-1][1],e)
-        else:out.append([s,e])
-    return out
+
 def draw_reference_track(ax,exons,start,end):
-    genes=defaultdict(list);strands={}
-    for e in exons:genes[e["gene"]].append((e["start"],e["end"]));strands[e["gene"]]=e["strand"]
-    if not genes:ax.text(.5,.45,"No GENCODE v49 exons",transform=ax.transAxes,ha="center",fontsize=9)
+    transcripts=defaultdict(list)
+    info={}
+    for e in exons:
+        tid=e["transcript_id"]
+        transcripts[tid].append((e["start"],e["end"]))
+        info[tid]={
+            "gene":e["gene"],
+            "strand":e["strand"],
+            "transcript_name":e["transcript_name"]
+        }
+
+    if not transcripts:
+        ax.text(.5,.45,"No GENCODE v49 transcripts",transform=ax.transAxes,ha="center",fontsize=9)
+        ax.set_ylim(-.45,.55)
     else:
-        for y,(gene,ints) in enumerate(sorted(genes.items(),key=lambda z:min(x[0] for x in z[1]))):
-            m=merge_intervals(ints);a=max(start,min(x[0] for x in m));b=min(end,max(x[1] for x in m));ax.plot([a,b],[y,y],color="black",lw=.8)
-            for s,e in m:
-                s,e=max(s,start),min(e,end)
-                if e>s:ax.add_patch(Rectangle((s,y-.15),e-s,.3,facecolor="black",edgecolor="black",lw=.4))
-            st=strands.get(gene,"");ax.text(start,y+.22,f"{gene} ({st})" if st in {"+","-"} else gene,fontsize=8,ha="left")
-        ax.set_ylim(-.45,max(.55,len(genes)-.25))
-    ax.set_xlim(start,end);ax.set_yticks([]);ax.set_ylabel("GENCODE v49",fontsize=12,labelpad=13)
-    ax.xaxis.set_major_formatter(FuncFormatter(genomic_formatter));ax.locator_params(axis="x",nbins=5);ax.tick_params(axis="x",labelsize=11)
+        order=sorted(
+            transcripts,
+            key=lambda tid:(
+                min(s for s,e in transcripts[tid]),
+                info[tid]["gene"],
+                tid
+            )
+        )
+
+        for y,tid in enumerate(order):
+            ints=sorted(transcripts[tid])
+            tx_start=max(start,min(s for s,e in ints))
+            tx_end=min(end,max(e for s,e in ints))
+
+            # Transcript backbone.
+            ax.plot([tx_start,tx_end],[y,y],color="black",lw=.7)
+
+            # Preserve every exon from this specific transcript.
+            for s,e in ints:
+                s=max(s,start);e=min(e,end)
+                if e>s:
+                    ax.add_patch(Rectangle((s,y-.14),e-s,.28,facecolor="black",edgecolor="black",lw=.35))
+
+            gene=info[tid]["gene"]
+            strand=info[tid]["strand"]
+            tname=info[tid]["transcript_name"]
+
+            if tname and tname!=tid:
+                label=f"{gene} | {tname} | {tid} ({strand})"
+            else:
+                label=f"{gene} | {tid} ({strand})"
+
+            ax.text(start,y+.19,label,fontsize=6.3,ha="left",va="bottom")
+
+        ax.set_ylim(-.45,len(order)-.05)
+
+    ax.set_xlim(start,end)
+    ax.set_yticks([])
+    ax.set_ylabel("GENCODE v49",fontsize=12,labelpad=13)
+    ax.xaxis.set_major_formatter(FuncFormatter(genomic_formatter))
+    ax.locator_params(axis="x",nbins=5)
+    ax.tick_params(axis="x",labelsize=11)
     for s in ["top","right","left"]:ax.spines[s].set_visible(False)
 
 def draw_linear_arcs(ax,junctions,x,plus,minus,cmax,color):
@@ -492,6 +542,8 @@ for tissue,tissue_hits in hits_by_tissue.items():
         flank=min(int(max(FLANK_MIN,math.ceil(max(1,tend-tstart)*FLANK_FRAC))),FLANK_MAX);pstart,pend=max(0,tstart-flank),tend+flank
         nb=int(min(MAX_TRACK_POINTS,max(50,math.ceil((pend-pstart)/BIGWIG_BIN_BP))));binbp=(pend-pstart)/nb
         x=np.linspace(pstart,pend,nb,endpoint=False)+binbp/2;exons=load_reference_exons(GTF,chrom,pstart,pend)
+        n_transcripts=len({e["transcript_id"] for e in exons if e["transcript_id"]})
+        print(f"  GENCODE transcripts in plotted region: {n_transcripts}")
         label=symbol if symbol else event;base=safe_name(f"{tissue}__{TYPE}__{label}__{snp}")
         boxout=OUTDIR/f"{base}.boxplot.pdf";pdf=OUTDIR/f"{base}.density.pdf";png=OUTDIR/f"{base}.density.png";svg=OUTDIR/f"{base}.density.svg";tsv=OUTDIR/f"{base}.subjects.tsv"
 
@@ -543,7 +595,9 @@ for tissue,tissue_hits in hits_by_tissue.items():
         cmax=max(max(float(np.max(plus[g])),float(np.max(minus[g]))) for g in groups if groups[g]);cmax=1 if cmax<=0 else cmax*1.05
         linear=TYPE in {"sQTL","cQTL"} and any(junctions.get(g) for g in groups);circular=TYPE=="cQTL" and any(circ[g]>0 for g in groups)
         extent=cmax*(2.05 if circular else 1.80 if linear else 1.08);width=binbp*.92
-        fig=plt.figure(figsize=(16,10));gs=fig.add_gridspec(4,1,height_ratios=[1,1,1,.72],hspace=.10);axes=[]
+        ref_ratio=max(.72,min(4.0,.18*max(1,n_transcripts)))
+        fig_height=max(10,9+.22*n_transcripts)
+        fig=plt.figure(figsize=(16,fig_height));gs=fig.add_gridspec(4,1,height_ratios=[1,1,1,ref_ratio],hspace=.10);axes=[]
         for g in [0,1,2]:
             ax=fig.add_subplot(gs[g,0]);axes.append(ax)
             if groups[g]:
