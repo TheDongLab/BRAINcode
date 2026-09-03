@@ -3,8 +3,8 @@
 # BOXPLOT_VERSION: EXACT_COPY_OF_ORIGINAL_BASE_R_PARAMETERS__MATCHED_TRACK_SUBJECTS_ONLY
 # GENCODE_TRACK_VERSION: ALL_TRANSCRIPTS_TRANSCRIPT_RESOLVED
 #SBATCH --job-name=QTL_read_norm_plots
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_normalization_plots_for_QTL_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_normalization_plots_for_QTL_%j.err
 #SBATCH --time=23:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=50G
@@ -31,7 +31,7 @@ DPI=180
 # Optional override. Leave blank for automatic result-file detection.
 # Example: QTL_RESULT_FILE="FDR0.05.txt"
 # Example: QTL_RESULT_FILE="cis.txt"
-QTL_RESULT_FILE="FDR0.05.txt"
+QTL_RESULT_FILE=""
 
 set -euo pipefail
 
