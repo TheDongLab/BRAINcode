@@ -11,7 +11,7 @@ module --force purge
 command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 python3 -c 'import pandas,numpy' 2>/dev/null || { echo "ERROR: pandas/numpy unavailable"; exit 1; }
 
-BASE="$HOME/donglab/data/target_ALS"; ROOT="$HOME/donglab/data/GCST90027163/GWAS/cQTL_harmonization"; GLOBAL="$BASE/MR"
+BASE="$HOME/donglab/data/target_ALS"; ROOT="$HOME/donglab/references/GWAS/ALS/cQTL_harmonization"; GLOBAL="$BASE/MR"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum); MIN_F=10
 export BASE ROOT GLOBAL MIN_F TISSUE_LIST="${TISSUES[*]}"
 
