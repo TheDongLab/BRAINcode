@@ -14,11 +14,11 @@ QTL_LABEL="sQTL"
 SMR="$HOME/donglab/pipelines/modules/smr/smr-1.4.2-linux-x86_64/smr"
 BASE="$HOME/donglab/data/target_ALS"; GLOBAL="$BASE/MR/sQTL_SMR_HEIDI"
 BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"
-GWAS_DIR="$HOME/donglab/data/GCST90027163/GWAS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
+GWAS_DIR="$HOME/donglab/references/GWAS/ALS"; GWAS="$GWAS_DIR/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 GWAS_ORIG="$GWAS_DIR/GCST90027163_buildGRCh37.tsv.gz"; GWAS_MA="$GWAS_DIR/ALS_GRCh38_SMR.ma"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
 
-PEQTL_SMR=1e-5; PEQTL_HEIDI=1.57e-3; HEIDI_PASS=0.05
+PEQTL_SMR=5e-8; PEQTL_HEIDI=1.57e-3; HEIDI_PASS=0.05
 LD_UPPER=0.90; LD_LOWER=0.05; HEIDI_MIN=3; HEIDI_MAX=20; CIS_WIND=2000
 
 mkdir -p "$GLOBAL"
