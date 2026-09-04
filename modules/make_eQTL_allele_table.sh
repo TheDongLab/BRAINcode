@@ -13,7 +13,7 @@ python3 -c 'import pandas' 2>/dev/null || { echo "ERROR: pandas unavailable"; ex
 
 BASE="$HOME/donglab/data/target_ALS"; PLINK_DIR="$BASE/QTL/plink"
 BFILE="$PLINK_DIR/joint_all_chrs_filtered_bed"; RAW="$PLINK_DIR/joint_all_chrs_matrixEQTL.raw"; BIM="$BFILE.bim"
-GWAS="$HOME/donglab/data/GCST90027163/GWAS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
+GWAS="$HOME/donglab/references/GWAS/ALS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
 OUTROOT="$HOME/donglab/data/GCST90027163/GWAS/eQTL_harmonization"; SUMMARY="$OUTROOT/all_tissues_SNP_first_summary.tsv"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum); MIN_F=10
 
