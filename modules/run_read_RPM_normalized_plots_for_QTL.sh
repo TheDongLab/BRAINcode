@@ -5,7 +5,8 @@
 #SBATCH --job-name=QTL_read_norm_plots
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
-#SBATCH --time=23:00:00
+#SBATCH --time=5-23:00:00
+#SBATCH --partition=week
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=50G
 
@@ -928,7 +929,7 @@ for tissue in CANONICAL_TISSUES:
         fig.text(.5,.004,footer,ha="center",va="bottom",fontsize=9.5)
 
         fig.savefig(pdf,bbox_inches="tight");fig.savefig(png,dpi=DPI,bbox_inches="tight");plt.close(fig)
-        print(f"  BOXPLOT PDF : {boxout}\n  DENSITY PDF : {pdf}\n  DENSITY PNG : {png}\n  DENSITY SVG : {svg}\n  SUBJECT TSV : {tsv}")
+        print(f"  BOXPLOT PDF : {boxout}\n  DENSITY PDF : {pdf}\n  DENSITY PNG : {png}\n  SUBJECT TSV : {tsv}")
         total_plotted+=1
 
 print(f"\n{'='*72}\nDONE\nAnalysis             : all QTL-result read-normalization plots\nQTL type             : {TYPE}\nDensity plots        : {total_plotted}\nBoxplots regenerated : {total_boxplots}\nSkipped associations : {total_skipped}\nOutput               : {OUTDIR}\n{'='*72}")
