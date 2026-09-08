@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ALS_variant_evidence
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/ALS_variant_evidence.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/ALS_variant_evidence.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/generate_important_SNP_table.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/generate_important_SNP_table.err
 #SBATCH --time=06:00:00
 #SBATCH --partition=day
 #SBATCH --cpus-per-task=2
@@ -11,20 +11,28 @@ set -euo pipefail
 
 ROOT="$HOME/donglab/data/target_ALS"
 GWAS="$HOME/donglab/references/GWAS/ALS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"
+GTF="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf"
 OUTDIR="$ROOT/QTL/ALS_variant_validation_evidence"
 
 mkdir -p "$OUTDIR"
 
-python -u - "$GWAS" "$ROOT" "$OUTDIR" <<'PY'
-import sys,re,gzip
+for f in "$GWAS" "$GTF"; do
+    [[ -s "$f" ]] || { echo "ERROR: missing/empty $f"; exit 1; }
+done
+
+python -u - "$GWAS" "$ROOT" "$OUTDIR" "$GTF" <<'PY'
+import sys
+import re
 from pathlib import Path
 from collections import defaultdict
+
 import pandas as pd
 import numpy as np
 
 GWAS=Path(sys.argv[1])
 ROOT=Path(sys.argv[2])
 OUTDIR=Path(sys.argv[3])
+GTF=Path(sys.argv[4])
 
 TISSUES=[
     "Cerebellum",
@@ -36,39 +44,248 @@ TISSUES=[
 
 QTLS=["eQTL","sQTL","cQTL"]
 
+# ------------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------------
+
 def norm(x):
     return re.sub(r"[^a-z0-9]","",str(x).lower())
 
-def find_col(cols, aliases, required=False):
+def strip_gene_version(x):
+    return re.sub(r"\.\d+$","",str(x))
+
+def chr_key(x):
+    return re.sub(r"^chr","",str(x),flags=re.I).upper()
+
+def clean_value(x):
+    if x is None:
+        return None
+    x=str(x).strip()
+    if not x or x.lower() in {"nan","na","none",".","null"}:
+        return None
+    return x
+
+def clean_snp(x):
+    return clean_value(x)
+
+def find_col(cols,aliases,required=False):
     lookup={norm(c):c for c in cols}
+
     for a in aliases:
         if norm(a) in lookup:
             return lookup[norm(a)]
+
     for c in cols:
         nc=norm(c)
         for a in aliases:
-            if norm(a) and norm(a) in nc:
+            na=norm(a)
+            if na and na in nc:
                 return c
+
     if required:
-        raise RuntimeError(f"Could not find {aliases}; columns={list(cols)}")
+        raise RuntimeError(
+            f"Could not find any of {aliases}; columns={list(cols)}"
+        )
+
     return None
 
 def read_table(path):
     try:
-        return pd.read_csv(path,sep="\t",dtype=str,low_memory=False)
-    except:
-        return pd.read_csv(path,sep=r"\s+",dtype=str,engine="python")
+        return pd.read_csv(
+            path,
+            sep="\t",
+            dtype=str,
+            low_memory=False
+        )
+    except Exception:
+        return pd.read_csv(
+            path,
+            sep=r"\s+",
+            dtype=str,
+            engine="python"
+        )
 
-def clean_snp(x):
-    if x is None:return None
-    x=str(x).strip()
-    if not x or x.lower() in {"nan","na","none","."}:return None
-    return x
+def parse_gtf_attrs(s):
+    out={}
+    for item in str(s).strip().split(";"):
+        item=item.strip()
+        if not item:
+            continue
+
+        parts=item.split(" ",1)
+        if len(parts)==2:
+            out[parts[0]]=parts[1].strip().strip('"')
+
+    return out
+
+def parse_event_coordinates(event):
+    """
+    Supported event formats:
+
+    sQTL:
+      chr10:+:100381448-100394498
+
+    cQTL:
+      chr10:100164003-100167406:-
+
+    legacy:
+      chr10:100164003:100167406:-
+
+    no-strand:
+      chr10:100164003-100167406
+      chr10:100164003:100167406
+    """
+    s=str(event).strip()
+
+    patterns=[
+        (r"^(chr[^:]+):([+-]):(\d+)-(\d+)$","strand_first"),
+        (r"^(chr[^:]+):(\d+)-(\d+):([+-])$","strand_last"),
+        (r"^(chr[^:]+):(\d+):(\d+):([+-])$","strand_last"),
+        (r"^(chr[^:]+):(\d+)-(\d+)$","no_strand"),
+        (r"^(chr[^:]+):(\d+):(\d+)$","no_strand")
+    ]
+
+    for pat,mode in patterns:
+        m=re.match(pat,s)
+        if not m:
+            continue
+
+        if mode=="strand_first":
+            chrom,strand,start,end=m.groups()
+
+        elif mode=="strand_last":
+            chrom,start,end,strand=m.groups()
+
+        else:
+            chrom,start,end=m.groups()
+            strand=None
+
+        start=int(start)
+        end=int(end)
+
+        if start>end:
+            start,end=end,start
+
+        return {
+            "chr":chrom,
+            "start":start,
+            "end":end,
+            "strand":strand
+        }
+
+    return None
+
+# ------------------------------------------------------------------
+# LOAD GENCODE GENE ANNOTATION
+# ------------------------------------------------------------------
+
+print(f"Loading GENCODE genes: {GTF}",flush=True)
+
+GENES_BY_CHR=defaultdict(list)
+GENE_BY_SYMBOL={}
+GENE_BY_ID={}
+
+with open(GTF) as f:
+    for line in f:
+        if line.startswith("#"):
+            continue
+
+        x=line.rstrip("\n").split("\t")
+
+        if len(x)<9 or x[2]!="gene":
+            continue
+
+        attrs=parse_gtf_attrs(x[8])
+
+        gene_id=attrs.get("gene_id","")
+        gene_symbol=attrs.get("gene_name","")
+
+        if not gene_id:
+            continue
+
+        g={
+            "chr":x[0],
+            "start":int(x[3])-1,
+            "end":int(x[4]),
+            "strand":x[6],
+            "gene_id":gene_id,
+            "gene_id_base":strip_gene_version(gene_id),
+            "gene_symbol":gene_symbol
+        }
+
+        GENES_BY_CHR[chr_key(x[0])].append(g)
+
+        GENE_BY_ID[g["gene_id_base"].upper()]=g
+
+        if gene_symbol:
+            GENE_BY_SYMBOL[norm(gene_symbol)]=g
+
+for chrom in GENES_BY_CHR:
+    GENES_BY_CHR[chrom].sort(
+        key=lambda g:(g["start"],g["end"])
+    )
+
+print(
+    f"Loaded {sum(len(v) for v in GENES_BY_CHR.values()):,} GENCODE genes",
+    flush=True
+)
+
+def genes_for_trait(trait,qtl_type):
+    """
+    Return GENCODE genes associated with a QTL trait.
+
+    eQTL:
+      direct gene-symbol or Ensembl-ID lookup
+
+    sQTL/cQTL:
+      any GENCODE gene whose genomic span overlaps the event by >=1 bp
+
+    Strand is deliberately NOT required for sQTL/cQTL overlap.
+    """
+    trait=clean_value(trait)
+
+    if trait is None:
+        return []
+
+    if qtl_type=="eQTL":
+        base=strip_gene_version(trait).upper()
+
+        if base in GENE_BY_ID:
+            return [GENE_BY_ID[base]]
+
+        n=norm(trait)
+
+        if n in GENE_BY_SYMBOL:
+            return [GENE_BY_SYMBOL[n]]
+
+        return []
+
+    loc=parse_event_coordinates(trait)
+
+    if loc is None:
+        return []
+
+    chrom=chr_key(loc["chr"])
+    start=loc["start"]
+    end=loc["end"]
+
+    hits=[]
+
+    for g in GENES_BY_CHR.get(chrom,[]):
+        if g["start"] > end:
+            break
+
+        if start <= g["end"] and end >= g["start"]:
+            hits.append(g)
+
+    return hits
 
 # ------------------------------------------------------------------
 # 1. LOAD ALS GWAS
 # ------------------------------------------------------------------
+
 print(f"Loading GWAS: {GWAS}",flush=True)
+
 gwas=read_table(GWAS)
 
 snp_col=find_col(
@@ -76,24 +293,61 @@ snp_col=find_col(
     ["rsid","rs_id","variant_id","variant","snp","snpid"],
     required=True
 )
-p_col=find_col(gwas.columns,["p_value","pvalue","pval","p"])
-beta_col=find_col(gwas.columns,["beta","effect","effect_size"])
-se_col=find_col(gwas.columns,["standard_error","stderr","se"])
-ea_col=find_col(gwas.columns,["effect_allele","effectallele","ea"])
-oa_col=find_col(gwas.columns,["other_allele","otherallele","nea","non_effect_allele"])
-chr_col=find_col(gwas.columns,["chromosome","chrom","chr"])
-pos_col=find_col(gwas.columns,["base_pair_location","position","pos","bp"])
+
+p_col=find_col(
+    gwas.columns,
+    ["p_value","pvalue","pval","p"]
+)
+
+beta_col=find_col(
+    gwas.columns,
+    ["beta","effect","effect_size"]
+)
+
+se_col=find_col(
+    gwas.columns,
+    ["standard_error","stderr","se"]
+)
+
+ea_col=find_col(
+    gwas.columns,
+    ["effect_allele","effectallele","ea"]
+)
+
+oa_col=find_col(
+    gwas.columns,
+    ["other_allele","otherallele","nea","non_effect_allele"]
+)
+
+chr_col=find_col(
+    gwas.columns,
+    ["chromosome","chrom","chr"]
+)
+
+pos_col=find_col(
+    gwas.columns,
+    ["base_pair_location","position","pos","bp"]
+)
 
 gwas["SNP"]=gwas[snp_col].map(clean_snp)
-gwas=gwas[gwas["SNP"].notna()].drop_duplicates("SNP").copy()
 
-out=pd.DataFrame({"SNP":gwas["SNP"]})
+gwas=(
+    gwas[
+        gwas["SNP"].notna()
+    ]
+    .drop_duplicates("SNP")
+    .copy()
+)
 
-def copy_gwas(col,new):
+out=pd.DataFrame({
+    "SNP":gwas["SNP"]
+})
+
+def copy_gwas(col,new_name):
     if col:
-        out[new]=gwas[col].values
+        out[new_name]=gwas[col].values
     else:
-        out[new]=np.nan
+        out[new_name]=np.nan
 
 copy_gwas(chr_col,"GWAS_chr")
 copy_gwas(pos_col,"GWAS_pos")
@@ -103,10 +357,58 @@ copy_gwas(beta_col,"GWAS_beta")
 copy_gwas(se_col,"GWAS_se")
 copy_gwas(p_col,"GWAS_p")
 
-out=out.set_index("SNP",drop=False)
+out["GWAS_p"]=pd.to_numeric(
+    out["GWAS_p"],
+    errors="coerce"
+)
 
-# evidence accumulators
-genes=defaultdict(set)
+# USER-REQUESTED GWAS EVIDENCE:
+# nominal GWAS significance p < 0.05
+out["GWAS_sig"]=(
+    out["GWAS_p"].notna()
+    &
+    (out["GWAS_p"] < 0.05)
+)
+
+out=out.set_index(
+    "SNP",
+    drop=False
+)
+
+print(
+    f"GWAS variants loaded: {len(out):,}",
+    flush=True
+)
+
+print(
+    f"GWAS p<0.05: {int(out['GWAS_sig'].sum()):,}",
+    flush=True
+)
+
+# ------------------------------------------------------------------
+# EVIDENCE ACCUMULATORS
+# ------------------------------------------------------------------
+
+gene_symbols=defaultdict(set)
+gene_ids=defaultdict(set)
+gene_pairs=defaultdict(set)
+
+def add_gene(snp,g):
+    symbol=clean_value(g.get("gene_symbol"))
+    gid=clean_value(g.get("gene_id"))
+
+    if symbol:
+        gene_symbols[snp].add(symbol)
+
+    if gid:
+        gene_ids[snp].add(gid)
+
+    if symbol and gid:
+        gene_pairs[snp].add(f"{symbol}|{gid}")
+    elif gid:
+        gene_pairs[snp].add(gid)
+    elif symbol:
+        gene_pairs[snp].add(symbol)
 
 for q in QTLS:
     out[f"{q}_significant"]=False
@@ -126,319 +428,1076 @@ for q in QTLS:
     out[f"{q}_SuSiE_credible_set"]=False
     out[f"{q}_best_PIP"]=np.nan
 
-# temporary sets
-qtl_tissues={q:defaultdict(set) for q in QTLS}
-qtl_traits={q:defaultdict(set) for q in QTLS}
-smr_tissues={q:defaultdict(set) for q in QTLS}
-coloc_tissues={q:defaultdict(set) for q in QTLS}
+qtl_tissues={
+    q:defaultdict(set)
+    for q in QTLS
+}
+
+qtl_traits={
+    q:defaultdict(set)
+    for q in QTLS
+}
+
+smr_tissues={
+    q:defaultdict(set)
+    for q in QTLS
+}
+
+coloc_tissues={
+    q:defaultdict(set)
+    for q in QTLS
+}
 
 # ------------------------------------------------------------------
 # 2. SIGNIFICANT QTL RESULTS
 # ------------------------------------------------------------------
+
 for tissue in TISSUES:
     for q in QTLS:
-        f=ROOT/tissue/q/"results"/f"{tissue}_{q}.FDR0.05.txt"
+
+        f=(
+            ROOT
+            / tissue
+            / q
+            / "results"
+            / f"{tissue}_{q}.FDR0.05.txt"
+        )
+
         if not f.exists():
-            print(f"MISSING QTL: {f}",flush=True)
+            print(
+                f"MISSING QTL: {f}",
+                flush=True
+            )
             continue
 
-        print(f"Reading {q}: {tissue}",flush=True)
+        print(
+            f"Reading {q}: {tissue}",
+            flush=True
+        )
+
         d=read_table(f)
 
-        sc=find_col(d.columns,["snpid","snp_id","snp","rsid","variant"],True)
-        fc=find_col(d.columns,["fdr","qvalue","q_value","padj"])
+        sc=find_col(
+            d.columns,
+            ["snpid","snp_id","snp","rsid","variant"],
+            required=True
+        )
+
+        fc=find_col(
+            d.columns,
+            ["fdr","qvalue","q_value","padj"]
+        )
+
         tc=find_col(
             d.columns,
-            ["geneid","gene_id","junction_id","circ_id","phenotype_id","probeid","event_id"]
+            [
+                "geneid",
+                "gene_id",
+                "junction_id",
+                "junctionid",
+                "circ_id",
+                "circid",
+                "phenotype_id",
+                "probeid",
+                "event_id"
+            ]
         )
-        gc=find_col(d.columns,["gene_symbol","gene_name","symbol"])
+
+        gc=find_col(
+            d.columns,
+            ["gene_symbol","gene_name","symbol"]
+        )
 
         for _,r in d.iterrows():
-            snp=clean_snp(r.get(sc))
+
+            snp=clean_snp(
+                r.get(sc)
+            )
+
             if snp not in out.index:
                 continue
 
-            out.at[snp,f"{q}_significant"]=True
-            qtl_tissues[q][snp].add(tissue)
+            out.at[
+                snp,
+                f"{q}_significant"
+            ]=True
 
-            if tc and pd.notna(r.get(tc)):
-                qtl_traits[q][snp].add(str(r[tc]))
+            qtl_tissues[q][snp].add(
+                tissue
+            )
 
-            if gc and pd.notna(r.get(gc)):
-                genes[snp].add(str(r[gc]))
+            trait=None
 
-            if q=="eQTL" and tc and pd.notna(r.get(tc)):
-                genes[snp].add(str(r[tc]))
+            if tc:
+                trait=clean_value(
+                    r.get(tc)
+                )
+
+            if trait:
+                qtl_traits[q][snp].add(
+                    trait
+                )
+
+                # Map every QTL trait back to GENCODE.
+                for g in genes_for_trait(
+                    trait,
+                    q
+                ):
+                    add_gene(
+                        snp,
+                        g
+                    )
+
+            # Preserve any explicit gene-symbol column too.
+            if gc:
+                symbol=clean_value(
+                    r.get(gc)
+                )
+
+                if symbol:
+                    g=GENE_BY_SYMBOL.get(
+                        norm(symbol)
+                    )
+
+                    if g:
+                        add_gene(
+                            snp,
+                            g
+                        )
+                    else:
+                        gene_symbols[snp].add(
+                            symbol
+                        )
 
             if fc:
                 try:
-                    x=float(r[fc])
-                    old=out.at[snp,f"{q}_best_FDR"]
-                    if pd.isna(old) or x<old:
-                        out.at[snp,f"{q}_best_FDR"]=x
-                except:
+                    x=float(
+                        r[fc]
+                    )
+
+                    old=out.at[
+                        snp,
+                        f"{q}_best_FDR"
+                    ]
+
+                    if (
+                        pd.isna(old)
+                        or x<old
+                    ):
+                        out.at[
+                            snp,
+                            f"{q}_best_FDR"
+                        ]=x
+
+                except Exception:
                     pass
 
 # ------------------------------------------------------------------
 # 3. SMR + HEIDI
 # ------------------------------------------------------------------
+
 for tissue in TISSUES:
     for q in QTLS:
-        f=ROOT/tissue/"MR"/f"{q}_SMR_HEIDI"/"results"/f"{tissue}_{q}_SMR_HEIDI.smr"
+
+        f=(
+            ROOT
+            / tissue
+            / "MR"
+            / f"{q}_SMR_HEIDI"
+            / "results"
+            / f"{tissue}_{q}_SMR_HEIDI.smr"
+        )
+
         if not f.exists():
-            print(f"MISSING SMR: {f}",flush=True)
+            print(
+                f"MISSING SMR: {f}",
+                flush=True
+            )
             continue
 
-        print(f"Reading SMR: {q} {tissue}",flush=True)
+        print(
+            f"Reading SMR: {q} {tissue}",
+            flush=True
+        )
+
         d=read_table(f)
 
-        sc=find_col(d.columns,["topSNP","top_snp","snp","rsid"])
-        pc=find_col(d.columns,["p_SMR","psmr"])
-        hc=find_col(d.columns,["p_HEIDI","pheidi"])
-        gc=find_col(d.columns,["Gene","gene","gene_symbol"])
+        sc=find_col(
+            d.columns,
+            [
+                "topSNP",
+                "top_snp",
+                "snp",
+                "rsid"
+            ]
+        )
+
+        pc=find_col(
+            d.columns,
+            [
+                "p_SMR",
+                "psmr"
+            ]
+        )
+
+        hc=find_col(
+            d.columns,
+            [
+                "p_HEIDI",
+                "pheidi"
+            ]
+        )
+
+        gc=find_col(
+            d.columns,
+            [
+                "Gene",
+                "gene",
+                "gene_symbol"
+            ]
+        )
+
+        probe_col=find_col(
+            d.columns,
+            [
+                "probeID",
+                "probe_id",
+                "phenotype_id",
+                "geneid",
+                "gene_id",
+                "junction_id",
+                "circ_id"
+            ]
+        )
 
         if sc is None:
             continue
 
-        # Recalculate tissue BH FDR directly from current .smr results
-        if pc:
-            p=pd.to_numeric(d[pc],errors="coerce")
-            valid=p.notna()
-            ranked=p[valid].rank(method="min")
-            m=valid.sum()
+        # ----------------------------------------------------------
+        # Recalculate tissue-level BH FDR from CURRENT .smr results
+        # ----------------------------------------------------------
 
-            # standard BH monotonic correction
-            vals=p[valid].sort_values()
-            adj=(vals*m/np.arange(1,m+1)).clip(upper=1)
-            adj=np.minimum.accumulate(adj[::-1])[::-1]
-            fdr=pd.Series(np.nan,index=d.index)
-            fdr.loc[vals.index]=adj
-        else:
-            fdr=pd.Series(np.nan,index=d.index)
+        fdr=pd.Series(
+            np.nan,
+            index=d.index
+        )
+
+        if pc:
+            p=pd.to_numeric(
+                d[pc],
+                errors="coerce"
+            )
+
+            valid=p.notna()
+
+            if valid.any():
+                vals=p[valid].sort_values()
+
+                m=len(vals)
+
+                adj=(
+                    vals
+                    * m
+                    / np.arange(
+                        1,
+                        m+1
+                    )
+                )
+
+                adj=adj.clip(
+                    upper=1
+                )
+
+                adj=np.minimum.accumulate(
+                    adj.iloc[::-1].values
+                )[::-1]
+
+                fdr.loc[
+                    vals.index
+                ]=adj
 
         for idx,r in d.iterrows():
-            snp=clean_snp(r.get(sc))
+
+            snp=clean_snp(
+                r.get(sc)
+            )
+
             if snp not in out.index:
                 continue
 
-            if gc and pd.notna(r.get(gc)):
-                genes[snp].add(str(r[gc]))
+            # Map SMR gene/probe to GENCODE where possible.
+            smr_trait=None
 
+            if probe_col:
+                smr_trait=clean_value(
+                    r.get(probe_col)
+                )
+
+            if smr_trait:
+                for g in genes_for_trait(
+                    smr_trait,
+                    q
+                ):
+                    add_gene(
+                        snp,
+                        g
+                    )
+
+            if gc:
+                gene_label=clean_value(
+                    r.get(gc)
+                )
+
+                if gene_label:
+                    for g in genes_for_trait(
+                        gene_label,
+                        q
+                    ):
+                        add_gene(
+                            snp,
+                            g
+                        )
+
+            # Best raw SMR p-value.
             try:
-                psmr=float(r[pc]) if pc else np.nan
-                old=out.at[snp,f"{q}_best_p_SMR"]
-                if np.isfinite(psmr) and (pd.isna(old) or psmr<old):
-                    out.at[snp,f"{q}_best_p_SMR"]=psmr
-            except:
+                psmr=(
+                    float(r[pc])
+                    if pc
+                    else np.nan
+                )
+
+                old=out.at[
+                    snp,
+                    f"{q}_best_p_SMR"
+                ]
+
+                if (
+                    np.isfinite(psmr)
+                    and (
+                        pd.isna(old)
+                        or psmr<old
+                    )
+                ):
+                    out.at[
+                        snp,
+                        f"{q}_best_p_SMR"
+                    ]=psmr
+
+            except Exception:
                 pass
 
-            # tissue-level FDR < 0.05
+            # Tissue-level SMR FDR < 0.05.
             try:
-                if float(fdr.loc[idx])<0.05:
-                    out.at[snp,f"{q}_SMR_significant"]=True
-                    smr_tissues[q][snp].add(tissue)
-            except:
+                if float(
+                    fdr.loc[idx]
+                ) < 0.05:
+
+                    out.at[
+                        snp,
+                        f"{q}_SMR_significant"
+                    ]=True
+
+                    smr_tissues[q][snp].add(
+                        tissue
+                    )
+
+            except Exception:
                 pass
 
-            # HEIDI pass = p >= 0.05
+            # HEIDI pass = p_HEIDI >= 0.05.
             if hc:
                 try:
-                    if float(r[hc])>=0.05:
-                        out.at[snp,f"{q}_HEIDI_pass"]=True
-                except:
+                    if float(
+                        r[hc]
+                    ) >= 0.05:
+
+                        out.at[
+                            snp,
+                            f"{q}_HEIDI_pass"
+                        ]=True
+
+                except Exception:
                     pass
 
 # ------------------------------------------------------------------
 # 4. SuSiE / COLOC
 #
-# We search recursively because your three scripts write several
-# per-locus/global files under each *_SuSiE_coloc directory.
+# Search recursively because the three pipelines write multiple
+# per-locus/global TSV files under each *_SuSiE_coloc directory.
 # ------------------------------------------------------------------
+
 for tissue in TISSUES:
     for q in QTLS:
-        droot=ROOT/tissue/"MR"/f"{q}_SuSiE_coloc"
+
+        droot=(
+            ROOT
+            / tissue
+            / "MR"
+            / f"{q}_SuSiE_coloc"
+        )
+
         if not droot.exists():
             continue
 
+        print(
+            f"Scanning SuSiE/coloc: {q} {tissue}",
+            flush=True
+        )
+
         for f in droot.rglob("*.tsv*"):
+
             try:
                 d=read_table(f)
-            except:
+            except Exception:
                 continue
 
-            sc=find_col(d.columns,["candidate_snp","snp","snpid","rsid","variant"])
+            sc=find_col(
+                d.columns,
+                [
+                    "candidate_snp",
+                    "snp",
+                    "snpid",
+                    "rsid",
+                    "variant"
+                ]
+            )
+
             if sc is None:
                 continue
 
-            pph4c=find_col(d.columns,["PPH4","PP.H4","H4"])
-            h4pass=find_col(d.columns,["H4_reference_pass","H4_pass","coloc_pass"])
-            pipc=find_col(d.columns,["PIP","susie_pip","posterior_inclusion_probability"])
-            csc=find_col(d.columns,["credible_set","in_credible_set","cs"])
+            pph4c=find_col(
+                d.columns,
+                [
+                    "PPH4",
+                    "PP.H4",
+                    "H4"
+                ]
+            )
 
-            # Ignore unrelated tables that have SNP but none of the coloc/SuSiE evidence
-            if not any([pph4c,h4pass,pipc,csc]):
+            h4pass=find_col(
+                d.columns,
+                [
+                    "H4_reference_pass",
+                    "H4_pass",
+                    "coloc_pass"
+                ]
+            )
+
+            pipc=find_col(
+                d.columns,
+                [
+                    "PIP",
+                    "susie_pip",
+                    "posterior_inclusion_probability"
+                ]
+            )
+
+            csc=find_col(
+                d.columns,
+                [
+                    "credible_set",
+                    "in_credible_set",
+                    "cs"
+                ]
+            )
+
+            trait_col=find_col(
+                d.columns,
+                [
+                    "geneid",
+                    "gene_id",
+                    "gene",
+                    "gene_symbol",
+                    "probeID",
+                    "probe_id",
+                    "junction_id",
+                    "junctionid",
+                    "circ_id",
+                    "circid",
+                    "phenotype_id",
+                    "event_id"
+                ]
+            )
+
+            # Ignore unrelated SNP-containing tables.
+            if not any([
+                pph4c,
+                h4pass,
+                pipc,
+                csc
+            ]):
                 continue
 
             for _,r in d.iterrows():
-                snp=clean_snp(r.get(sc))
+
+                snp=clean_snp(
+                    r.get(sc)
+                )
+
                 if snp not in out.index:
                     continue
 
+                # Attach candidate gene annotation from coloc trait.
+                if trait_col:
+                    trait=clean_value(
+                        r.get(trait_col)
+                    )
+
+                    if trait:
+                        for g in genes_for_trait(
+                            trait,
+                            q
+                        ):
+                            add_gene(
+                                snp,
+                                g
+                            )
+
+                # Best PPH4.
                 if pph4c:
                     try:
-                        x=float(r[pph4c])
-                        old=out.at[snp,f"{q}_best_PPH4"]
-                        if pd.isna(old) or x>old:
-                            out.at[snp,f"{q}_best_PPH4"]=x
-                    except:
+                        x=float(
+                            r[pph4c]
+                        )
+
+                        old=out.at[
+                            snp,
+                            f"{q}_best_PPH4"
+                        ]
+
+                        if (
+                            pd.isna(old)
+                            or x>old
+                        ):
+                            out.at[
+                                snp,
+                                f"{q}_best_PPH4"
+                            ]=x
+
+                    except Exception:
                         pass
 
+                # Prefer explicit H4_reference_pass.
                 passed=False
-                if h4pass:
-                    v=str(r[h4pass]).strip().lower()
-                    passed=v in {"true","t","1","yes","pass"}
 
-                # If no explicit pass column exists, use PPH4 >= 0.80
-                # only as a fallback.
+                if h4pass:
+                    v=str(
+                        r[h4pass]
+                    ).strip().lower()
+
+                    passed=(
+                        v
+                        in {
+                            "true",
+                            "t",
+                            "1",
+                            "yes",
+                            "pass"
+                        }
+                    )
+
+                # Fallback only if explicit pass column absent.
                 elif pph4c:
                     try:
-                        passed=float(r[pph4c])>=0.80
-                    except:
+                        passed=(
+                            float(
+                                r[pph4c]
+                            )
+                            >=0.80
+                        )
+                    except Exception:
                         pass
 
                 if passed:
-                    out.at[snp,f"{q}_coloc_significant"]=True
-                    coloc_tissues[q][snp].add(tissue)
+                    out.at[
+                        snp,
+                        f"{q}_coloc_significant"
+                    ]=True
 
+                    coloc_tissues[q][snp].add(
+                        tissue
+                    )
+
+                # Best SuSiE PIP.
                 if pipc:
                     try:
-                        x=float(r[pipc])
-                        old=out.at[snp,f"{q}_best_PIP"]
-                        if pd.isna(old) or x>old:
-                            out.at[snp,f"{q}_best_PIP"]=x
-                    except:
+                        x=float(
+                            r[pipc]
+                        )
+
+                        old=out.at[
+                            snp,
+                            f"{q}_best_PIP"
+                        ]
+
+                        if (
+                            pd.isna(old)
+                            or x>old
+                        ):
+                            out.at[
+                                snp,
+                                f"{q}_best_PIP"
+                            ]=x
+
+                    except Exception:
                         pass
 
+                # Credible-set membership.
                 if csc:
-                    v=str(r[csc]).strip().lower()
-                    if v not in {"","nan","na","none","false","0","no"}:
-                        out.at[snp,f"{q}_SuSiE_credible_set"]=True
+                    v=str(
+                        r[csc]
+                    ).strip().lower()
+
+                    if v not in {
+                        "",
+                        "nan",
+                        "na",
+                        "none",
+                        "false",
+                        "0",
+                        "no"
+                    }:
+                        out.at[
+                            snp,
+                            f"{q}_SuSiE_credible_set"
+                        ]=True
 
 # ------------------------------------------------------------------
 # 5. COLLAPSE SETS
 # ------------------------------------------------------------------
+
 for q in QTLS:
+
     for snp,v in qtl_tissues[q].items():
-        out.at[snp,f"{q}_tissues"]=";".join(sorted(v))
+        out.at[
+            snp,
+            f"{q}_tissues"
+        ]=";".join(
+            sorted(v)
+        )
+
     for snp,v in qtl_traits[q].items():
-        out.at[snp,f"{q}_traits"]=";".join(sorted(v))
+        out.at[
+            snp,
+            f"{q}_traits"
+        ]=";".join(
+            sorted(v)
+        )
+
     for snp,v in smr_tissues[q].items():
-        out.at[snp,f"{q}_SMR_tissues"]=";".join(sorted(v))
+        out.at[
+            snp,
+            f"{q}_SMR_tissues"
+        ]=";".join(
+            sorted(v)
+        )
+
     for snp,v in coloc_tissues[q].items():
-        out.at[snp,f"{q}_coloc_tissues"]=";".join(sorted(v))
+        out.at[
+            snp,
+            f"{q}_coloc_tissues"
+        ]=";".join(
+            sorted(v)
+        )
+
+# GENCODE candidate-gene annotations.
+out["candidate_gene_symbols"]=[
+    ";".join(
+        sorted(
+            gene_symbols.get(
+                snp,
+                set()
+            )
+        )
+    )
+    for snp in out.index
+]
+
+out["candidate_gene_ids"]=[
+    ";".join(
+        sorted(
+            gene_ids.get(
+                snp,
+                set()
+            )
+        )
+    )
+    for snp in out.index
+]
 
 out["candidate_genes"]=[
-    ";".join(sorted(genes.get(s,set())))
-    for s in out.index
+    ";".join(
+        sorted(
+            gene_pairs.get(
+                snp,
+                set()
+            )
+        )
+    )
+    for snp in out.index
 ]
 
 # ------------------------------------------------------------------
-# 6. CURRENTLY UNAVAILABLE ANNOTATIONS
-# ------------------------------------------------------------------
-out["TF_binding_disruption"]="NA"
-out["regulatory_annotation"]="NA"
-out["coding_consequence"]="NA"
-
-# ------------------------------------------------------------------
-# 7. SIMPLE EVIDENCE COUNTS
+# 6. EVIDENCE COUNTS
 #
-# Keep the individual columns as the scientifically useful output.
-# Score is only a prioritization convenience.
+# GWAS p<0.05 is now one evidence point.
 # ------------------------------------------------------------------
+
 score_cols=[
+    "GWAS_sig",
+
     "eQTL_significant",
     "sQTL_significant",
     "cQTL_significant",
+
     "eQTL_SMR_significant",
     "sQTL_SMR_significant",
     "cQTL_SMR_significant",
+
     "eQTL_HEIDI_pass",
     "sQTL_HEIDI_pass",
     "cQTL_HEIDI_pass",
+
     "eQTL_coloc_significant",
     "sQTL_coloc_significant",
     "cQTL_coloc_significant",
+
     "eQTL_SuSiE_credible_set",
     "sQTL_SuSiE_credible_set",
     "cQTL_SuSiE_credible_set"
 ]
 
-out["evidence_count"]=out[score_cols].astype(int).sum(axis=1)
+out["evidence_count"]=(
+    out[
+        score_cols
+    ]
+    .astype(bool)
+    .astype(int)
+    .sum(axis=1)
+)
 
 out["any_QTL"]=(
-    out["eQTL_significant"] |
-    out["sQTL_significant"] |
+    out["eQTL_significant"]
+    |
+    out["sQTL_significant"]
+    |
     out["cQTL_significant"]
 )
 
 out["any_SMR"]=(
-    out["eQTL_SMR_significant"] |
-    out["sQTL_SMR_significant"] |
+    out["eQTL_SMR_significant"]
+    |
+    out["sQTL_SMR_significant"]
+    |
     out["cQTL_SMR_significant"]
 )
 
+out["any_HEIDI_pass"]=(
+    out["eQTL_HEIDI_pass"]
+    |
+    out["sQTL_HEIDI_pass"]
+    |
+    out["cQTL_HEIDI_pass"]
+)
+
 out["any_coloc"]=(
-    out["eQTL_coloc_significant"] |
-    out["sQTL_coloc_significant"] |
+    out["eQTL_coloc_significant"]
+    |
+    out["sQTL_coloc_significant"]
+    |
     out["cQTL_coloc_significant"]
 )
 
-out["any_evidence"]=out["evidence_count"]>0
+out["any_SuSiE_credible_set"]=(
+    out["eQTL_SuSiE_credible_set"]
+    |
+    out["sQTL_SuSiE_credible_set"]
+    |
+    out["cQTL_SuSiE_credible_set"]
+)
 
-# priority is intentionally transparent, not a biological claim
+out["any_evidence"]=(
+    out["evidence_count"]>0
+)
+
+# ------------------------------------------------------------------
+# 7. VALIDATION PRIORITY
+#
+# Transparent heuristic only.
+#
+# HIGH:
+#   GWAS p<0.05 + QTL + coloc + SMR
+#
+# MEDIUM:
+#   GWAS p<0.05 + QTL + (SMR or coloc)
+#
+# LOW:
+#   GWAS p<0.05 + QTL
+#
+# GWAS_ONLY:
+#   GWAS p<0.05 but no significant molecular QTL evidence
+#
+# MOLECULAR_ONLY:
+#   molecular evidence exists but GWAS p>=0.05
+# ------------------------------------------------------------------
+
 out["validation_priority"]=np.select(
     [
-        (out["any_coloc"] & out["any_SMR"] & out["any_QTL"]),
-        (out["any_coloc"] & out["any_QTL"]),
-        (out["any_SMR"] & out["any_QTL"]),
-        (out["any_QTL"])
+        (
+            out["GWAS_sig"]
+            &
+            out["any_QTL"]
+            &
+            out["any_SMR"]
+            &
+            out["any_coloc"]
+        ),
+
+        (
+            out["GWAS_sig"]
+            &
+            out["any_QTL"]
+            &
+            (
+                out["any_SMR"]
+                |
+                out["any_coloc"]
+            )
+        ),
+
+        (
+            out["GWAS_sig"]
+            &
+            out["any_QTL"]
+        ),
+
+        (
+            out["GWAS_sig"]
+        ),
+
+        (
+            ~out["GWAS_sig"]
+            &
+            (
+                out["any_QTL"]
+                |
+                out["any_SMR"]
+                |
+                out["any_coloc"]
+                |
+                out["any_SuSiE_credible_set"]
+            )
+        )
     ],
-    ["HIGH","HIGH","MEDIUM","LOW"],
+    [
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "GWAS_ONLY",
+        "MOLECULAR_ONLY"
+    ],
     default="NONE"
 )
 
 # ------------------------------------------------------------------
-# 8. OUTPUT
+# 8. REORDER IMPORTANT COLUMNS
 # ------------------------------------------------------------------
-out=out.reset_index(drop=True)
 
-allfile=OUTDIR/"ALS_GWAS_variant_validation_evidence.ALL.tsv.gz"
-evfile=OUTDIR/"ALS_GWAS_variant_validation_evidence.WITH_EVIDENCE.tsv"
-rankfile=OUTDIR/"ALS_GWAS_variant_validation_evidence.RANKED.tsv"
+front_cols=[
+    "SNP",
 
-out.to_csv(allfile,sep="\t",index=False,compression="gzip")
+    "GWAS_chr",
+    "GWAS_pos",
+    "GWAS_effect_allele",
+    "GWAS_other_allele",
+    "GWAS_beta",
+    "GWAS_se",
+    "GWAS_p",
+    "GWAS_sig",
 
-evidence=out[out["any_evidence"]].copy()
-evidence.to_csv(evfile,sep="\t",index=False)
+    "candidate_gene_symbols",
+    "candidate_gene_ids",
+    "candidate_genes"
+]
 
-ranked=evidence.sort_values(
-    ["evidence_count","GWAS_p"],
-    ascending=[False,True],
+remaining=[
+    c
+    for c in out.columns
+    if c not in front_cols
+]
+
+out=out[
+    front_cols
+    +
+    remaining
+]
+
+# ------------------------------------------------------------------
+# 9. OUTPUT
+# ------------------------------------------------------------------
+
+out=out.reset_index(
+    drop=True
+)
+
+allfile=(
+    OUTDIR
+    /
+    "ALS_GWAS_variant_validation_evidence.ALL.tsv.gz"
+)
+
+evfile=(
+    OUTDIR
+    /
+    "ALS_GWAS_variant_validation_evidence.WITH_EVIDENCE.tsv"
+)
+
+rankfile=(
+    OUTDIR
+    /
+    "ALS_GWAS_variant_validation_evidence.RANKED.tsv"
+)
+
+out.to_csv(
+    allfile,
+    sep="\t",
+    index=False,
+    compression="gzip"
+)
+
+evidence=out[
+    out["any_evidence"]
+].copy()
+
+evidence.to_csv(
+    evfile,
+    sep="\t",
+    index=False
+)
+
+priority_order={
+    "HIGH":0,
+    "MEDIUM":1,
+    "LOW":2,
+    "GWAS_ONLY":3,
+    "MOLECULAR_ONLY":4,
+    "NONE":5
+}
+
+ranked=evidence.copy()
+
+ranked["_priority_order"]=(
+    ranked[
+        "validation_priority"
+    ]
+    .map(priority_order)
+    .fillna(99)
+)
+
+ranked=ranked.sort_values(
+    [
+        "_priority_order",
+        "evidence_count",
+        "GWAS_p"
+    ],
+    ascending=[
+        True,
+        False,
+        True
+    ],
     na_position="last"
 )
-ranked.to_csv(rankfile,sep="\t",index=False)
+
+ranked=ranked.drop(
+    columns=[
+        "_priority_order"
+    ]
+)
+
+ranked.to_csv(
+    rankfile,
+    sep="\t",
+    index=False
+)
+
+# ------------------------------------------------------------------
+# SUMMARY
+# ------------------------------------------------------------------
 
 print()
 print("="*72)
 print("DONE")
-print(f"GWAS SNPs             : {len(out):,}")
-print(f"SNPs with QTL evidence: {out['any_QTL'].sum():,}")
-print(f"SNPs with SMR evidence: {out['any_SMR'].sum():,}")
-print(f"SNPs with coloc       : {out['any_coloc'].sum():,}")
-print(f"SNPs with any evidence: {out['any_evidence'].sum():,}")
-print()
-print(f"ALL    : {allfile}")
-print(f"EVIDENCE: {evfile}")
-print(f"RANKED : {rankfile}")
 print("="*72)
+
+print(
+    f"GWAS SNPs                  : {len(out):,}"
+)
+
+print(
+    f"GWAS p<0.05                : {int(out['GWAS_sig'].sum()):,}"
+)
+
+print(
+    f"SNPs with QTL evidence     : {int(out['any_QTL'].sum()):,}"
+)
+
+print(
+    f"SNPs with SMR evidence     : {int(out['any_SMR'].sum()):,}"
+)
+
+print(
+    f"SNPs with HEIDI pass       : {int(out['any_HEIDI_pass'].sum()):,}"
+)
+
+print(
+    f"SNPs with coloc            : {int(out['any_coloc'].sum()):,}"
+)
+
+print(
+    f"SNPs in SuSiE credible set : {int(out['any_SuSiE_credible_set'].sum()):,}"
+)
+
+print(
+    f"SNPs with candidate genes  : {(out['candidate_gene_ids']!='').sum():,}"
+)
+
+print(
+    f"SNPs with any evidence     : {int(out['any_evidence'].sum()):,}"
+)
+
+print()
+print("Validation priority:")
+
+for level in [
+    "HIGH",
+    "MEDIUM",
+    "LOW",
+    "GWAS_ONLY",
+    "MOLECULAR_ONLY",
+    "NONE"
+]:
+    n=(
+        out["validation_priority"]
+        ==level
+    ).sum()
+
+    print(
+        f"  {level:<15}: {n:,}"
+    )
+
+print()
+print(
+    f"ALL      : {allfile}"
+)
+
+print(
+    f"EVIDENCE : {evfile}"
+)
+
+print(
+    f"RANKED   : {rankfile}"
+)
+
+print("="*72)
+
 PY
