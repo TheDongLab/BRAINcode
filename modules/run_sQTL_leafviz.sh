@@ -316,12 +316,12 @@ resolve_rsid_in_target_vcf() {
 
   local region="${ucsc_chr}:${db_pos}-${db_pos}"
 
-  echo "dbSNP mapping:"
-  echo "  rsID:       $db_id"
-  echo "  Coordinate: ${ucsc_chr}:${db_pos}"
-  echo "  dbSNP REF:  $db_ref"
-  echo "  dbSNP ALT:  $db_alt"
-  echo
+  echo "dbSNP mapping:" >&2
+  echo "  rsID:       $db_id" >&2
+  echo "  Coordinate: ${ucsc_chr}:${db_pos}" >&2
+  echo "  dbSNP REF:  $db_ref" >&2
+  echo "  dbSNP ALT:  $db_alt" >&2
+  echo >&2
 
   local matches
   matches="$(
@@ -390,6 +390,7 @@ resolve_rsid_in_target_vcf() {
     return 1
   fi
 
+  # ONLY stdout from this function:
   printf '%s\n' "$matches"
 }
 
