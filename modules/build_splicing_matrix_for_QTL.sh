@@ -12,7 +12,6 @@ set -euo pipefail
 unset PYTHONPATH
 
 # 2. Load the specific 2024a toolchain and Python 3.12
-# We use the bundle which includes compatible numpy, scipy, and pandas
 module purge
 module load Python/3.12.3-GCCcore-13.3.0
 module load Python-bundle-PyPI/2024.06-GCCcore-13.3.0
@@ -57,39 +56,51 @@ expr = None
 for _, row in rna_found.iterrows():
     sample = norm_id(row["externalsampleid"])
     psi = pd.read_csv(row["psi_path"], sep="\t")
-    
+
     if "PSI" not in psi.columns:
         continue
 
     # unique junction ID
     psi["junction_id"] = (
-        psi["chrom"] + ":" + psi["strand"] + ":" + 
+        psi["chrom"] + ":" + psi["strand"] + ":" +
         psi["start"].astype(str) + "-" + psi["end"].astype(str)
     )
-    
+
     psi = psi[["junction_id", "PSI"]].copy()
     psi.columns = ["junction_id", sample]
-    
+
     if expr is None:
         expr = psi
     else:
         expr = expr.merge(psi, on="junction_id", how="outer")
 
-expr = expr.fillna(0).infer_objects(copy=False)
+# IMPORTANT:
+# Missing junction in a sample's refined LeafCutter PSI file stays NA.
+# Do NOT convert missing junctions to PSI=0.
+expr = expr.infer_objects(copy=False)
+
 print(f"Raw splicing matrix shape: {expr.shape}")
+print(f"Total missing PSI values: {expr.isna().sum().sum()}")
 
-# 4. Variance-Based Filtering (Strategy 1: Direct Raw Values)
-print("Filtering out zero-variance and low-variance junctions...")
-junction_ids = expr['junction_id']
-numeric_data = expr.drop('junction_id', axis=1)
+# 4. Variance-Based Filtering
+print("Filtering out low-information junctions...")
 
-# Calculate standard deviation across samples for each junction (row-wise)
-row_sds = numeric_data.std(axis=1)
+junction_ids = expr["junction_id"]
+numeric_data = expr.drop("junction_id", axis=1)
 
-# Keep junctions with standard deviation greater than 0.005
-# This natively drops junctions that are uniformly unmapped (0.0) or fully spliced (1.0)
+# Calculate variability using only samples where PSI was actually observed
+row_sds = numeric_data.std(axis=1, skipna=True)
+
+# Require at least a few genuine PSI measurements
+n_observed = numeric_data.notna().sum(axis=1)
+
 min_sd_threshold = 0.005
-variant_mask = row_sds > min_sd_threshold
+min_observed_samples = 5
+
+variant_mask = (
+    (row_sds > min_sd_threshold) &
+    (n_observed >= min_observed_samples)
+)
 
 filtered_numeric = numeric_data[variant_mask].copy()
 filtered_junction_ids = junction_ids[variant_mask]
@@ -99,17 +110,37 @@ filtered_count = len(filtered_numeric)
 dropped_count = original_count - filtered_count
 
 print(f"Original features: {original_count}")
-print(f"Features remaining after SD > {min_sd_threshold} filter: {filtered_count}")
-print(f"Dropped flat/invariant lines: {dropped_count} ({dropped_count / original_count * 100:.2f}%)")
+print(
+    f"Features remaining after SD > {min_sd_threshold} "
+    f"and >= {min_observed_samples} observed samples: {filtered_count}"
+)
+print(
+    f"Dropped low-information lines: {dropped_count} "
+    f"({dropped_count / original_count * 100:.2f}%)"
+)
 
-# Recombine preserving the matrix format
-expr_final = pd.concat([filtered_junction_ids.reset_index(drop=True), filtered_numeric.reset_index(drop=True)], axis=1)
+# Recombine preserving matrix format
+expr_final = pd.concat(
+    [
+        filtered_junction_ids.reset_index(drop=True),
+        filtered_numeric.reset_index(drop=True)
+    ],
+    axis=1
+)
 
 # 5. Output
-expr_final.to_csv(OUT / "splicing_matrix.txt", sep="\t", index=False)
+expr_final.to_csv(
+    OUT / "splicing_matrix.txt",
+    sep="\t",
+    index=False,
+    na_rep="NA"
+)
 
-rna_found[["externalsampleid", "externalsubjectid", "tissue"]].to_csv(
-    OUT / "splicing_sample_metadata.csv", index=False
+rna_found[
+    ["externalsampleid", "externalsubjectid", "tissue"]
+].to_csv(
+    OUT / "splicing_sample_metadata.csv",
+    index=False
 )
 
 print(f"Saved filtered raw splicing matrix to: {OUT}")
