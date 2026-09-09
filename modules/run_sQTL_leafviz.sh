@@ -11,8 +11,6 @@ set -euo pipefail
 module load R
 module load BCFtools
 
-conda activate RNAseq
-
 usage() {
   cat <<'EOF'
 Usage:
