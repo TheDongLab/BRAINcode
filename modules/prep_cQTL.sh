@@ -10,7 +10,7 @@ set -euo pipefail
 
 module load BCFtools
 
-TISSUE="$1" 
+TISSUE="$1"
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/cQTL
 mkdir -p $OUTDIR
@@ -150,6 +150,16 @@ circ_final.columns = final_aligned_subjects
 snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
 snp_final = snp_matrix.T
 
+# Tissue-specific MAF filter
+min_maf = 0.05
+snp_numeric = snp_final.apply(pd.to_numeric, errors='coerce')
+n_called = snp_numeric.notna().sum(axis=1)
+allele_freq = snp_numeric.sum(axis=1, skipna=True) / (2 * n_called)
+maf = np.minimum(allele_freq, 1 - allele_freq)
+n_before_maf = len(snp_final)
+snp_final = snp_final.loc[(n_called > 0) & (maf >= min_maf)]
+print(f"DEBUG: Tissue-specific MAF >= {min_maf}: {n_before_maf} -> {len(snp_final)} SNPs.")
+
 def convert_to_rsid(full_id):
     clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
     parts = str(clean_id).split(':')
@@ -182,8 +192,8 @@ cov_final = cov_final[['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'P
 
 # 7. SAVE
 circ_final.to_csv("$OUTDIR/circ_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="circ_id")
-snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
-cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0)
+snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid", na_rep="NA")
+cov_final.to_csv("$OUTDIR/covariates_${TISSUE_DIR}_encoded.txt", sep='\t', index=True, index_label="id", quoting=0, na_rep="NA")
 
 print(f"SUCCESS: Processed {num_final} unique samples for $TISSUE")
 EOF
@@ -206,14 +216,11 @@ BEGIN {
     split($2, parts, ":")
     chrom = parts[1]
     pos   = parts[2]
-    
     ucsc = (chrom ~ /^[Cc][Hh][Rr]/) ? toupper(chrom) : "CHR"toupper(chrom)
     ncbi = (ucsc in n_map) ? n_map[ucsc] : ucsc
-    
     coord_key = ncbi":"pos
     final_id = (toupper(coord_key) in r_map) ? r_map[toupper(coord_key)] : coord_key
     final_chr = (toupper(ncbi) in inv_map) ? inv_map[toupper(ncbi)] : chrom
-    
     if (!seen[final_id]++) {
         print final_id, final_chr, pos
     }
@@ -230,7 +237,6 @@ NR > 1 {
     split(parts[2], coords, "-")
     left = coords[1]
     right = coords[2]
-    
     if (!seen[circ]++) {
         print circ, chrom, left, right
     }
