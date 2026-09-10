@@ -10,8 +10,7 @@ set -euo pipefail
 
 module load BCFtools
 
-TISSUE="$1" 
-RUN_TYPE="${2:-standard}" # Optional $2: "standard" (default) or "interaction"
+TISSUE="$1"
 
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/sQTL
@@ -20,7 +19,7 @@ mkdir -p $OUTDIR
 ### Paths ###
 QTL_DIR=/home/zw529/donglab/data/target_ALS/QTL
 PLINK=$QTL_DIR/plink
-SPLICING_RAW=$QTL_DIR/splicing_matrix.txt 
+SPLICING_RAW=$QTL_DIR/splicing_matrix.txt
 SPLICING_LOC_SRC=$OUTDIR/tmp_splicing_events_hg38.bed
 METADATA_CSV=/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv
 BREAKDOWN_TSV=$QTL_DIR/patient_tissue_breakdown.tsv
@@ -37,7 +36,7 @@ MAP_FILE=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation
 DBSNP_VCF=/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/GCF_000001405.40.gz
 
 echo "============================================"
-echo "  sQTL Prep for $TISSUE (Mode: $RUN_TYPE)"
+echo "  sQTL Prep for $TISSUE"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────────────
@@ -143,6 +142,7 @@ try:
     def get_rin(r):
         try: return max(float(r.iloc[16]) if pd.notnull(r.iloc[16]) else 0, float(r.iloc[17]) if pd.notnull(r.iloc[17]) else 0)
         except: return 0
+
     meta_tissue['RIN_score'] = meta_tissue.apply(get_rin, axis=1)
     meta_tissue = meta_tissue[(meta_tissue['post_mortem_interval_in_hours'] <= 40) & (meta_tissue['RIN_score'] >= 3)]
     meta_unique = meta_tissue.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid').copy()
@@ -151,8 +151,11 @@ try:
     raw_df = pd.read_csv("$RAW", sep=r'\s+', usecols=lambda x: x not in ['PAT', 'MAT', 'SEX', 'PHENOTYPE'])
     encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
     splicing_headers = []
+
     for enc in encodings:
-        try: splicing_headers = pd.read_csv("$SPLICING_RAW", sep='\t', nrows=0, encoding=enc).columns.tolist(); break
+        try:
+            splicing_headers = pd.read_csv("$SPLICING_RAW", sep='\t', nrows=0, encoding=enc).columns.tolist()
+            break
         except UnicodeDecodeError: continue
 
     meta_unique['hra_clean'] = meta_unique['externalsampleid'].str.replace('-', '_')
@@ -176,9 +179,9 @@ try:
     for s in common_subjects:
         row = meta_unique[meta_unique['externalsubjectid'] == s]
         hra = row['hra_clean'].values[0]
-        raw_sample = row['externalsampleid'].values[0] 
+        raw_sample = row['externalsampleid'].values[0]
         raw_sample_clean = raw_sample.replace('-', '_')
-        
+
         matches = [c for c in splicing_headers if c.startswith(hra)]
         if matches:
             tsv_path = None
@@ -191,11 +194,12 @@ try:
             if tsv_path:
                 final_aligned_subjects.append(s)
                 sub_to_hra[s] = matches[0]
+
                 try:
                     df_rep = pd.read_csv(tsv_path, sep=r'\s+', usecols=['chrom', 'strand', 'start', 'end', 'reads'])
                     df_rep['j_id'] = df_rep['chrom'].astype(str) + ':' + df_rep['strand'].astype(str) + ':' + df_rep['start'].astype(str) + '-' + df_rep['end'].astype(str)
                     junc_counts.update(df_rep.loc[df_rep['reads'] >= 5, 'j_id'].unique())
-                except: 
+                except:
                     pass
 
     if len(final_aligned_subjects) == 0:
@@ -210,17 +214,38 @@ try:
     for enc in encodings:
         try:
             target_cols = ['junction_id'] + [sub_to_hra[s] for s in final_aligned_subjects]
-            splicing_df = pd.read_csv("$SPLICING_RAW", sep='\t', usecols=target_cols, index_col=0, encoding=enc)
+            splicing_df = pd.read_csv("$SPLICING_RAW", sep='\t', usecols=target_cols, index_col=0, encoding=enc, na_values=['NA'])
             break
         except UnicodeDecodeError: continue
 
     splicing_final = splicing_df[[sub_to_hra[s] for s in final_aligned_subjects]]
     splicing_final.columns = final_aligned_subjects
     splicing_final = splicing_final.loc[splicing_final.index.isin(valid_junctions)]
+
+    # Keep only junctions measured in >=80% of subjects within this tissue
+    min_observed_fraction = 0.80
+    observed_fraction = splicing_final.notna().mean(axis=1)
+    n_before = len(splicing_final)
+    splicing_final = splicing_final[observed_fraction >= min_observed_fraction]
+    print(f"DEBUG: PSI completeness >=80%: {n_before} -> {len(splicing_final)} junctions.")
+
+    # Remove junctions with no real PSI variability among observed samples
     splicing_final = splicing_final[splicing_final.var(axis=1, skipna=True) > 1e-10]
 
+    # Build tissue-specific genotype matrix
     snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
     snp_final = snp_matrix.T
+
+    # Tissue-specific MAF filter
+    min_maf = 0.05
+    snp_numeric = snp_final.apply(pd.to_numeric, errors='coerce')
+    n_called = snp_numeric.notna().sum(axis=1)
+    allele_freq = snp_numeric.sum(axis=1, skipna=True) / (2 * n_called)
+    maf = np.minimum(allele_freq, 1 - allele_freq)
+
+    n_before_maf = len(snp_final)
+    snp_final = snp_final.loc[(n_called > 0) & (maf >= min_maf)]
+    print(f"DEBUG: Tissue-specific MAF >= {min_maf}: {n_before_maf} -> {len(snp_final)} SNPs.")
 
     def convert_to_rsid(full_id):
         clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
@@ -242,7 +267,7 @@ try:
     meta_aligned = meta_unique[meta_unique['externalsubjectid'].isin(final_aligned_subjects)].copy()
     cov_merged = pd.merge(pd.merge(meta_aligned, cov, on='externalsampleid'), pca, left_on='externalsubjectid', right_on='IID')
     cov_merged = cov_merged.sort_values('RIN_score', ascending=False).drop_duplicates(subset='externalsubjectid')
-    
+
     cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1, 'female': 0})
     cov_merged['is_als'] = cov_merged['subject_group'].apply(lambda x: 1 if 'ALS' in str(x) else 0)
 
@@ -252,12 +277,15 @@ try:
     cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)[cov_cols].T
 
     # 7. SAVE OUTPUTS
-    splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
-    snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid")
-    cov_final.to_csv(out_cov_name, sep='\t', index=True, index_label="id", quoting=0)
-    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples (Mode: $RUN_TYPE).")
+    splicing_final.to_csv("$OUTDIR/splicing_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid", na_rep="NA")
+    snp_final.to_csv("$OUTDIR/snp_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="snpid", na_rep="NA")
+    cov_final.to_csv(out_cov_name, sep='\t', index=True, index_label="id", quoting=0, na_rep="NA")
+
+    print(f"SUCCESS: Generated fully filtered datasets for {len(final_aligned_subjects)} samples.")
 except Exception as e:
-    import traceback; traceback.print_exc(); sys.exit(1)
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 EOF
 
 # ─────────────────────────────────────────────────────────────────
