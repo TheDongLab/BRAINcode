@@ -49,38 +49,31 @@ mkdir -p "$INPUTS" "$GANGSTR_OUT" "$TRGT_OUT" "$SUMMARY" "$OUT/logs"
 ###############################################################################
 
 module purge
-
-# Use Yale's SAMtools module for BAM/reference checks.
 module load SAMtools
 
-# GangSTR is installed in this explicit conda environment.
-source "$HOME/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh"
-conda activate "$GANGSTR_ENV"
-
-GANGSTR="$(command -v GangSTR)"
+PYTHON="$HOME/donglab/pipelines/modules/miniconda3/bin/python"
+GANGSTR="$HOME/donglab/pipelines/modules/gangstr-env/bin/GangSTR"
+TRGT="$HOME/donglab/pipelines/modules/trgt-5.1.0/trgt"
 SAMTOOLS="$(command -v samtools)"
-PYTHON="$(command -v python)"
 
 echo "============================================================"
 echo "SOFTWARE"
 echo "============================================================"
+
 echo "GangSTR: $GANGSTR"
-"$GANGSTR" --version || true
+"$GANGSTR" --version
+
 echo
 echo "TRGT: $TRGT"
 "$TRGT" --version
+
 echo
 echo "samtools: $SAMTOOLS"
 "$SAMTOOLS" --version | head -2
-echo
-echo "python: $PYTHON"
-"$PYTHON" --version
-echo
 
-"$PYTHON" - <<'PY'
-import pysam
-print("pysam:", pysam.__version__)
-PY
+echo
+echo "Python: $PYTHON"
+"$PYTHON" -c 'import sys,pysam; print(sys.executable); print("pysam",pysam.__version__)'
 
 ###############################################################################
 # INPUT CHECKS
