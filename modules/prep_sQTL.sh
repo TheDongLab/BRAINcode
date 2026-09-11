@@ -247,6 +247,19 @@ try:
     snp_final = snp_final.loc[(n_called > 0) & (maf >= min_maf)]
     print(f"DEBUG: Tissue-specific MAF >= {min_maf}: {n_before_maf} -> {len(snp_final)} SNPs.")
 
+    # Require every observed genotype group to contain >=5 subjects
+    min_genotype_n = 5
+
+    def genotype_groups_pass(row):
+        g = pd.to_numeric(row, errors='coerce').dropna()
+        counts = g.value_counts()
+        return len(counts) >= 2 and counts.min() >= min_genotype_n
+
+    n_before_genotype = len(snp_final)
+    keep_genotype = snp_final.apply(genotype_groups_pass, axis=1)
+    snp_final = snp_final.loc[keep_genotype]
+    print(f"DEBUG: Minimum genotype-group N >= {min_genotype_n}: {n_before_genotype} -> {len(snp_final)} SNPs.")
+
     def convert_to_rsid(full_id):
         clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
         parts = str(clean_id).split(':')
