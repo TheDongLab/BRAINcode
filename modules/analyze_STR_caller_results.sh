@@ -27,6 +27,7 @@ p.add_argument('--long-bam', type=Path, default=BASE.parent / 'NEUAD700YFB.SD-02
 p.add_argument('--out', type=Path, default=BASE / 'comparison')
 p.add_argument('--calls-only', action='store_true', help='Explicitly run analyses 1-2 and caller-provided DP/SD summaries; skip BAM depth.')
 p.add_argument('--samtools', default='samtools')
+p.add_argument('--allow-sample-id-mismatch', action='store_true')
 p.add_argument('--mapq', type=int, default=20)
 p.add_argument('--baseq', type=int, default=0)
 p.add_argument('--expected-master', type=int, default=784468)
@@ -244,12 +245,16 @@ if not a.calls_only:
     if not v or tuple(map(int,v.groups()))<(1,13): raise ValueError('samtools >=1.13 required')
     provenance['samtools_version']=version
     s,ss,so=bam_header(a.short_bam); l,ls,lo=bam_header(a.long_bam)
-    if ss!=ls: raise ValueError('Short/long BAM sample IDs differ: '+str((ss,ls)))
+    if ss!=ls:
+        if not a.allow_sample_id_mismatch:
+            raise ValueError('BAM sample labels differ. If these are the intended paired BAMs, rerun with --allow-sample-id-mismatch: '+str((ss,ls)))
+        print('Using supplied BAM pair despite different sample labels: '+str((ss,ls)), flush=True)
+    provenance['bam_sample_ids']={'short':sorted(ss),'long':sorted(ls)}
+    provenance['sample_id_mismatch_overridden']=bool(ss!=ls and a.allow_sample_id_mismatch)
     for chrom,z in d.groupby('chrom'):
         if chrom not in s or chrom not in l: raise ValueError('Master contig absent from BAM: '+chrom)
         if s[chrom]['LN']!=l[chrom]['LN'] or z.end.max()>int(s[chrom]['LN']): raise ValueError('Reference lengths disagree: '+chrom)
         if s[chrom].get('M5') and l[chrom].get('M5') and s[chrom]['M5']!=l[chrom]['M5']: raise ValueError('Reference MD5 mismatch: '+chrom)
-    provenance['samples']=sorted(ss)
     provenance['reference_validation']='Contig names/lengths and M5 when present; absent M5 cannot establish sequence identity.'
     for path in [a.short_bam,a.long_bam]:
         st=path.stat(); provenance.setdefault('bam_files',[]).append({'path':str(path.resolve()),'size':st.st_size,'mtime_ns':st.st_mtime_ns})
