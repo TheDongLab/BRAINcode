@@ -2,7 +2,8 @@
 #SBATCH --job-name=downsample_seq_depth_for_STR_callers
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/WGS_LR/downsample_STR_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/WGS_LR/downsample_STR_%j.err
-#SBATCH --time=2-00:00:00
+#SBATCH --time=3-00:00:00
+#SBATCH --partition=week
 #SBATCH --mem=56G
 #SBATCH --cpus-per-task=4
 
