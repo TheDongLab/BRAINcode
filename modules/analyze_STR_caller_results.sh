@@ -19,12 +19,87 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+def render_plots(output, include_depth=True):
+    from pathlib import Path
+    import textwrap
+    import numpy as np
+    import pandas as pd
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
+    D=Path(output)
+    plt.rcParams.update({"font.size":11,"axes.spines.top":False,"axes.spines.right":False,"savefig.dpi":180})
+    A={"exact_rate":"Exact match: both alleles","le1_rate":"Within 1 repeat on both alleles","le2_rate":"Within 2 repeats on both alleles","gt2_rate":"More than 2 repeats on either allele"}
+    Q={"gang_q_lt0.9_rate":"GangSTR confidence Q < 0.9","gang_q_lt0.5_rate":"GangSTR confidence Q < 0.5","trgt_min_ap_lt0.9_rate":"TRGT minimum purity AP < 0.9","trgt_min_ap_lt0.5_rate":"TRGT minimum purity AP < 0.5"}
+    C=["#0072B2","#E69F00","#009E73","#CC79A7"]
+    NOTE="STR = short tandem repeat; locus = one genomic location. GangSTR uses short reads; TRGT uses long reads."
+    AG="Agreement compares the two allele repeat counts after sorting them by size; agreement does not establish accuracy."
+    QUAL="Q measures genotype confidence; AP measures how closely an allele follows its repeat motif. Minimum AP is the lower purity of the two alleles. These are different measures. Quality percentages use available values for each caller, so their denominators can differ."
+    def read(n): return pd.read_csv(D/("analysis_"+n+".tsv"),sep="\t")
+    def frame(n,title,sub,w=14):
+        f,ax=plt.subplots(n,1,figsize=(w,3.25*n+3.4),squeeze=False)
+        f.suptitle(title,fontsize=19,fontweight="bold",y=.98)
+        f.text(.08,.93,sub,fontsize=11,va="top")
+        return f,ax[:,0]
+    def done(f,name,note):
+        f.subplots_adjust(top=.85,bottom=.30 if len(f.axes)==2 and name=="paired_BAM_depth" else .20,hspace=.55,left=.09,right=.98)
+        f.text(.08,.025,textwrap.fill(NOTE+" "+note,145),fontsize=10,va="bottom",linespacing=1.45)
+        f.savefig(D/("analysis_"+name+".png")); plt.close(f)
+    def lines(ax,z,x,items,percent=True):
+        for i,(col,label) in enumerate(items.items()): ax.plot(x,z[col],marker="o",ms=4,color=C[i],ls="--" if i%2 else "-",label=label)
+        if percent: ax.yaxis.set_major_formatter(PercentFormatter(1)); ax.set_ylim(bottom=0)
+        ax.grid(axis="y",alpha=.2); ax.legend(fontsize=9,ncol=2,loc="lower left",bbox_to_anchor=(0,1.01))
+    for key,label,definition in [("gang_dp","GangSTR informative-read count (DP)","DP counts reads used as evidence by GangSTR; it is not mean BAM coverage."),("trgt_min_sd","TRGT read support for the less-supported allele (minimum SD)","SD is supporting reads per allele; the smaller of the two values defines each bin."),("short_depth","Short-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases."),("long_depth","Long-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases.")]:
+        if not include_depth and key in ("short_depth","long_depth"): continue
+        z=read("by_"+key); x=np.arange(len(z)); bins=z[key+"_bin"].astype(str).str.replace("-<"," to <",regex=False).str.replace(">=","at least ",regex=False)
+        f,ax=frame(2,"Repeat-call agreement and quality versus read evidence",label+" | NEUAD700YFB | N beneath each bin = comparable loci")
+        lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","gt2_rate"]}); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
+        lines(ax[1],z,x,Q); ax[1].set_ylabel("Calls below threshold (%)")
+        for b in ax: b.set_xticks(x); b.set_xticklabels([v+"\nN="+format(int(n),",") for v,n in zip(bins,z.N_comparable)],fontsize=9)
+        ax[1].set_xlabel(label)
+        done(f,"by_"+key,definition+" "+AG+" Within 1 includes exact matches. "+QUAL+" Small-N bins are less stable; these are observational associations.")
+    z=read("reference_length_10bp").sort_values("length_bin_start"); z=z.set_index("length_bin_start").reindex(range(0,int(z.length_bin_start.max())+10,10)).rename_axis("length_bin_start").reset_index(); x=z.length_bin_start+5
+    f,ax=frame(2,"How does repeat length relate to caller agreement?","NEUAD700YFB | Reference STR length in 10-base-pair bins | All observed lengths shown")
+    lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","le2_rate"]}); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
+    for col,color in zip(["exact_rate","le1_rate","le2_rate"],C):
+        low=z.N_comparable<100; ax[0].scatter(x[low],z.loc[low,col],s=55,facecolors="white",edgecolors=color,zorder=5)
+    bottom=np.zeros(len(z))
+    for col,label,color in zip(["exact","0_to_1","1_to_2","gt2"],["Exact match","Difference >0 to 1 repeat","Difference >1 to 2 repeats","Difference >2 repeats"],C):
+        y=z[col+"_exclusive_N"].fillna(0); ax[1].bar(z.length_bin_start,y,width=10,align="edge",bottom=bottom,label=label,color=color); bottom+=y
+    ax[1].set_yscale("symlog",linthresh=1); ax[1].set_ylabel("Number of comparable loci\n(log scale above 1)"); ax[1].legend(fontsize=9,ncol=2); ax[1].grid(axis="y",alpha=.2)
+    for b in ax: b.set_xlabel("Reference STR length (base pairs)")
+    done(f,"reference_length_10bp",AG+" Bins are 0-9, 10-19, etc.; points sit at bin centers. Hollow points mark fewer than 100 comparable loci. Top curves are cumulative; bottom categories are exclusive. Missing bins have no connecting line.")
+    for name,key,title in [("motif_length","motif_length_group","Does the size of the repeating unit relate to caller results?"),("motif_families_Nge100","motif_family","How do common repeat-sequence families compare?")]:
+        z=read(name)
+        if key=="motif_family": z=z.sort_values("N_comparable",ascending=False).head(30)
+        x=np.arange(len(z)); sub="Top 30 families by comparable-locus count; eligible families have N >= 100." if key=="motif_family" else "Motif length is the number of DNA bases in one repeating unit (e.g., CAG = 3 bases)."
+        f,ax=frame(3,title,"NEUAD700YFB | "+sub,w=18 if key=="motif_family" else 14)
+        ax[0].bar(x,z.exact_rate,color=C[0]); ax[0].set_ylim(0,1.35); ax[0].set_yticks(np.linspace(0,1,6)); ax[0].yaxis.set_major_formatter(PercentFormatter(1)); ax[0].set_ylabel("Exact agreement (%)")
+        for i,row in enumerate(z.itertuples()): ax[0].text(i,row.exact_rate+.025,"N="+format(int(row.N_comparable),","),ha="center",rotation=90 if len(z)>10 else 0,fontsize=8)
+        lines(ax[1],z,x,{"reference_bp_median":"Reference repeat length","gang_max_bp_median":"GangSTR: longer allele at each locus","trgt_max_allele_bp_median":"TRGT: longer allele at each locus"},False); ax[1].set_ylabel("Median length (base pairs)")
+        lines(ax[2],z,x,Q); ax[2].set_ylabel("Calls below threshold (%)")
+        for b in ax: b.set_xticks(x); b.set_xticklabels(z[key],rotation=90 if len(z)>10 else 0)
+        ax[2].set_xlabel("Repeat motif family (representative DNA sequence)" if key=="motif_family" else "Repeating-unit length (base pairs)")
+        extra="Families combine rotations and reverse complements (e.g., CAG and CTG). " if key=="motif_family" else ""
+        done(f,"motif_families_top30" if key=="motif_family" else name,AG+" N counts comparable loci. Length medians use available calls: GangSTR copies x motif length; TRGT allele length. "+extra+QUAL+" Motif groups may differ in length and depth; this plot does not adjust for those differences.")
+    if include_depth:
+        z=pd.read_csv(D/"analysis_loci.tsv.gz",sep="\t",usecols=["short_depth","long_depth"]).dropna()
+        f,ax=frame(1,"Are short- and long-read coverage comparable at the same STRs?","NEUAD700YFB | "+format(len(z),",")+" loci | Short-read median: "+format(z.short_depth.median(),".1f")+"x; long-read median: "+format(z.long_depth.median(),".1f")+"x")
+        b=ax[0]; h=b.hexbin(np.log1p(z.short_depth),np.log1p(z.long_depth),gridsize=70,bins="log",mincnt=1,cmap="viridis")
+        lim=float(np.log1p(z.max().max())); b.plot([0,lim],[0,lim],"k--",label="Equal coverage in both datasets"); ticks=np.array([0,1,5,10,20,50,100,1000,10000,100000]); ticks=ticks[np.log1p(ticks)<=lim]
+        for axis in [b.xaxis,b.yaxis]: axis.set_ticks(np.log1p(ticks)); axis.set_ticklabels([format(t,",") for t in ticks])
+        b.set_xlabel("Short-read mean depth across the STR (x)"); b.set_ylabel("Long-read mean depth across the STR (x)"); b.legend(fontsize=9,loc="upper left"); f.colorbar(h,ax=b,label="Number of loci per hexagon (log color scale)")
+        done(f,"paired_BAM_depth","Each hexagon groups loci with similar coverage; brighter colors mean more loci. Above the dashed line: greater long-read coverage; below: greater short-read coverage. Both axes use log(1 + depth) spacing, with ticks labeled in actual coverage. Depth includes zero-coverage bases in each reference STR; it is not allele-spanning read support or genome-wide coverage.")
+    print("Regenerated "+str(8 if include_depth else 5)+" labeled plots in "+str(D)+"; no BAMs reread.")
+
 BASE = Path('/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT')
 p = argparse.ArgumentParser(description='GangSTR versus TRGT analyses 1-3.')
 p.add_argument('--base', type=Path, default=BASE)
 p.add_argument('--short-bam', type=Path, default=BASE.parent / 'NEUAD700YFB.SD-029-24-CBLL.2.bam')
 p.add_argument('--long-bam', type=Path, default=BASE.parent / 'NEUAD700YFB.SD-029-24-CBLL.3.mapped.bam')
 p.add_argument('--out', type=Path, default=BASE / 'comparison')
+p.add_argument('--plots-only', action='store_true', help='Regenerate plots from saved analysis tables without reading BAMs.')
 p.add_argument('--calls-only', action='store_true', help='Explicitly run analyses 1-2 and caller-provided DP/SD summaries; skip BAM depth.')
 p.add_argument('--samtools', default='samtools')
 p.add_argument('--allow-sample-id-mismatch', action='store_true')
@@ -36,6 +111,9 @@ a = p.parse_args()
 if min(a.mapq, a.baseq) < 0: p.error('Quality cutoffs must be nonnegative')
 if not a.calls_only and (not a.short_bam or not a.long_bam):
     p.error('--short-bam and --long-bam are required unless --calls-only is explicit')
+if a.plots_only:
+    render_plots(a.out, include_depth=not a.calls_only)
+    sys.exit(0)
 calls = a.base / 'comparison/all_calls.tsv'
 master = a.base / 'inputs/master.tsv'
 for path in (calls, master):
@@ -157,44 +235,11 @@ fam=grouped(d[d.motif_family.isin(eligible)],['motif_length','motif_family'],'mo
 grouped(d[d.motif_family.isin(eligible)],['motif_family','length_bin_start'],'motif_family_by_10bp')
 grouped(d,['motif_length_group','length_bin_start'],'motif_length_by_10bp')
 
-def savefig(name):
-    plt.tight_layout(); plt.savefig(a.out/('analysis_'+name+'.png'),dpi=180); plt.close()
-
-fig,ax=plt.subplots(2,1,figsize=(11,8),sharex=True)
-for c in ['exact_rate','le1_rate','le2_rate']: ax[0].plot(length.length_bin_start+5,length[c],'.-',label=c)
-ax[0].set(ylabel='Agreement fraction',ylim=(0,1.02)); ax[0].legend()
-bottom=np.zeros(len(length))
-for grp in groups:
-    y=length[grp+'_exclusive_N']; ax[1].bar(length.length_bin_start,y,width=10,align='edge',bottom=bottom,label=grp); bottom+=y
-ax[1].set(xlabel='Reference STR length (bp); bins [0,10), [10,20), ...',ylabel='Comparable loci'); ax[1].legend()
-savefig('reference_length_10bp')
-
-def motifplot(frame,key,name):
-    if frame.empty: return
-    f=frame.sort_values('N_comparable',ascending=False).head(30) if key=='motif_family' else frame
-    fig,ax=plt.subplots(3,1,figsize=(max(9,len(f)*.32),10),sharex=True)
-    xx=np.arange(len(f))
-    ax[0].bar(xx,f.exact_rate); ax[0].set(ylabel='Exact agreement',ylim=(0,1))
-    for c in ['reference_bp_median','gang_max_bp_median','trgt_max_allele_bp_median']: ax[1].plot(xx,f[c],'.-',label=c)
-    ax[1].set(ylabel='Median length (bp)'); ax[1].legend(fontsize=8)
-    for c in ['gang_q_lt0.9_rate','gang_q_lt0.5_rate','trgt_min_ap_lt0.9_rate','trgt_min_ap_lt0.5_rate']: ax[2].plot(xx,f[c],'.-',label=c)
-    ax[2].set(ylabel='Fraction below cutoff',xticks=xx,xticklabels=f[key]); ax[2].tick_params(axis='x',rotation=90); ax[2].legend(fontsize=8)
-    fig.suptitle('Q = genotype confidence; AP = allele purity (not equivalent accuracy)')
-    savefig(name)
-motifplot(motlen,'motif_length_group','motif_length')
-motifplot(fam,'motif_family','motif_families_top30')
-
 bins=[0,1,5,10,20,30,50,100,np.inf]
 labels=['0-<1','1-<5','5-<10','10-<20','20-<30','30-<50','50-<100','>=100']
 def depth_summary(col):
     d[col+'_bin']=pd.cut(d[col],bins,right=False,labels=labels)
     out=grouped(d,[col+'_bin'],'by_'+col)
-    fig,ax=plt.subplots(2,1,figsize=(10,7),sharex=True)
-    for c in ['exact_rate','le1_rate','gt2_rate']: ax[0].plot(out[col+'_bin'],out[c],'.-',label=c)
-    ax[0].set(ylabel='Agreement fraction',ylim=(0,1)); ax[0].legend()
-    for c in ['gang_q_lt0.9_rate','gang_q_lt0.5_rate','trgt_min_ap_lt0.9_rate','trgt_min_ap_lt0.5_rate']: ax[1].plot(out[col+'_bin'],out[c],'.-',label=c)
-    ax[1].set(xlabel=col,ylabel='Fraction below cutoff'); ax[1].legend(fontsize=8)
-    savefig('by_'+col)
 depth_summary('gang_dp'); depth_summary('trgt_min_sd')
 
 def bam_header(path):
@@ -272,15 +317,13 @@ if not a.calls_only:
     grouped(d[d.motif_family.isin(eligible)],['motif_family','length_bin_start','short_depth_bin'],'motif_family_length_depth_strata')
     high=d[(d.trgt_min_ap>=.9)&(d.trgt_min_sd>=3)]
     grouped(high,['short_depth_bin'],'short_depth_high_TRGT_evidence')
-    plt.figure(figsize=(7,6)); plt.hexbin(np.log1p(d.short_depth),np.log1p(d.long_depth),gridsize=70,bins='log',mincnt=1)
-    lim=max(np.log1p(d.short_depth).max(),np.log1p(d.long_depth).max()); plt.plot([0,lim],[0,lim],'k--')
-    plt.xlabel('log(1 + short-read mean depth)'); plt.ylabel('log(1 + long-read mean depth)'); plt.colorbar(label='Locus count'); savefig('paired_BAM_depth')
     corrcols=['reference_bp','motif_length','short_depth','long_depth','gang_q','trgt_min_ap','trgt_min_sd','max_diff']
     table(d[corrcols].corr(method='spearman').reset_index(),'spearman_correlations')
 
 keep=['key','locus_id','chrom','start','end','motif','motif_length','motif_family','reference_bp','length_bin_start','gang_called','trgt_called','agreement_group','max_diff','gang_q','gang_dp','trgt_min_ap','trgt_min_sd','gang_max_copies','trgt_max_copies','gang_max_bp','trgt_max_motif_bp','trgt_max_allele_bp']
 keep += [c for c in ['short_depth','long_depth','short_covered_fraction','long_covered_fraction','short_minus_long_depth','short_to_long_depth_ratio'] if c in d]
 d[keep].to_csv(a.out/'analysis_loci.tsv.gz',sep='\t',index=False,na_rep='NA',compression='gzip')
+render_plots(a.out, include_depth=not a.calls_only)
 for path in (calls,master):
     if sha(path)!=provenance['input_sha256'][str(path)]: raise RuntimeError('Input changed during analysis: '+str(path))
 provenance['status']='complete_calls_only' if a.calls_only else 'complete'
