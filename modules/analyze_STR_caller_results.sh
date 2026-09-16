@@ -12,7 +12,6 @@ module load SAMtools
 exec "${PYTHON:-python3}" - "$@" <<'PY'
 import argparse, functools, hashlib, json, math
 from pathlib import Path
-from datetime import datetime
 import re, shlex, subprocess, sys
 import numpy as np
 import pandas as pd
@@ -21,11 +20,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 BASE = Path('/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT')
-p = argparse.ArgumentParser(description='Read-only analysis of canonical coordinate-joined GangSTR/TRGT calls. New output directory required.')
+p = argparse.ArgumentParser(description='GangSTR versus TRGT analyses 1-3.')
 p.add_argument('--base', type=Path, default=BASE)
-p.add_argument('--short-bam', type=Path)
-p.add_argument('--long-bam', type=Path)
-p.add_argument('--out', type=Path, default=BASE / ('analysis_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
+p.add_argument('--short-bam', type=Path, default=BASE.parent / 'NEUAD700YFB.SD-029-24-CBLL.2.bam')
+p.add_argument('--long-bam', type=Path, default=BASE.parent / 'NEUAD700YFB.SD-029-24-CBLL.3.mapped.bam')
+p.add_argument('--out', type=Path, default=BASE / 'comparison')
 p.add_argument('--calls-only', action='store_true', help='Explicitly run analyses 1-2 and caller-provided DP/SD summaries; skip BAM depth.')
 p.add_argument('--samtools', default='samtools')
 p.add_argument('--mapq', type=int, default=20)
@@ -36,12 +35,12 @@ a = p.parse_args()
 if min(a.mapq, a.baseq) < 0: p.error('Quality cutoffs must be nonnegative')
 if not a.calls_only and (not a.short_bam or not a.long_bam):
     p.error('--short-bam and --long-bam are required unless --calls-only is explicit')
-if a.out.exists(): p.error('Output directory already exists; choose a fresh path')
 calls = a.base / 'comparison/all_calls.tsv'
 master = a.base / 'inputs/master.tsv'
 for path in (calls, master):
     if not path.is_file(): p.error('Missing input: ' + str(path))
-a.out.mkdir(parents=True)
+a.out.mkdir(parents=True, exist_ok=True)
+(a.out/'analysis_SUCCESS').unlink(missing_ok=True)
 
 def sha(path):
     h = hashlib.sha256()
@@ -52,11 +51,11 @@ def sha(path):
 provenance = {'arguments':vars(a).copy(), 'input_sha256':{str(x):sha(x) for x in (calls, master)},
               'python':sys.version, 'pandas':pd.__version__, 'numpy':np.__version__, 'commands':[]}
 def save_provenance():
-    (a.out/'provenance.json').write_text(json.dumps(provenance, indent=2, default=str)+'\n')
+    (a.out/'analysis_provenance.json').write_text(json.dumps(provenance, indent=2, default=str)+'\n')
 save_provenance()
 
 def table(df, name):
-    df.to_csv(a.out/(name+'.tsv'), sep='\t', index=False, na_rep='NA')
+    df.to_csv(a.out/('analysis_'+name+'.tsv'), sep='\t', index=False, na_rep='NA')
 
 def pair(s):
     try:
@@ -158,7 +157,7 @@ grouped(d[d.motif_family.isin(eligible)],['motif_family','length_bin_start'],'mo
 grouped(d,['motif_length_group','length_bin_start'],'motif_length_by_10bp')
 
 def savefig(name):
-    plt.tight_layout(); plt.savefig(a.out/(name+'.png'),dpi=180); plt.close()
+    plt.tight_layout(); plt.savefig(a.out/('analysis_'+name+'.png'),dpi=180); plt.close()
 
 fig,ax=plt.subplots(2,1,figsize=(11,8),sharex=True)
 for c in ['exact_rate','le1_rate','le2_rate']: ax[0].plot(length.length_bin_start+5,length[c],'.-',label=c)
@@ -211,13 +210,13 @@ def bam_header(path):
     return seq,samples,order
 
 def measure_depth(path,label,seq):
-    bed=a.out/'master_intervals.bed'
+    bed=a.out/'analysis_master_intervals.bed'
     cmd=[a.samtools,'depth','-b',str(bed),'-q',str(a.baseq),'-Q',str(a.mapq),'-G','3844','-s',str(path)]
     provenance['commands'].append(shlex.join(cmd)); save_provenance()
     bychrom={c:sorted(zip(z.start,z.end,z.index)) for c,z in d.groupby('chrom',sort=False)}
     sums=np.zeros(len(d),dtype=np.float64); covered=np.zeros(len(d),dtype=np.int64)
     cur=None; active=[]; intervals=[]; j=0; prev=0; seen=set()
-    with (a.out/(label+'_samtools.stderr')).open('w') as err:
+    with (a.out/('analysis_'+label+'_samtools.stderr')).open('w') as err:
         proc=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=err,text=True,bufsize=1048576)
         try:
             for line in proc.stdout:
@@ -254,7 +253,7 @@ if not a.calls_only:
     provenance['reference_validation']='Contig names/lengths and M5 when present; absent M5 cannot establish sequence identity.'
     for path in [a.short_bam,a.long_bam]:
         st=path.stat(); provenance.setdefault('bam_files',[]).append({'path':str(path.resolve()),'size':st.st_size,'mtime_ns':st.st_mtime_ns})
-    d.assign(start0=d.start-1)[['chrom','start0','end']].sort_values(['chrom','start0','end']).to_csv(a.out/'master_intervals.bed',sep='\t',header=False,index=False)
+    d.assign(start0=d.start-1)[['chrom','start0','end']].sort_values(['chrom','start0','end']).to_csv(a.out/'analysis_master_intervals.bed',sep='\t',header=False,index=False)
     measure_depth(a.short_bam,'short',s); measure_depth(a.long_bam,'long',l)
     stats=[]
     for c in ['short_depth','long_depth']:
@@ -276,11 +275,11 @@ if not a.calls_only:
 
 keep=['key','locus_id','chrom','start','end','motif','motif_length','motif_family','reference_bp','length_bin_start','gang_called','trgt_called','agreement_group','max_diff','gang_q','gang_dp','trgt_min_ap','trgt_min_sd','gang_max_copies','trgt_max_copies','gang_max_bp','trgt_max_motif_bp','trgt_max_allele_bp']
 keep += [c for c in ['short_depth','long_depth','short_covered_fraction','long_covered_fraction','short_minus_long_depth','short_to_long_depth_ratio'] if c in d]
-d[keep].to_csv(a.out/'locus_analysis.tsv.gz',sep='\t',index=False,na_rep='NA',compression='gzip')
+d[keep].to_csv(a.out/'analysis_loci.tsv.gz',sep='\t',index=False,na_rep='NA',compression='gzip')
 for path in (calls,master):
     if sha(path)!=provenance['input_sha256'][str(path)]: raise RuntimeError('Input changed during analysis: '+str(path))
 provenance['status']='complete_calls_only' if a.calls_only else 'complete'
 save_provenance()
-(a.out/'SUCCESS').write_text(provenance['status']+'\n')
+(a.out/'analysis_SUCCESS').write_text(provenance['status']+'\n')
 print('Finished: '+str(a.out),flush=True)
 PY
