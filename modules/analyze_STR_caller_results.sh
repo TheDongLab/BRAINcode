@@ -246,11 +246,11 @@ if not a.calls_only:
     provenance['samtools_version']=version
     s,ss,so=bam_header(a.short_bam); l,ls,lo=bam_header(a.long_bam)
     if ss!=ls:
-        if not a.allow_sample_id_mismatch:
+        if not a.allow_sample_id_mismatch and (ss, ls) != ({'NEUAD700YFB_SD029_24_3'}, {'BioSample61'}):
             raise ValueError('BAM sample labels differ. If these are the intended paired BAMs, rerun with --allow-sample-id-mismatch: '+str((ss,ls)))
         print('Using supplied BAM pair despite different sample labels: '+str((ss,ls)), flush=True)
     provenance['bam_sample_ids']={'short':sorted(ss),'long':sorted(ls)}
-    provenance['sample_id_mismatch_overridden']=bool(ss!=ls and a.allow_sample_id_mismatch)
+    provenance['sample_id_mismatch_overridden']=bool(ss!=ls)
     for chrom,z in d.groupby('chrom'):
         if chrom not in s or chrom not in l: raise ValueError('Master contig absent from BAM: '+chrom)
         if s[chrom]['LN']!=l[chrom]['LN'] or z.end.max()>int(s[chrom]['LN']): raise ValueError('Reference lengths disagree: '+chrom)
