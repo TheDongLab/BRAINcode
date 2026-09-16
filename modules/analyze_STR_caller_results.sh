@@ -12,6 +12,7 @@ module load SAMtools
 exec "${PYTHON:-python3}" - "$@" <<'PY'
 import argparse, functools, hashlib, json, math
 from pathlib import Path
+from datetime import datetime
 import re, shlex, subprocess, sys
 import numpy as np
 import pandas as pd
@@ -24,7 +25,7 @@ p = argparse.ArgumentParser(description='Read-only analysis of canonical coordin
 p.add_argument('--base', type=Path, default=BASE)
 p.add_argument('--short-bam', type=Path)
 p.add_argument('--long-bam', type=Path)
-p.add_argument('--out', type=Path, required=True)
+p.add_argument('--out', type=Path, default=BASE / ('analysis_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
 p.add_argument('--calls-only', action='store_true', help='Explicitly run analyses 1-2 and caller-provided DP/SD summaries; skip BAM depth.')
 p.add_argument('--samtools', default='samtools')
 p.add_argument('--mapq', type=int, default=20)
