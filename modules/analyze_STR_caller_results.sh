@@ -70,7 +70,7 @@ def render_plots(output, include_depth=True):
     ax[1].set_yscale("symlog",linthresh=1); ax[1].set_ylabel("Number of comparable loci\n(log scale above 1)"); ax[1].legend(fontsize=9,ncol=2); ax[1].grid(axis="y",alpha=.2)
     for b in ax: b.set_xlabel("Reference STR length (base pairs)")
     done(f,"reference_length_10bp",AG+" Bins are 0-9, 10-19, etc.; points sit at bin centers. Hollow points mark fewer than 100 comparable loci. Top curves are cumulative; bottom categories are exclusive. Missing bins have no connecting line.")
-    for name,key,title in [("motif_length","motif_length_group","Does the size of the repeating unit relate to caller results?"),("motif_families_Nge100","motif_family","How do common repeat-sequence families compare?")]:
+    for name,key,title in [("motif_length","motif_length_group","Does the size of the repeating unit relate to caller results?")]:
         z=read(name)
         if key=="motif_family": z=z.sort_values("N_comparable",ascending=False).head(30)
         x=np.arange(len(z)); sub="Top 30 families by comparable-locus count; eligible families have N >= 100." if key=="motif_family" else "Motif length is the number of DNA bases in one repeating unit (e.g., CAG = 3 bases)."
@@ -83,14 +83,36 @@ def render_plots(output, include_depth=True):
         ax[2].set_xlabel("Repeat motif family (representative DNA sequence)" if key=="motif_family" else "Repeating-unit length (base pairs)")
         extra="Families combine rotations and reverse complements (e.g., CAG and CTG). " if key=="motif_family" else ""
         done(f,"motif_families_top30" if key=="motif_family" else name,AG+" N counts comparable loci. Length medians use available calls: GangSTR copies x motif length; TRGT allele length. "+extra+QUAL+" Motif groups may differ in length and depth; this plot does not adjust for those differences.")
+    z=pd.read_csv(D/"analysis_motif_families_Nge100.tsv",sep="\t"); z=z[z.N_comparable>=100].sort_values("N_comparable",ascending=False).head(30); x=np.arange(len(z))
+    f,a=plt.subplots(3,1,figsize=(20,15)); f.suptitle("Repeat-sequence families: agreement, allele length and quality",fontsize=20,fontweight="bold",y=.98)
+    f.text(.08,.935,"NEUAD700YFB | Top 30 families by comparable-locus count | Each family has at least 100 comparable loci")
+    a[0].bar(x,z.exact_rate,color="#666666",label="GangSTR–TRGT exact agreement"); a[0].set_ylim(0,1.35); a[0].set_yticks(np.linspace(0,1,6)); a[0].set_ylabel("Exact agreement (%)"); a[0].yaxis.set_major_formatter(PercentFormatter(1))
+    for i,r in enumerate(z.itertuples()): a[0].text(i,r.exact_rate+.02,f"N={int(r.N_comparable):,}",ha="center",rotation=90,fontsize=8)
+    for j,(c,label,color) in enumerate([("reference_bp_median","Reference STR length","#999999"),("gang_max_bp_median","GangSTR: longer allele","#0072B2"),("trgt_max_allele_bp_median","TRGT: longer allele","#AE3038")]): a[1].bar(x+(j-1)*.25,z[c],width=.25,color=color,label=label)
+    a[1].set_ylabel("Typical repeat length (base pairs)\nMedian across locations in each family")
+    for j,(c,label,color,hatch) in enumerate([("gang_q_lt0.9_rate","GangSTR Q < 0.9","#78B4DC",""),("gang_q_lt0.5_rate","GangSTR Q < 0.5","#175A91",""),("trgt_min_ap_lt0.9_rate","TRGT minimum AP < 0.9","#EF9898",""),("trgt_min_ap_lt0.5_rate","TRGT minimum AP < 0.5","#AE3038","")]): a[2].bar(x+(j-1.5)*.2,z[c],width=.2,color=color,hatch=hatch,edgecolor="black",linewidth=.3,label=label)
+    a[2].set_ylabel("Calls below threshold (%)"); a[2].yaxis.set_major_formatter(PercentFormatter(1))
+    for ax in a: ax.set_xticks(x); ax.set_xticklabels(z.motif_family,rotation=90); ax.grid(axis="y",alpha=.15); ax.set_axisbelow(True); ax.legend(loc="lower left",bbox_to_anchor=(0,1.01),ncol=4,fontsize=10)
+    a[2].set_xlabel("Motif family (representative DNA sequence)")
+    note="STR = short tandem repeat. GangSTR uses short reads; TRGT uses long reads. N counts comparable loci. Exact agreement requires matching both sorted allele repeat counts. Families combine sequence rotations and reverse complements. Middle panel: at each location, take the longer of the two repeat copies called in this sample, then show the median of those lengths across the family. Gray is the median reference-genome repeat length; blue is GangSTR; red is TRGT. Equal medians can hide disagreements at individual locations. Q measures genotype confidence; AP measures repeat purity, using the less-pure allele. These scores are not equivalent. Bottom panel: light/dark blue = GangSTR; light/dark red = TRGT. Dark bars show values <0.5, a subset of the light bars showing values <0.9. Percentages use available values for each caller; denominators can differ. Agreement is not proof of accuracy; length and depth differences between families are not adjusted for."
+    f.text(.08,.025,textwrap.fill(note,175),fontsize=10); f.subplots_adjust(top=.87,bottom=.22,hspace=.65,left=.08,right=.98); f.savefig(D/"analysis_motif_families_top30.png",dpi=180); plt.close(f)
     if include_depth:
-        z=pd.read_csv(D/"analysis_loci.tsv.gz",sep="\t",usecols=["short_depth","long_depth"]).dropna()
-        f,ax=frame(1,"Are short- and long-read coverage comparable at the same STRs?","NEUAD700YFB | "+format(len(z),",")+" loci | Short-read median: "+format(z.short_depth.median(),".1f")+"x; long-read median: "+format(z.long_depth.median(),".1f")+"x")
-        b=ax[0]; h=b.hexbin(np.log1p(z.short_depth),np.log1p(z.long_depth),gridsize=70,bins="log",mincnt=1,cmap="viridis")
-        lim=float(np.log1p(z.max().max())); b.plot([0,lim],[0,lim],"k--",label="Equal coverage in both datasets"); ticks=np.array([0,1,5,10,20,50,100,1000,10000,100000]); ticks=ticks[np.log1p(ticks)<=lim]
-        for axis in [b.xaxis,b.yaxis]: axis.set_ticks(np.log1p(ticks)); axis.set_ticklabels([format(t,",") for t in ticks])
-        b.set_xlabel("Short-read mean depth across the STR (x)"); b.set_ylabel("Long-read mean depth across the STR (x)"); b.legend(fontsize=9,loc="upper left"); f.colorbar(h,ax=b,label="Number of loci per hexagon (log color scale)")
-        done(f,"paired_BAM_depth","Each hexagon groups loci with similar coverage; brighter colors mean more loci. Above the dashed line: greater long-read coverage; below: greater short-read coverage. Both axes use log(1 + depth) spacing, with ticks labeled in actual coverage. Depth includes zero-coverage bases in each reference STR; it is not allele-spanning read support or genome-wide coverage.")
+        z=pd.read_csv(D/"analysis_loci.tsv.gz",sep="\t",usecols=["short_depth","long_depth"])
+        z=z[np.isfinite(z).all(axis=1)&(z>=0).all(axis=1)]
+        x,y=np.log1p(z.short_depth.to_numpy()),np.log1p(z.long_depth.to_numpy())
+        assert len(x)>2 and np.ptp(x)>0 and np.ptp(y)>0,"Insufficient variation for regression"
+        m,b=np.polyfit(x,y,1); r2=1-np.sum((y-(m*x+b))**2)/np.sum((y-y.mean())**2)
+        f,a=plt.subplots(figsize=(14,10)); f.suptitle("Short- and long-read coverage at the same STR loci",fontsize=19,fontweight="bold",y=.98)
+        f.text(.09,.92,f"NEUAD700YFB | {len(z):,} loci | Median coverage: short reads {z.short_depth.median():.1f}x; long reads {z.long_depth.median():.1f}x")
+        h=a.hexbin(x,y,gridsize=70,bins="log",mincnt=1,cmap="viridis"); lim=max(x.max(),y.max()); xx=np.array([x.min(),x.max()])
+        a.plot([0,lim],[0,lim],"k--",label="Equal coverage")
+        a.plot(xx,m*xx+b,color="red",ls=":",lw=2.5,label="Linear regression on log(1 + depth)")
+        a.text(.98,.02,f"$R^2$ = {r2:.4f}\nFit in log(1 + depth) coordinates",transform=a.transAxes,ha="right",va="bottom",color="red",bbox=dict(facecolor="white",alpha=.9,edgecolor="none"))
+        t=np.array([0,1,5,10,20,50,100,1000,10000,100000]); t=t[np.log1p(t)<=lim]
+        for axis in [a.xaxis,a.yaxis]: axis.set_ticks(np.log1p(t)); axis.set_ticklabels([f"{v:,}" for v in t])
+        a.set(xlabel="Short-read mean depth across each STR (x)",ylabel="Long-read mean depth across each STR (x)"); a.legend(loc="upper left",fontsize=9); f.colorbar(h,ax=a,label="Loci per hexagon (log color scale)")
+        note="STR = short tandem repeat. Brighter hexagons contain more loci. Above the black line, long-read coverage is greater. Axes use natural log(1 + depth) spacing, labeled in actual coverage. Red: ordinary least-squares fit to individual loci, including zero depths; R-squared is explained variation in transformed long-read depth. Coverage averages the full reference STR interval, including uncovered bases. Association does not establish equal coverage or caller accuracy."
+        f.text(.09,.03,textwrap.fill(note,140),fontsize=10); f.subplots_adjust(top=.85,bottom=.24,right=.96); f.savefig(D/"analysis_paired_BAM_depth.png",dpi=180); plt.close(f)
     print("Regenerated "+str(8 if include_depth else 5)+" labeled plots in "+str(D)+"; no BAMs reread.")
 
 BASE = Path('/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT')
