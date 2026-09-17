@@ -1,10 +1,8 @@
 #!/bin/bash
-# READ_NORMALIZATION_PLOT_VERSION: ALL_QTL_RESULTS__MATCHED_TRACK_SUBJECTS_ONLY
-# BOXPLOT_VERSION: EXACT_COPY_OF_ORIGINAL_BASE_R_PARAMETERS__MATCHED_TRACK_SUBJECTS_ONLY
-# GENCODE_TRACK_VERSION: ALL_TRANSCRIPTS_TRANSCRIPT_RESOLVED
+
 #SBATCH --job-name=QTL_read_norm_plots
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/run_read_RPM_normalized_plots_for_QTL_%j.err
 #SBATCH --time=5-23:00:00
 #SBATCH --partition=week
 #SBATCH --cpus-per-task=4
@@ -26,7 +24,7 @@ MIN_MEAN_JUNCTION_RPM=0.01
 MAX_JUNCTIONS=30
 MAX_HITS=0
 
-# Maximum number of SNP-specific plots per QTL event/gene.
+# Max. number of SNP-specific plots per QTL event/gene.
 # eQTL  : max 2 SNPs per gene
 # sQTL  : max 2 SNPs per junction
 # cQTL  : max 2 SNPs per circRNA
@@ -42,8 +40,7 @@ DPI=180
 # Example: QTL_RESULT_FILE="cis.txt"       # matches <Tissue>_<TYPE>.cis.txt inside results/
 QTL_RESULT_FILE="FDR0.05.txt"
 
-# Optional gene filter.
-# Leave blank to plot every event in the chosen QTL result file.
+# Optional gene filter (leave blank to plot every event in the chosen QTL result file)
 # Accepts gene symbols and/or Ensembl gene IDs, comma-separated.
 # eQTL: direct gene-name/ID match.
 # sQTL/cQTL: keep any genomic event overlapping the requested GENCODE gene span by >=1 bp; strand is not required.
@@ -495,6 +492,8 @@ print(f"STARTING READ-NORMALIZATION PLOTS | TYPE={TYPE}", flush=True)
 print(f"QTL_RESULT_FILE={QTL_RESULT_FILE or 'AUTO'}", flush=True)
 print(f"GENE_FILTER={GENE_FILTER or 'NONE'}", flush=True)
 print(f"MAX_PLOTS_PER_EVENT={MAX_PLOTS_PER_EVENT}", flush=True)
+print(f"TISSUE_FILTER={TISSUE_FILTER or 'NONE (all tissues)'}", flush=True)
+print("TISSUES="+", ".join(CANONICAL_TISSUES), flush=True)
 print("="*72, flush=True)
 
 raw_alleles={}
@@ -527,8 +526,7 @@ def resolve_qtl_result_file(qtl_dir,tissue):
     if not result_dir.is_dir():
         return None
 
-    # Explicit override. A short suffix such as "FDR0.05.txt" or "cis.txt"
-    # matches the tissue/type-prefixed filename inside results/.
+    # Explicit override. A short suffix such as "FDR0.05.txt" or "cis.txt" matches the tissue/type-prefixed filename inside results/.
     if QTL_RESULT_FILE:
         p=Path(QTL_RESULT_FILE)
 
@@ -649,6 +647,14 @@ def build_gene_filter_intervals(gtf,gene_filter):
     return requested_raw,genes_by_chr
 
 GENE_FILTER_RAW,GENE_FILTER_INTERVALS=build_gene_filter_intervals(GTF,GENE_FILTER)
+GENE_FILTER_QUERY_NORM={norm(x) for x in GENE_FILTER_RAW}
+GENE_FILTER_QUERY_IDS={strip_gene_version(x).upper() for x in GENE_FILTER_RAW if x.upper().startswith("ENSG")}
+GENE_FILTER_SYMBOLS=set();GENE_FILTER_GENE_IDS=set();GENE_FILTER_ID_TO_SYMBOL={}
+for genes in GENE_FILTER_INTERVALS.values():
+    for g in genes:
+        if g["gene_name"]:GENE_FILTER_SYMBOLS.add(norm(g["gene_name"]))
+        if g["gene_id"]:
+            gid=strip_gene_version(g["gene_id"]).upper();GENE_FILTER_GENE_IDS.add(gid);GENE_FILTER_ID_TO_SYMBOL[gid]=g["gene_name"]
 
 if GENE_FILTER:
     print("Resolved gene filter intervals:", flush=True)
@@ -665,11 +671,9 @@ if GENE_FILTER:
 
 def event_overlaps_requested_gene(event):
     """
-    Return True when a splicing/circRNA event overlaps a requested
-    GENCODE gene interval by >=1 bp.
+    Return True when a splicing/circRNA event overlaps a requested GENCODE gene interval by >=1 bp.
 
-    Strand is deliberately NOT used as a filter here: the user's goal is
-    to include every sQTL/cQTL event touching the genomic span of the gene.
+    Strand is deliberately NOT used as a filter here: the user's goal is to include every sQTL/cQTL event touching the genomic span of the gene.
     """
     loc=parse_event_coordinates(event)
     if loc is None:
@@ -696,17 +700,10 @@ def apply_gene_filter(hits):
         symbol=str(h.get("symbol","")).strip()
 
         if TYPE=="eQTL":
-            # eQTL result geneid is the gene symbol / gene identifier itself.
-            direct=(
-                norm(event) in {norm(x) for x in GENE_FILTER_RAW}
-                or norm(symbol) in {norm(x) for x in GENE_FILTER_RAW}
-                or strip_gene_version(event).upper() in {
-                    strip_gene_version(x).upper()
-                    for x in GENE_FILTER_RAW
-                    if x.upper().startswith("ENSG")
-                }
-            )
+            event_norm=norm(event);event_id=strip_gene_version(event).upper();symbol_norm=norm(symbol)
+            direct=(event_norm in GENE_FILTER_QUERY_NORM or symbol_norm in GENE_FILTER_QUERY_NORM or event_norm in GENE_FILTER_SYMBOLS or symbol_norm in GENE_FILTER_SYMBOLS or event_id in GENE_FILTER_QUERY_IDS or event_id in GENE_FILTER_GENE_IDS)
             if direct:
+                if (not symbol or symbol==event) and event_id in GENE_FILTER_ID_TO_SYMBOL:h["symbol"]=GENE_FILTER_ID_TO_SYMBOL[event_id]
                 kept.append(h)
 
         else:
@@ -780,24 +777,26 @@ def limit_plots_per_event(hits,max_per_event):
     return kept
 
 total_plotted=total_skipped=total_boxplots=0
-for tissue in CANONICAL_TISSUES:
-    if TISSUE_FILTER and not tissue_equal(tissue,TISSUE_FILTER):continue
+tissue_status={}
+
+def process_tissue(tissue):
+    global total_plotted,total_skipped,total_boxplots
     qtl=ROOT/tissue/TYPE
     if not qtl.is_dir():
-        print(f"\nSKIP TISSUE: QTL directory missing: {qtl}");continue
+        print(f"\nSKIP TISSUE: QTL directory missing: {qtl}");return "MISSING QTL DIR"
     result_file=resolve_qtl_result_file(qtl,tissue)
     if result_file is None:
-        print(f"\nSKIP TISSUE: could not find a QTL result table in {qtl / 'results'}");continue
+        print(f"\nSKIP TISSUE: could not find a QTL result table in {qtl / 'results'}");return "MISSING RESULT FILE"
     try:hits=load_qtl_hits(result_file,TYPE)
     except Exception as e:
-        print(f"\nSKIP TISSUE: failed to parse {result_file}: {e}");continue
+        print(f"\nSKIP TISSUE: failed to parse {result_file}: {e}");return "PARSE FAILED"
 
     hits=apply_gene_filter(hits)
     hits=limit_plots_per_event(hits,MAX_PLOTS_PER_EVENT)
     if MAX_HITS>0:hits=hits[:MAX_HITS]
 
     print(f"\n{'='*72}\nTISSUE          : {tissue}\nQTL TYPE        : {TYPE}\nRESULT FILE     : {result_file}\nQTL ROWS TO PLOT: {len(hits)}\nFILTER          : gene-region filter + per-event SNP cap\n{'='*72}")
-    if not hits:continue
+    if not hits:return "NO MATCHING HITS"
 
     if TYPE=="eQTL":pheno_file,loc_file=qtl/f"expression_{tissue}.txt",qtl/"gene_location.txt"
     elif TYPE=="sQTL":pheno_file,loc_file=qtl/f"splicing_{tissue}.txt",qtl/"splicing_location.txt"
@@ -805,7 +804,7 @@ for tissue in CANONICAL_TISSUES:
     snp_file,snp_loc_file=qtl/f"snp_{tissue}.txt",qtl/"snp_location.txt";cov_file=qtl/f"covariates_{tissue}_encoded.txt"
     miss=[p for p in [pheno_file,loc_file,snp_file,snp_loc_file] if not p.exists()]
     if miss:
-        print("SKIP TISSUE: missing "+", ".join(map(str,miss)));total_skipped+=len(hits);continue
+        print("SKIP TISSUE: missing "+", ".join(map(str,miss)));total_skipped+=len(hits);return "MISSING INPUTS"
 
     processed_roots_for_tissue(ROOT,tissue);status=load_covariate_status(cov_file)
     events={h["event"] for h in hits};snps={h["snp"] for h in hits}
@@ -932,5 +931,22 @@ for tissue in CANONICAL_TISSUES:
         print(f"  BOXPLOT PDF : {boxout}\n  DENSITY PDF : {pdf}\n  DENSITY PNG : {png}\n  SUBJECT TSV : {tsv}")
         total_plotted+=1
 
+    return "DONE"
+
+for tissue in CANONICAL_TISSUES:
+    if TISSUE_FILTER and not tissue_equal(tissue,TISSUE_FILTER):
+        tissue_status[tissue]="FILTERED";continue
+    print(f"\n{'='*72}\nSTART TISSUE     : {tissue}\nQTL TYPE         : {TYPE}\n{'='*72}",flush=True)
+    try:
+        tissue_status[tissue]=process_tissue(tissue)
+    except Exception as e:
+        tissue_status[tissue]=f"FAILED: {type(e).__name__}: {e}"
+        print(f"\nERROR IN TISSUE {tissue}: {type(e).__name__}: {e}",flush=True)
+        import traceback;traceback.print_exc()
+        continue
+
+print("\n"+"="*72+"\nTISSUE PROCESSING SUMMARY",flush=True)
+for tissue in CANONICAL_TISSUES:print(f"  {tissue:24s} : {tissue_status.get(tissue,'NOT REACHED')}",flush=True)
+print("="*72,flush=True)
 print(f"\n{'='*72}\nDONE\nAnalysis             : all QTL-result read-normalization plots\nQTL type             : {TYPE}\nDensity plots        : {total_plotted}\nBoxplots regenerated : {total_boxplots}\nSkipped associations : {total_skipped}\nOutput               : {OUTDIR}\n{'='*72}")
 PY
