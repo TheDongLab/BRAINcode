@@ -46,15 +46,15 @@ def render_plots(output, include_depth=True):
         f.subplots_adjust(top=.85,bottom=.30 if len(f.axes)==2 and name=="paired_BAM_depth" else .20,hspace=.55,left=.09,right=.98)
         f.text(.08,.025,textwrap.fill(NOTE+" "+note,145),fontsize=10,va="bottom",linespacing=1.45)
         f.savefig(D/("analysis_"+name+".png")); plt.close(f)
-    def lines(ax,z,x,items,percent=True):
-        for i,(col,label) in enumerate(items.items()): ax.plot(x,z[col],marker="o",ms=4,color=C[i],ls="--" if i%2 else "-",label=label)
+    def lines(ax,z,x,items,percent=True,colors=None):
+        for i,(col,label) in enumerate(items.items()): ax.plot(x,z[col],marker="o",ms=4,color=(C if colors is None else colors)[i],ls="--" if i%2 else "-",label=label)
         if percent: ax.yaxis.set_major_formatter(PercentFormatter(1)); ax.set_ylim(bottom=0)
         ax.grid(axis="y",alpha=.2); ax.legend(fontsize=9,ncol=2,loc="lower left",bbox_to_anchor=(0,1.01))
     for key,label,definition in [("gang_dp","GangSTR informative-read count (DP)","DP counts reads used as evidence by GangSTR; it is not mean BAM coverage."),("trgt_min_sd","TRGT read support for the less-supported allele (minimum SD)","SD is supporting reads per allele; the smaller of the two values defines each bin."),("short_depth","Short-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases."),("long_depth","Long-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases.")]:
         if not include_depth and key in ("short_depth","long_depth"): continue
         z=read("by_"+key); x=np.arange(len(z)); bins=z[key+"_bin"].astype(str).str.replace("-<"," to <",regex=False).str.replace(">=","at least ",regex=False)
         f,ax=frame(2,"Repeat-call agreement and quality versus read evidence",label+" | NEUAD700YFB | N beneath each bin = comparable loci")
-        lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","gt2_rate"]}); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
+        lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","gt2_rate"]},colors=["#003366","#8B0000","#800080"]); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
         lines(ax[1],z,x,Q); ax[1].set_ylabel("Calls below threshold (%)")
         for b in ax: b.set_xticks(x); b.set_xticklabels([v+"\nN="+format(int(n),",") for v,n in zip(bins,z.N_comparable)],fontsize=9)
         ax[1].set_xlabel(label)
@@ -83,19 +83,43 @@ def render_plots(output, include_depth=True):
         ax[2].set_xlabel("Repeat motif family (representative DNA sequence)" if key=="motif_family" else "Repeating-unit length (base pairs)")
         extra="Families combine rotations and reverse complements (e.g., CAG and CTG). " if key=="motif_family" else ""
         done(f,"motif_families_top30" if key=="motif_family" else name,AG+" N counts comparable loci. Length medians use available calls: GangSTR copies x motif length; TRGT allele length. "+extra+QUAL+" Motif groups may differ in length and depth; this plot does not adjust for those differences.")
-    z=pd.read_csv(D/"analysis_motif_families_Nge100.tsv",sep="\t"); z=z[z.N_comparable>=100].sort_values("N_comparable",ascending=False).head(30); x=np.arange(len(z))
-    f,a=plt.subplots(3,1,figsize=(20,15)); f.suptitle("Repeat-sequence families: agreement, allele length and quality",fontsize=20,fontweight="bold",y=.98)
-    f.text(.08,.935,"NEUAD700YFB | Top 30 families by comparable-locus count | Each family has at least 100 comparable loci")
-    a[0].bar(x,z.exact_rate,color="#666666",label="GangSTR–TRGT exact agreement"); a[0].set_ylim(0,1.35); a[0].set_yticks(np.linspace(0,1,6)); a[0].set_ylabel("Exact agreement (%)"); a[0].yaxis.set_major_formatter(PercentFormatter(1))
-    for i,r in enumerate(z.itertuples()): a[0].text(i,r.exact_rate+.02,f"N={int(r.N_comparable):,}",ha="center",rotation=90,fontsize=8)
-    for j,(c,label,color) in enumerate([("reference_bp_median","Reference STR length","#999999"),("gang_max_bp_median","GangSTR: longer allele","#0072B2"),("trgt_max_allele_bp_median","TRGT: longer allele","#AE3038")]): a[1].bar(x+(j-1)*.25,z[c],width=.25,color=color,label=label)
-    a[1].set_ylabel("Typical repeat length (base pairs)\nMedian across locations in each family")
-    for j,(c,label,color,hatch) in enumerate([("gang_q_lt0.9_rate","GangSTR Q < 0.9","#78B4DC",""),("gang_q_lt0.5_rate","GangSTR Q < 0.5","#175A91",""),("trgt_min_ap_lt0.9_rate","TRGT minimum AP < 0.9","#EF9898",""),("trgt_min_ap_lt0.5_rate","TRGT minimum AP < 0.5","#AE3038","")]): a[2].bar(x+(j-1.5)*.2,z[c],width=.2,color=color,hatch=hatch,edgecolor="black",linewidth=.3,label=label)
-    a[2].set_ylabel("Calls below threshold (%)"); a[2].yaxis.set_major_formatter(PercentFormatter(1))
-    for ax in a: ax.set_xticks(x); ax.set_xticklabels(z.motif_family,rotation=90); ax.grid(axis="y",alpha=.15); ax.set_axisbelow(True); ax.legend(loc="lower left",bbox_to_anchor=(0,1.01),ncol=4,fontsize=10)
-    a[2].set_xlabel("Motif family (representative DNA sequence)")
-    note="STR = short tandem repeat. GangSTR uses short reads; TRGT uses long reads. N counts comparable loci. Exact agreement requires matching both sorted allele repeat counts. Families combine sequence rotations and reverse complements. Middle panel: at each location, take the longer of the two repeat copies called in this sample, then show the median of those lengths across the family. Gray is the median reference-genome repeat length; blue is GangSTR; red is TRGT. Equal medians can hide disagreements at individual locations. Q measures genotype confidence; AP measures repeat purity, using the less-pure allele. These scores are not equivalent. Bottom panel: light/dark blue = GangSTR; light/dark red = TRGT. Dark bars show values <0.5, a subset of the light bars showing values <0.9. Percentages use available values for each caller; denominators can differ. Agreement is not proof of accuracy; length and depth differences between families are not adjusted for."
-    f.text(.08,.025,textwrap.fill(note,175),fontsize=10); f.subplots_adjust(top=.87,bottom=.22,hspace=.65,left=.08,right=.98); f.savefig(D/"analysis_motif_families_top30.png",dpi=180); plt.close(f)
+    # Rebuild exact-string summaries from saved locus results, including in --plots-only mode.
+    raw=pd.read_csv(D/"analysis_loci.tsv.gz",sep="\t",usecols=["motif","max_diff","reference_bp","gang_max_bp","trgt_max_allele_bp","gang_q","trgt_min_ap"])
+    rows=[]
+    for motif,g in raw.groupby("motif",sort=True):
+        v=g.max_diff.dropna()
+        row={"motif":motif,"motif_length":len(motif),"N_master":len(g),"N_comparable":len(v),"exact_rate":(v==0).mean() if len(v) else np.nan}
+        for c in ["reference_bp","gang_max_bp","trgt_max_allele_bp"]:
+            values=g[c].dropna(); row[c+"_median"]=values.median() if len(values) else np.nan
+        for c in ["gang_q","trgt_min_ap"]:
+            values=g[c].dropna(); row[c+"_N"]=len(values)
+            for cutoff in [.9,.5]:
+                label=c+"_lt"+str(cutoff)
+                row[label+"_N"]=int((values<cutoff).sum())
+                row[label+"_rate"]=(values<cutoff).mean() if len(values) else np.nan
+        rows.append(row)
+    exact=pd.DataFrame(rows).sort_values(["N_comparable","motif"],ascending=[False,True])
+    exact.to_csv(D/"analysis_exact_motifs_all.tsv",sep="\t",index=False,na_rep="NA")
+    exact.loc[exact.N_comparable>=100].to_csv(D/"analysis_exact_motifs_Nge100.tsv",sep="\t",index=False,na_rep="NA")
+    for table_name,key,plot_name,title,unit,xlabel,group_note in [
+        ("motif_families_Nge100","motif_family","motif_families_top30","Repeat-sequence families: agreement, allele length and quality","families","Motif family (representative DNA sequence)","Families combine rotations and reverse complements."),
+        ("exact_motifs_Nge100","motif","exact_motifs_top30","Original motif sequences: agreement, allele length and quality","original motifs","Original catalog motif (exact nucleotide order)","Motifs are grouped by the original catalog string: no rotations or reverse complements are combined. Exact motif grouping is separate from exact agreement of allele repeat counts.")
+    ]:
+        z=read(table_name); z=z[z.N_comparable>=100].sort_values(["N_comparable",key],ascending=[False,True]).head(30); x=np.arange(len(z))
+        f,a=plt.subplots(3,1,figsize=(20,15)); f.suptitle(title,fontsize=20,fontweight="bold",y=.98)
+        f.text(.08,.935,"NEUAD700YFB | Top 30 "+unit+" by comparable-locus count | Each group has at least 100 comparable loci")
+        a[0].bar(x,z.exact_rate,color="#666666",label="GangSTR–TRGT exact agreement"); a[0].set_ylim(0,1.35); a[0].set_yticks(np.linspace(0,1,6)); a[0].set_ylabel("Exact agreement (%)"); a[0].yaxis.set_major_formatter(PercentFormatter(1))
+        for i,r in enumerate(z.itertuples()): a[0].text(i,r.exact_rate+.02,f"N={int(r.N_comparable):,}",ha="center",rotation=90,fontsize=8)
+        for j,(c,label,color) in enumerate([("reference_bp_median","Reference STR length","#999999"),("gang_max_bp_median","GangSTR: longer allele","#0072B2"),("trgt_max_allele_bp_median","TRGT: longer allele","#AE3038")]): a[1].bar(x+(j-1)*.25,z[c],width=.25,color=color,label=label)
+        a[1].set_ylabel("Typical repeat length (base pairs)\nMedian across locations in each group")
+        for j,(c,label,color,hatch) in enumerate([("gang_q_lt0.9_rate","GangSTR Q < 0.9","#78B4DC",""),("gang_q_lt0.5_rate","GangSTR Q < 0.5","#175A91",""),("trgt_min_ap_lt0.9_rate","TRGT minimum AP < 0.9","#EF9898",""),("trgt_min_ap_lt0.5_rate","TRGT minimum AP < 0.5","#AE3038","")]): a[2].bar(x+(j-1.5)*.2,z[c],width=.2,color=color,hatch=hatch,edgecolor="black",linewidth=.3,label=label)
+        a[2].set_ylabel("Calls below threshold (%)"); a[2].yaxis.set_major_formatter(PercentFormatter(1))
+        for ax in a: ax.set_xticks(x); ax.set_xticklabels(z[key],rotation=90); ax.grid(axis="y",alpha=.15); ax.set_axisbelow(True); ax.legend(loc="lower left",bbox_to_anchor=(0,1.01),ncol=4,fontsize=10)
+        a[2].set_xlabel(xlabel)
+        note="STR = short tandem repeat. GangSTR uses short reads; TRGT uses long reads. N counts comparable loci. Exact agreement requires matching both sorted allele repeat counts. Middle panel: at each location, take the longer of the two alleles called in this sample, then show the median of those lengths across the group. Gray is the median reference-genome repeat length; blue is GangSTR; red is TRGT. Equal medians can hide disagreements at individual locations. Q measures genotype confidence; AP measures repeat purity, using the less-pure allele. These scores are not equivalent. Bottom panel: light/dark blue = GangSTR; light/dark red = TRGT. Dark bars show values <0.5, a subset of the light bars showing values <0.9. Percentages use available values for each caller; denominators can differ. Agreement is not proof of accuracy; length and depth differences between groups are not adjusted for."
+        note=group_note+" "+note
+        if z.empty: a[0].text(.5,.5,"No groups meet the 100-comparable-locus threshold",transform=a[0].transAxes,ha="center")
+        f.text(.08,.025,textwrap.fill(note,175),fontsize=10); f.subplots_adjust(top=.87,bottom=.22,hspace=.65,left=.08,right=.98); f.savefig(D/("analysis_"+plot_name+".png"),dpi=180); plt.close(f)
     if include_depth:
         z=pd.read_csv(D/"analysis_loci.tsv.gz",sep="\t",usecols=["short_depth","long_depth"])
         z=z[np.isfinite(z).all(axis=1)&(z>=0).all(axis=1)]
@@ -113,7 +137,7 @@ def render_plots(output, include_depth=True):
         a.set(xlabel="Short-read mean depth across each STR (x)",ylabel="Long-read mean depth across each STR (x)"); a.legend(loc="upper left",fontsize=9); f.colorbar(h,ax=a,label="Loci per hexagon (log color scale)")
         note="STR = short tandem repeat. Brighter hexagons contain more loci. Above the black line, long-read coverage is greater. Axes use natural log(1 + depth) spacing, labeled in actual coverage. Red: ordinary least-squares fit to individual loci, including zero depths; R-squared is explained variation in transformed long-read depth. Coverage averages the full reference STR interval, including uncovered bases. Association does not establish equal coverage or caller accuracy."
         f.text(.09,.03,textwrap.fill(note,140),fontsize=10); f.subplots_adjust(top=.85,bottom=.24,right=.96); f.savefig(D/"analysis_paired_BAM_depth.png",dpi=180); plt.close(f)
-    print("Regenerated "+str(8 if include_depth else 5)+" labeled plots in "+str(D)+"; no BAMs reread.")
+    print("Regenerated "+str(9 if include_depth else 6)+" labeled plots in "+str(D)+"; no BAMs reread.")
 
 BASE = Path('/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT')
 p = argparse.ArgumentParser(description='GangSTR versus TRGT analyses 1-3.')
