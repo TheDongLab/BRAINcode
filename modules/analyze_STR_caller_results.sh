@@ -48,6 +48,8 @@ def render_plots(output, include_depth=True):
         f.savefig(D/("analysis_"+name+".png")); plt.close(f)
     def lines(ax,z,x,items,percent=True,colors=None):
         for i,(col,label) in enumerate(items.items()): ax.plot(x,z[col],marker="o",ms=4,color=(C if colors is None else colors)[i],ls="--" if i%2 else "-",label=label)
+    def lines(ax,z,x,items,percent=True,colors=None,solid=False):
+        for i,(col,label) in enumerate(items.items()): ax.plot(x,z[col],marker="o",ms=4,color=(C if colors is None else colors)[i],ls="-" if solid else ("--" if i%2 else "-"),label=label)
         if percent: ax.yaxis.set_major_formatter(PercentFormatter(1)); ax.set_ylim(bottom=0)
         ax.grid(axis="y",alpha=.2); ax.legend(fontsize=9,ncol=2,loc="lower left",bbox_to_anchor=(0,1.01))
     for key,label,definition in [("gang_dp","GangSTR informative-read count (DP)","DP counts reads used as evidence by GangSTR; it is not mean BAM coverage."),("trgt_min_sd","TRGT read support for the less-supported allele (minimum SD)","SD is supporting reads per allele; the smaller of the two values defines each bin."),("short_depth","Short-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases."),("long_depth","Long-read mean coverage across each STR (x)","Coverage is the average aligned-read depth over the full reference STR interval, including uncovered bases.")]:
@@ -55,6 +57,7 @@ def render_plots(output, include_depth=True):
         z=read("by_"+key); x=np.arange(len(z)); bins=z[key+"_bin"].astype(str).str.replace("-<"," to <",regex=False).str.replace(">=","at least ",regex=False)
         f,ax=frame(2,"Repeat-call agreement and quality versus read evidence",label+" | NEUAD700YFB | N beneath each bin = comparable loci")
         lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","gt2_rate"]},colors=["#003366","#8B0000","#800080"]); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
+        lines(ax[0],z,x,{k:A[k] for k in ["exact_rate","le1_rate","gt2_rate"]},colors=["#78B4DC","#8A2BE2","#8B0000"],solid=True); ax[0].set_ylabel("Comparable loci (%)"); ax[0].set_ylim(0,1.15)
         lines(ax[1],z,x,Q); ax[1].set_ylabel("Calls below threshold (%)")
         for b in ax: b.set_xticks(x); b.set_xticklabels([v+"\nN="+format(int(n),",") for v,n in zip(bins,z.N_comparable)],fontsize=9)
         ax[1].set_xlabel(label)
