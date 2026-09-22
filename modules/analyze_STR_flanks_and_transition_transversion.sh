@@ -2,7 +2,7 @@
 #SBATCH --job-name=STR_flanks_TiTv
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT/logs/STR_flanks_TiTv_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT/logs/STR_flanks_TiTv_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=4:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=1
 
@@ -41,6 +41,7 @@ import gzip
 import json
 import re
 from pathlib import Path
+
 
 class IndexedFasta:
     """Read an uncompressed FASTA using its existing samtools .fai index."""
@@ -192,9 +193,12 @@ def alternating_at(sequence):
 
 
 def vcf_records(path, sample=None):
-    opener=gzip.open if str(path).endswith('.gz') else open
+    # gzip and BGZF both start with 1f 8b; filenames may omit .gz.
+    with open(path, 'rb') as probe:
+        compressed = probe.read(2) == b'\x1f\x8b'
+    opener = gzip.open if compressed else open
     selected=None
-    with opener(path,'rt') as f:
+    with opener(path, 'rt', encoding='utf-8') as f:
         for line in f:
             if line.startswith('##'): continue
             if line.startswith('#CHROM'):
