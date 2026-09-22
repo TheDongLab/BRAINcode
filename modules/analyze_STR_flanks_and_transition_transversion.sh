@@ -1,12 +1,39 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=STR_flanks_TiTv
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT/logs/STR_flanks_TiTv_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT/logs/STR_flanks_TiTv_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=1
+
 set -euo pipefail
-exec "${PYTHON:-$HOME/donglab/pipelines/modules/miniconda3/bin/python}" - "$@" <<'PYTHON_STR_FLANKS'
+# For sbatch, create this directory BEFORE submitting: Slurm opens logs before this script runs.
+STR_LOG_DIR="${STR_LOG_DIR:-$HOME/donglab/data/target_ALS/WGS_LR/repeat_comparison_gangSTR_vs_TRGT/logs}"
+mkdir -p "$STR_LOG_DIR"
+STR_RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)_$$}"
+STR_OUT_LOG="$STR_LOG_DIR/STR_flanks_TiTv_${STR_RUN_ID}.out"
+STR_ERR_LOG="$STR_LOG_DIR/STR_flanks_TiTv_${STR_RUN_ID}.err"
+printf 'Output log: %s\nError log: %s\n' "$STR_OUT_LOG" "$STR_ERR_LOG"
+exec >>"$STR_OUT_LOG" 2>>"$STR_ERR_LOG"
+finish() {
+    str_exit_status=$?
+    trap - EXIT
+    if [ "$str_exit_status" -eq 0 ]; then
+        printf '[%s] COMPLETED successfully\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    else
+        printf '[%s] FAILED, exit status %s; inspect %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$str_exit_status" "$STR_ERR_LOG"
+        printf '[%s] FAILED, exit status %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$str_exit_status" >&2
+    fi
+    exit "$str_exit_status"
+}
+trap finish EXIT
+printf '[%s] STARTED host=%s job=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(hostname)" "${SLURM_JOB_ID:-interactive}"
+printf 'Arguments:'
+printf ' %q' "$@"
+printf '\n'
+"${PYTHON:-$HOME/donglab/pipelines/modules/miniconda3/bin/python}" -u - "$@" <<'PYTHON_STR_FLANKS'
 #!/usr/bin/env python3
-"""Reference flank composition and gene-feature overlaps at read-supported STR loci"""
+"""Reference flank composition and gene-feature overlaps at read-supported STR loci."""
 import argparse
 import bisect
 import collections
@@ -207,10 +234,13 @@ class FlankLookup:
 def read_flank_variants(path, sample, loci, fasta, flank):
     lookup=FlankLookup(loci,fasta,flank)
     rows=[];seen=set();audit=collections.Counter()
+    import time
+    last_progress=time.monotonic()
     for rec in vcf_records(path,sample):
         audit['VCF_records_scanned']+=1
-        if audit['VCF_records_scanned']%1000000==0:
-            print('Scanned '+format(audit['VCF_records_scanned'],',')+' genomic VCF records...',flush=True)
+        if audit['VCF_records_scanned']%10000==0 and time.monotonic()-last_progress>=30:
+            print('Scanned '+format(audit['VCF_records_scanned'],',')+' genomic VCF records; qualifying SNV alleles: '+str(audit['unique_qualifying_SNV_alleles']),flush=True)
+            last_progress=time.monotonic()
         hits=lookup.find(rec['chrom'],rec['pos0'])
         if not hits: continue
         audit['records_overlapping_AT_TA_flanks']+=1
@@ -297,6 +327,8 @@ def analyze_substitutions(d, args, out):
     fasta=IndexedFasta(args.reference)
     print('Scanning sample genomic VCF for AT/TA flank substitutions: '+str(args.snv_vcf),flush=True)
     rows,audit=read_flank_variants(args.snv_vcf,args.vcf_sample,target,fasta,args.flank_bp)
+    print('Genomic VCF scan finished: '+json.dumps(audit),flush=True)
+    (out/'SNV_scan_audit.json').write_text(json.dumps(audit,indent=2)+'\n')
     columns=['locus_id','chrom','position_1based','ref','alt','substitution','substitution_class','side','relative_position','GT','ALT_dosage','GQ','DP','PS','variant_key']
     events=pd.DataFrame(rows,columns=columns)
     events=events.merge(target[['locus_id','motif','length_group']],on='locus_id',validate='many_to_one')
@@ -329,7 +361,9 @@ def analyze_substitutions(d, args, out):
         candidates=sorted(set((args.comparison.parent/'trgt').rglob('*.vcf'))|set((args.comparison.parent/'trgt').rglob('*.vcf.gz')))
         if len(candidates)==1: vcf=candidates[0]
     if vcf is None: print('No unique original TRGT VCF found; AP-only examples will be labeled unverified. Supply --trgt-vcf to verify sequences.',flush=True)
+    if vcf: print('Checking original TRGT allele sequences: '+str(vcf),flush=True)
     sequence=trgt_sequence_purity(vcf,args.trgt_sample,target,fasta) if vcf else {}
+    print('TRGT sequence inspection finished; writing locus and example tables.',flush=True)
     target['sequence_status']=[sequence.get(str(lid),('not verified',None,None))[0] for lid in target.locus_id]
     target['both_alleles_alternating_AT']=[sequence.get(str(lid),('not verified',None,None))[1] for lid in target.locus_id]
     target['reference_alternating_AT']=target.reference_sequence.map(alternating_at)
@@ -345,6 +379,7 @@ def analyze_substitutions(d, args, out):
     selected[example_cols].head(20).to_csv(out/'AT_TA_top20_sequence_verified_examples.tsv',sep='\t',index=False)
     ap_only=target.loc[(target.Transition_N+target.Transversion_N>0)&target.max_absolute_allele_length_difference_bp.gt(0)&target.TRGT_reported_AP1_both.eq(True)&target.both_alleles_alternating_AT.isna()].copy()
     ap_only[example_cols].to_csv(out/'AT_TA_AP1_examples_not_sequence_verified.tsv',sep='\t',index=False)
+    print('Generating transition/transversion figures...',flush=True)
     # Count unique observed REF/ALT SNV alleles, not allele dosage or length changes.
     spectrum=[a+'>'+b for a in 'ACGT' for b in 'ACGT' if a!=b]
     fig,axs=plt.subplots(1,3,figsize=(18,7));fig.subplots_adjust(top=.80,bottom=.27,wspace=.28)
@@ -422,6 +457,7 @@ def main():
     parser.add_argument('--gtf', type=Path, default=root/'references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf', help='Matching hg38 GTF, optionally gzip-compressed; exact contig names must match.')
     parser.add_argument('--out', type=Path)
     parser.add_argument('--snv-vcf', type=Path, default=root/'data/target_ALS/WGS_LR/lr-wgs_vcf_genomic_NEUAD700YFB_NEUAD700YFB.SD-029-24-CBLL.3.g.vcf', help='Sample SNV VCF for the optional transition/transversion analysis.')
+    parser.add_argument('--substitutions-only', action='store_true', help='Resume from saved locus_flanks_and_locations.tsv.gz; skip completed flank plots and GTF processing.')
     parser.add_argument('--skip-substitutions', action='store_true', help='Run only reference-flank and location analyses.')
     parser.add_argument('--trgt-sample', help='Exact TRGT VCF sample ID if multisample.')
     parser.add_argument('--vcf-sample', help='Exact VCF sample ID; required when there is more than one sample.')
@@ -434,7 +470,8 @@ def main():
     a = parser.parse_args()
     if min(a.flank_bp, a.top_motifs, a.min_motif_loci) < 1:
         parser.error('Numeric settings must be positive.')
-    for needed in [a.reference,Path(str(a.reference)+'.fai'),a.gtf]+([] if a.skip_substitutions else [a.snv_vcf]):
+    if a.substitutions_only and a.skip_substitutions: parser.error('--substitutions-only and --skip-substitutions cannot be combined.')
+    for needed in [a.reference,Path(str(a.reference)+'.fai')]+([] if a.substitutions_only else [a.gtf])+([] if a.skip_substitutions else [a.snv_vcf]):
         if not needed.is_file(): parser.error('Missing input: '+str(needed))
     edges=[int(v) for v in a.length_bins.split(',')]
     if not edges or edges[0]!=0 or any(y<=x for x,y in zip(edges,edges[1:])):
@@ -443,6 +480,21 @@ def main():
     out = a.out or a.comparison/'STR_flanking_transition_transversion_analysis'
     out.mkdir(parents=True, exist_ok=True)
     (out/'SUCCESS').unlink(missing_ok=True)
+    print('Output directory: '+str(out),flush=True)
+    if a.substitutions_only:
+        saved=out/'locus_flanks_and_locations.tsv.gz'
+        if not saved.is_file(): parser.error('Cannot resume: missing '+str(saved))
+        print('Resuming substitution analysis from '+str(saved),flush=True)
+        d=pd.read_csv(saved,sep='\t')
+        if d.locus_id.duplicated().any(): raise ValueError('Duplicate saved locus IDs')
+        if not (d.left_flank.str.len().eq(a.flank_bp)&d.right_flank.str.len().eq(a.flank_bp)).all():
+            parser.error('Saved flank widths differ from --flank-bp; use the original width or run the full analysis.')
+        d['length_group']=pd.cut(d.longer_TRGT_allele_bp,edges+[np.inf],labels=groups,right=False)
+        analyze_substitutions(d,a,out)
+        (out/'parameters_substitutions.json').write_text(json.dumps(vars(a),default=str,indent=2)+'\n')
+        (out/'SUCCESS').write_text('complete\n')
+        print('Substitution analysis completed: '+str(out),flush=True)
+        return
     analysis = pd.read_csv(a.comparison/'analysis_loci.tsv.gz', sep='\t', usecols=['locus_id', 'chrom', 'start', 'end', 'motif', 'reference_bp'])
     evidence = pd.read_csv(a.comparison/'read_supported_STR_benchmark/locus_evidence.tsv.gz', sep='\t')
     if analysis.locus_id.duplicated().any() or evidence.locus_id.duplicated().any():
@@ -556,6 +608,7 @@ def main():
         fig.suptitle('Genomic locations of read-supported STR loci',fontsize=18)
         fig.text(.08,.045,'Any overlap with the reference STR interval; transcript isoforms are combined. Exonic includes coding and noncoding exons.\nExonic + intronic means both feature types overlap (potentially across different transcripts); other genic overlaps a gene/transcript only.\nIntergenic requires an annotated contig. Locations describe hg38 catalog intervals, not the span of expanded sample alleles.\nThese are observed proportions in the selected catalog, not enrichment relative to the genome.',fontsize=9)
         fig.savefig(out/'genomic_feature_distribution.png',dpi=180);plt.close(fig)
+    print('Reference flank and genomic-location outputs finished.',flush=True)
     if not a.skip_substitutions:
         analyze_substitutions(d,a,out)
     (out/'METHODS.txt').write_text('Reference flanks in forward genomic orientation, anchored to unmodified shared catalog intervals. No sample-specific insertion boundary inference. Exact motif strings remain separate. Flank tables retain positions and denominators. In-phase adjacent bases flag potentially extendable pure-reference repeats within the inspected window only; they do not establish shifted sample boundaries. Gene annotation uses any interval overlap and all transcript models. Sample substitutions use PASS SNV ALT alleles carried in a complete diploid GT from the supplied gVCF; reference blocks, indels and symbolic alleles are excluded. No added GQ/DP threshold; those fields are saved. Counts are observed reference/sample differences, not de novo mutation rates or ancestral directions. Allele dosage does not weight counts. No recorded SNV is not proof of absence without callable-site analysis. Sequence-verified alternating AT/TA alleles are analyzed separately from unverified AP=1 calls; no sample haplotype linkage or causal effects of flank substitutions are claimed. TRGT length support reuses genotyping reads and is not independent accuracy validation.\n')
