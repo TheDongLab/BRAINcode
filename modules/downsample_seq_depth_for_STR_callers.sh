@@ -296,26 +296,48 @@ for (arm,key,rep),z in primary[primary.fraction<1].groupby(['arm','key','replica
         loss.append(dict(arm=arm,key=key,replicate=rep,metric=metric,first_failure_fraction=f.fraction if f is not None else np.nan,first_failure_depth=f.depth if f is not None else np.nan,failure_type=('no_call' if not f.called else 'metric_failed') if f is not None else 'no_failure_in_tested_range'))
 write(pd.DataFrame(loss),'first_loss_by_locus')
 
+# Comparable agreement-only curves: no quality cutoff on downsampled calls.
+# Cluster bootstrap resamples whole loci, retaining all repetitions of each locus.
+def comparable_agreement(trials, seed):
+    rows=[]
+    for (arm,frac),z in trials.groupby(['arm','fraction'],observed=True):
+        per_locus=z.groupby('key').exact.mean().to_numpy()
+        rng=np.random.default_rng(seed)
+        boot=np.array([rng.choice(per_locus,len(per_locus),replace=True).mean() for _ in range(500)])
+        rows.append(dict(arm=arm,fraction=frac,depth=z.depth.median(),
+                         exact=z.exact.mean(),within1=z.within1.mean(),
+                         missing=(~z.called).mean(),discordant=(z.called & ~z.exact).mean(),
+                         lo=np.quantile(boot,.025),hi=np.quantile(boot,.975),
+                         N_loci=z.key.nunique(),N_trials=len(z)))
+    return pd.DataFrame(rows)
+
+s=comparable_agreement(primary,a.seed)
+s.to_csv(a.out/'comparable_depth_response.tsv',sep='\t',index=False)
 plt.rcParams.update({'font.size':11,'axes.spines.top':False,'axes.spines.right':False})
-for arm,z in summary.groupby('arm'):
-    z=z.sort_values('fraction');name='GangSTR (short reads)' if arm=='short' else 'TRGT (long reads)'
-    fig,ax=plt.subplots(2,1,figsize=(13,10))
-    fig.suptitle('How much read depth preserves STR calls? — '+name,fontsize=17,fontweight='bold',y=.98)
-    fig.text(.08,.93,'NEUAD700YFB | '+str(len(stable))+' baseline-stable loci | '+str(a.replicates)+' random downsampling replicates\nFull-depth TRGT is the fixed benchmark; lines follow tested read-retention fractions.',va='top')
-    for col,label in [('p_exact','Exact agreement with full-depth TRGT'),('p_match_and_quality','Exact agreement + quality threshold'),('p_no_call','No genotype returned')]:ax[0].plot(z.median_depth,z[col],'o-',label=label)
-    if arm=='short':ax[0].plot(z.median_depth,z.p_q1,'o--',label='GangSTR Q still equals 1')
-    ax[0].fill_between(z.median_depth,z.match_quality_locus_bootstrap_low,z.match_quality_locus_bootstrap_high,alpha=.15,label='95% locus-bootstrap interval: match + quality')
-    ax[0].axhline(.95,color='gray',ls=':',label='95% observed success target');ax[0].set_ylabel('Fraction of selected loci / trials');ax[0].yaxis.set_major_formatter(PercentFormatter(1));ax[0].set_ylim(0,1.05);ax[0].legend(fontsize=9)
-    metric='q' if arm=='short' else 'ap';label='GangSTR genotype confidence (Q)' if arm=='short' else 'TRGT minimum allele purity (AP)'
-    for rep,t in primary[(primary.arm==arm)&(primary.fraction<1)].groupby('replicate'):
-        t=t.groupby('fraction')[['depth',metric]].median().sort_index();ax[1].plot(t.depth,t[metric],alpha=.25,color='#0072B2')
-    ax[1].plot(z.median_depth,z['median_'+metric],'o-',color='#0072B2',label='Median across available values');ax[1].set_ylabel(label);ax[1].set_ylim(0,1.05);ax[1].legend()
-    for b in ax:b.set_xlabel('Measured BAM depth at STRs: median across panel (x)');b.grid(alpha=.2)
-    quality='Q >= 0.9' if arm=='short' else 'minimum AP >= 0.9 and minimum allele support SD >= 3'
-    note='STR = short tandem repeat. Match requires both sorted allele repeat counts to equal full-depth TRGT. Quality threshold: '+quality+'. No-calls count as failures above; unavailable quality values are omitted from the lower panel. Faint lines show replicate medians. Loci were selected from baseline Q=1, concordant calls, with strong TRGT evidence, across length/motif/depth strata. Results are conditional on this panel; they are not a genome-wide minimum-depth guarantee. TRGT self-agreement measures stability, not independent accuracy. Q and AP are not equivalent confidence scores.'
-    fig.text(.08,.025,textwrap.fill(note,145),fontsize=9,va='bottom');fig.subplots_adjust(top=.82,bottom=.23,hspace=.35,left=.09,right=.98)
-    fig.savefig(a.out/(arm+'_depth_response.png'),dpi=180);plt.close(fig)
-text='''Full-depth TRGT remains fixed in both arms. Long-read downsampling measures stability relative to that callset, not independently validated accuracy.
+f,ax=plt.subplots(figsize=(12,8))
+f.subplots_adjust(left=.09,right=.98,top=.80,bottom=.27)
+f.suptitle('STR call agreement as sequencing depth decreases',fontsize=19,y=.97)
+f.text(.09,.91,f'NEUAD700YFB | {len(stable):,} selected loci | {a.replicates} downsampling repeats | Original full-depth TRGT benchmark',fontsize=11)
+baselines=[]
+for arm,name,exact_color,near_color,marker in [('short','GangSTR / short reads','#0072B2','#56B4E9','o'),('long','TRGT / long reads','#A51C30','#8A2BE2','s')]:
+    z=s.loc[s.arm.eq(arm)].sort_values('depth')
+    if z.empty: continue
+    baseline=z.loc[z.fraction.eq(1),'depth']
+    assert len(baseline)==1,'Expected one full-depth point per caller.'
+    baselines.append(name+': '+format(baseline.iloc[0],'.1f')+'×')
+    ax.plot(z.depth,z.exact,color=exact_color,marker=marker,lw=2,label=name+' — exact match')
+    ax.plot(z.depth,z.within1,color=near_color,marker=marker,lw=2,ls='--',label=name+' — within 1 repeat')
+    ax.fill_between(z.depth.to_numpy(),z.lo.to_numpy(),z.hi.to_numpy(),color=exact_color,alpha=.16)
+f.text(.09,.865,'Full-depth panel medians: '+'; '.join(baselines),fontsize=11)
+ax.axhline(.95,color='#777777',ls=':',lw=1.3,label='95% exact-agreement target')
+ax.set(xlim=(0,max(5,np.ceil(s.depth.max()/5)*5)),ylim=(0,1.025),xlabel='Measured mean depth across each STR: panel median (×)',ylabel='Agreement with full-depth TRGT (%)')
+ax.yaxis.set_major_formatter(PercentFormatter(1));ax.grid(alpha=.2);ax.spines[['top','right']].set_visible(False)
+ax.legend(loc='lower right',fontsize=10)
+f.text(.09,.065,'Exact match requires both allele repeat counts to match; within 1 repeat applies to both alleles and includes exact matches.\nShading: 95% locus-bootstrap intervals for exact agreement (500 resamples; repeated measurements kept together).\nMissing calls count as nonmatches. No Q, AP, or supporting-read threshold is applied to downsampled calls.\nLoci were selected for reliable, matching baseline calls. TRGT self-agreement measures stability, not independent accuracy.\nCoverage describes the selected STR panel, not whole-genome sequencing depth.',fontsize=9,linespacing=1.5)
+out=a.out/'combined_depth_response.png';f.savefig(out,dpi=180);plt.close(f);print(out)
+
+text='''The combined_depth_response.png figure shows exact and within-one-repeat agreement without quality filtering of downsampled calls. Shading is the 95% locus-bootstrap interval for exact agreement, distinct from the match-plus-quality intervals in the original analysis tables. comparable_depth_response.tsv contains the plotted values. The 95% line in the figure is an exact-agreement reference; minimum_tested_depth.tsv retains its original match-plus-quality criterion.
+Full-depth TRGT remains fixed in both arms. Long-read downsampling measures stability relative to that callset, not independently validated accuracy.
 Selection: canonical GangSTR Q=1, exact REPCN/MC agreement, TRGT minimum AP>=0.9 and SD>=3; balanced random selection across reference length, motif length and starting short-read depth. Selection counts and baseline exclusions are recorded.
 Each fraction is sampled directly from the original whole-genome BAM. A fixed template-hash seed within a replicate gives nested read sets; different replicates use different seeds. Mates are retained or discarded together. There is no interval cropping or upsampling.
 Caller arguments retain the original GangSTR seed and TRGT WGS preset. Library estimates are recomputed from each full-WGS downsample by GangSTR. Baseline reruns identify loci stable under the selected-catalog rerun; results for all originally selected loci are also retained.
