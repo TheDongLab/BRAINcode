@@ -102,6 +102,30 @@ if (!nrow(meta)) {
   stop("No tissue-matched RNA-seq samples had usable 0/0, 0/1, or 1/1 genotypes.")
 }
 
+# Select one RNA-seq sample per subject before checking PSI/event coverage.
+# Highest RIN wins; ties (including missing RIN) use sample ID, then row order.
+rin_headers <- tolower(gsub("[^A-Za-z0-9]", "", colnames(meta)))
+rin_col <- match("rin", rin_headers)
+if (is.na(rin_col)) rin_col <- match("rnaintegritynumber", rin_headers)
+sample_rin <- rep(-Inf, nrow(meta))
+if (!is.na(rin_col)) {
+  sample_rin <- suppressWarnings(as.numeric(as.character(meta[[rin_col]])))
+  sample_rin[!is.finite(sample_rin)] <- -Inf
+}
+selection_order <- order(
+  meta$externalsubjectid, -sample_rin, meta$externalsampleid,
+  seq_len(nrow(meta)), na.last = TRUE
+)
+selected_rows <- selection_order[
+  !duplicated(meta$externalsubjectid[selection_order])
+]
+cat(
+  "Subject-level sample selection: kept", length(selected_rows), "of",
+  nrow(meta), "metadata rows (one sample per subject).\n"
+)
+# Preserve the original ordering of the retained rows.
+meta <- meta[sort(selected_rows), , drop = FALSE]
+
 group_levels <- c("Ref/Ref", "Het", "Hom Alt")
 meta$group <- factor(meta$group, levels = group_levels)
 
@@ -145,6 +169,19 @@ psi_index <- data.frame(
 psi_index <- psi_index[!is.na(psi_index$sample_dir), , drop = FALSE]
 
 meta <- merge(meta, psi_index, by = "sample_dir", all.x = TRUE)
+
+# A selected sample must not multiply into several rows during the PSI join.
+if (anyDuplicated(meta$externalsubjectid)) {
+  duplicate_subjects <- unique(meta$externalsubjectid[
+    duplicated(meta$externalsubjectid) |
+      duplicated(meta$externalsubjectid, fromLast = TRUE)
+  ])
+  stop(
+    "Multiple PSI paths matched selected samples for subject(s): ",
+    paste(duplicate_subjects, collapse = ", "),
+    ". Resolve duplicate PSI paths before plotting; subjects must contribute once."
+  )
+}
 
 missing_psi <- meta[is.na(meta$psi_file), c(
   "externalsampleid", "externalsubjectid", "tissue", "sample_dir", "GT", "group"
