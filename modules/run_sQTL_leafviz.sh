@@ -2,7 +2,7 @@
 #SBATCH --job-name=sQTL_leafviz
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=12:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.err
 
@@ -470,126 +470,126 @@ process_one() {
   # Matrix columns are mapped through targetALS metadata so the output always uses externalsubjectid for downstream joining
   # ============================================================
   python - "$SNP_MAT" "$SNPID" "$COUNTED" "$VAR_REF" "$VAR_ALT" "$META" "$GENOTYPE_TSV" <<'PY'
-  import csv
-  import math
-  import sys
+import csv
+import math
+import sys
 
-  snp_file, snpid, counted, ref, alt, meta_file, out_file = sys.argv[1:]
+snp_file, snpid, counted, ref, alt, meta_file, out_file = sys.argv[1:]
 
-  subject_ids = set()
-  sample_to_subject = {}
+subject_ids = set()
+sample_to_subject = {}
 
-  with open(meta_file, newline="") as f:
-      reader = csv.DictReader(f)
-      for row in reader:
-          sample = (row.get("externalsampleid") or "").strip()
-          subject = (row.get("externalsubjectid") or "").strip()
-          if not subject:
-              continue
-          subject_ids.add(subject)
-          if sample:
-              sample_to_subject[sample] = subject
-              sample_to_subject[sample.replace("-", "_")] = subject
+with open(meta_file, newline="") as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        sample = (row.get("externalsampleid") or "").strip()
+        subject = (row.get("externalsubjectid") or "").strip()
+        if not subject:
+            continue
+        subject_ids.add(subject)
+        if sample:
+            sample_to_subject[sample] = subject
+            sample_to_subject[sample.replace("-", "_")] = subject
 
-  header = None
-  values = None
+header = None
+values = None
 
-  with open(snp_file) as f:
-      for line in f:
-          if not line.strip():
-              continue
-          fields = line.rstrip("\n").split()
-          if header is None:
-              header = fields
-              continue
-          if fields[0] == snpid:
-              values = fields
-              break
+with open(snp_file) as f:
+    for line in f:
+        if not line.strip():
+            continue
+        fields = line.rstrip("\n").split()
+        if header is None:
+            header = fields
+            continue
+        if fields[0] == snpid:
+            values = fields
+            break
 
-  if header is None:
-      raise SystemExit(f"ERROR: empty SNP matrix: {snp_file}")
-  if values is None:
-      raise SystemExit(f"ERROR: SNP {snpid} not found in genotype matrix: {snp_file}")
-  if len(values) != len(header):
-      raise SystemExit(
-          f"ERROR: SNP row/header length mismatch: "
-          f"{len(values)} values vs {len(header)} columns"
-      )
+if header is None:
+    raise SystemExit(f"ERROR: empty SNP matrix: {snp_file}")
+if values is None:
+    raise SystemExit(f"ERROR: SNP {snpid} not found in genotype matrix: {snp_file}")
+if len(values) != len(header):
+    raise SystemExit(
+        f"ERROR: SNP row/header length mismatch: "
+        f"{len(values)} values vs {len(header)} columns"
+    )
 
-  if counted not in (ref, alt):
-      raise SystemExit(
-          f"ERROR: counted allele {counted} is not REF={ref} or ALT={alt}"
-      )
+if counted not in (ref, alt):
+    raise SystemExit(
+        f"ERROR: counted allele {counted} is not REF={ref} or ALT={alt}"
+    )
 
-  records = {}
-  unmapped = []
+records = {}
+unmapped = []
 
-  for matrix_id, raw_value in zip(header[1:], values[1:]):
-      if raw_value.upper() in ("NA", "NAN", ".", ""):
-          continue
-      try:
-          dosage = float(raw_value)
-      except ValueError:
-          continue
+for matrix_id, raw_value in zip(header[1:], values[1:]):
+    if raw_value.upper() in ("NA", "NAN", ".", ""):
+        continue
+    try:
+        dosage = float(raw_value)
+    except ValueError:
+        continue
 
-      alt_dosage = 2.0 - dosage if counted == ref else dosage
+    alt_dosage = 2.0 - dosage if counted == ref else dosage
 
-      nearest = round(alt_dosage)
-      if not math.isfinite(alt_dosage) or abs(alt_dosage - nearest) > 1e-6:
-          raise SystemExit(
-              f"ERROR: non-integer genotype dosage for {matrix_id}: "
-              f"raw={dosage}, ALT dosage={alt_dosage}"
-          )
+    nearest = round(alt_dosage)
+    if not math.isfinite(alt_dosage) or abs(alt_dosage - nearest) > 1e-6:
+        raise SystemExit(
+            f"ERROR: non-integer genotype dosage for {matrix_id}: "
+            f"raw={dosage}, ALT dosage={alt_dosage}"
+        )
 
-      alt_dosage = int(nearest)
-      if alt_dosage == 0:
-          gt = "0/0"
-      elif alt_dosage == 1:
-          gt = "0/1"
-      elif alt_dosage == 2:
-          gt = "1/1"
-      else:
-          raise SystemExit(
-              f"ERROR: invalid ALT dosage {alt_dosage} for {matrix_id}"
-          )
+    alt_dosage = int(nearest)
+    if alt_dosage == 0:
+        gt = "0/0"
+    elif alt_dosage == 1:
+        gt = "0/1"
+    elif alt_dosage == 2:
+        gt = "1/1"
+    else:
+        raise SystemExit(
+            f"ERROR: invalid ALT dosage {alt_dosage} for {matrix_id}"
+        )
 
-      if matrix_id in subject_ids:
-          subject = matrix_id
-      elif matrix_id in sample_to_subject:
-          subject = sample_to_subject[matrix_id]
-      elif matrix_id.replace("_", "-") in sample_to_subject:
-          subject = sample_to_subject[matrix_id.replace("_", "-")]
-      else:
-          unmapped.append(matrix_id)
-          continue
+    if matrix_id in subject_ids:
+        subject = matrix_id
+    elif matrix_id in sample_to_subject:
+        subject = sample_to_subject[matrix_id]
+    elif matrix_id.replace("_", "-") in sample_to_subject:
+        subject = sample_to_subject[matrix_id.replace("_", "-")]
+    else:
+        unmapped.append(matrix_id)
+        continue
 
-      if subject in records and records[subject] != gt:
-          raise SystemExit(
-              f"ERROR: conflicting genotypes for subject {subject}: "
-              f"{records[subject]} vs {gt}"
-          )
+    if subject in records and records[subject] != gt:
+        raise SystemExit(
+            f"ERROR: conflicting genotypes for subject {subject}: "
+            f"{records[subject]} vs {gt}"
+        )
 
-      records[subject] = gt
+    records[subject] = gt
 
-  with open(out_file, "w", newline="") as f:
-      writer = csv.writer(f, delimiter="\t")
-      writer.writerow(["externalsubjectid", "GT"])
-      for subject in sorted(records):
-          writer.writerow([subject, records[subject]])
+with open(out_file, "w", newline="") as f:
+    writer = csv.writer(f, delimiter="\t")
+    writer.writerow(["externalsubjectid", "GT"])
+    for subject in sorted(records):
+        writer.writerow([subject, records[subject]])
 
-  counts = {"0/0": 0, "0/1": 0, "1/1": 0}
-  for gt in records.values():
-      counts[gt] += 1
+counts = {"0/0": 0, "0/1": 0, "1/1": 0}
+for gt in records.values():
+    counts[gt] += 1
 
-  print(f"Mapped genotype subjects: {len(records)}")
-  print(f"Ref/Ref: {counts['0/0']}")
-  print(f"Het:     {counts['0/1']}")
-  print(f"Hom Alt: {counts['1/1']}")
-  print(f"Unmapped matrix IDs: {len(unmapped)}")
+print(f"Mapped genotype subjects: {len(records)}")
+print(f"Ref/Ref: {counts['0/0']}")
+print(f"Het:     {counts['0/1']}")
+print(f"Hom Alt: {counts['1/1']}")
+print(f"Unmapped matrix IDs: {len(unmapped)}")
 
-  if unmapped:
-      print("First unmapped IDs:", ", ".join(unmapped[:10]))
-  PY
+if unmapped:
+    print("First unmapped IDs:", ", ".join(unmapped[:10]))
+PY
 
   echo
   echo "Genotype table:"
