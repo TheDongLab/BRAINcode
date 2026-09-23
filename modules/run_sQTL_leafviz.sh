@@ -2,7 +2,7 @@
 #SBATCH --job-name=sQTL_leafviz
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.err
 
@@ -792,10 +792,10 @@ for path in result_files:
             end = int(m.group("end"))
             lo, hi = sorted((start, end))
 
-            # Require both splice boundaries to lie within the gene span.
+            # Require any overlap with the gene span
             if event_chr != gene_chr:
                 continue
-            if lo < gene_start or hi > gene_end:
+            if hi < gene_start or lo > gene_end:
                 continue
 
             in_gene_rows += 1
