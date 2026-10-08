@@ -1,6 +1,14 @@
 #!/usr/bin/env Rscript
 
-# Static genotype-stratified LeafViz-style plot for sQTL events.
+# Static LeafViz-style plot. Existing calls default to genotype mode unchanged.
+# Opt in: --group-by tdp43 (no genotype or variant arguments required).
+# Optional --tdp43 <aligned CSV> and --pathology <original pathology CSV>;
+# defaults are aligned_rnaseq_tdp43_by_subject.csv and
+# collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv under --data-root.
+# TDP43 mode matches subject + RNA sample + tissue, verifies pathology provenance,
+# selects one highest-valid-RIN sample per subject before inspecting event coverage,
+# excludes missing/conflicting/unsupported scores, and writes mapping/count audits.
+# Arc normalization is unchanged: per-sample usage within anchor-connected junctions.
 # No installed leafcutter R package is required.
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -19,6 +27,9 @@ parse_args <- function(x) {
 }
 
 a <- parse_args(args)
+group_by <- if (is.null(a[["group-by"]])) "genotype" else a[["group-by"]]
+if (!group_by %in% c("genotype", "tdp43")) stop("--group-by must be genotype or tdp43")
+pathology_mode <- group_by == "tdp43"
 
 required <- c(
   "tissue", "tissue-regex", "anchor", "gene",
@@ -26,6 +37,10 @@ required <- c(
   "genotypes", "metadata", "data-root", "gtf", "outdir", "prefix"
 )
 
+if (pathology_mode) {
+  required <- setdiff(required, c("genotypes", "variant-chr", "variant-pos",
+                                 "variant-id", "variant-ref", "variant-alt"))
+}
 missing_args <- required[!required %in% names(a)]
 if (length(missing_args)) {
   stop("Missing required arguments: ", paste(missing_args, collapse = ", "))
@@ -71,6 +86,92 @@ if (!nrow(meta)) {
 # File names/directories use underscores rather than dashes.
 meta$sample_dir <- gsub("-", "_", meta$externalsampleid, fixed = TRUE)
 
+# Only pathology mode enters this branch. Genotype joins/selection stay unchanged.
+if (pathology_mode) {
+  canonical_tissue <- function(x) {
+    x <- tolower(gsub("[^a-z0-9]", "", tolower(trimws(x))))
+    x[grepl("cerebell", x)] <- "cerebellum"
+    x[grepl("frontal", x)] <- "frontalcortex"
+    x[grepl("motor.*cortex|cortex.*motor|ba4", x)] <- "motorcortex"
+    x[grepl("cervical", x)] <- "cervicalspinalcord"
+    x[grepl("lumbar|lumbosacral", x)] <- "lumbarspinalcord"
+    x[grepl("thoracic", x)] <- "thoracicspinalcord"
+    x
+  }
+  score_levels <- c("Absent", "Sparse", "Moderate", "Frequent")
+  score_value <- function(x) score_levels[match(tolower(trimws(x)), tolower(score_levels))]
+  key <- function(...) do.call(paste, c(list(...), sep="\034"))
+  need_columns <- function(x, cols, label) {
+    if (!all(cols %in% names(x))) stop(label, " missing columns: ", paste(setdiff(cols,names(x)),collapse=", "))
+  }
+  if (is.null(a$tdp43)) a$tdp43 <- file.path(a[["data-root"]], "aligned_rnaseq_tdp43_by_subject.csv")
+  if (is.null(a$pathology)) a$pathology <- file.path(a[["data-root"]], "collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv")
+  aligned <- read.csv(a$tdp43, check.names=FALSE, stringsAsFactors=FALSE, fileEncoding="UTF-8-BOM")
+  raw <- read.csv(a$pathology, check.names=FALSE, stringsAsFactors=FALSE, fileEncoding="UTF-8-BOM")
+  need_columns(aligned,c("Subject_ID","RNAseq_Sample_ID","RNAseq_Tissue_Name","Pathology_Sample_ID","Pathology_Tissue_Name","Neuronal_TDP43_Score"),"Aligned pathology table")
+  need_columns(raw,c("Subject ID","Sample ID","Tissue Source","P Tdp 43 Inclusions Neuronal"),"Original pathology table")
+  for (n in names(aligned)) aligned[[n]] <- trimws(as.character(aligned[[n]]))
+  for (n in names(raw)) raw[[n]] <- trimws(as.character(raw[[n]]))
+  meta$externalsubjectid <- trimws(meta$externalsubjectid)
+  meta$externalsampleid <- trimws(meta$externalsampleid)
+  meta$sample_dir <- gsub("-", "_", meta$externalsampleid, fixed=TRUE)
+  wanted_tissue <- canonical_tissue(a$tissue)
+  meta <- meta[canonical_tissue(meta$tissue)==wanted_tissue, , drop=FALSE]
+  aligned <- aligned[!is.na(aligned$RNAseq_Tissue_Name) & canonical_tissue(aligned$RNAseq_Tissue_Name)==wanted_tissue, , drop=FALSE]
+  aligned$normalized_score <- score_value(aligned$Neuronal_TDP43_Score)
+  aligned$reason <- "verified"
+  raw_key <- key(raw[["Subject ID"]], raw[["Sample ID"]], canonical_tissue(raw[["Tissue Source"]]))
+  raw_groups <- split(seq_len(nrow(raw)),raw_key)
+  meta_key <- key(meta$externalsubjectid,meta$externalsampleid,canonical_tissue(meta$tissue))
+  aligned_key <- key(aligned$Subject_ID,aligned$RNAseq_Sample_ID,canonical_tissue(aligned$RNAseq_Tissue_Name))
+  for (i in seq_len(nrow(aligned))) {
+    r <- aligned[i, ]
+    if (is.na(r$normalized_score)) { aligned$reason[i] <- "missing_or_unsupported_score"; next }
+    if (any(is.na(r[c("Subject_ID","RNAseq_Sample_ID","Pathology_Sample_ID","Pathology_Tissue_Name")])) ||
+        any(!nzchar(unlist(r[c("Subject_ID","RNAseq_Sample_ID","Pathology_Sample_ID","Pathology_Tissue_Name")])))) {
+      aligned$reason[i] <- "missing_mapping_identifier"; next
+    }
+    if (canonical_tissue(r$Pathology_Tissue_Name)!=wanted_tissue) { aligned$reason[i] <- "pathology_tissue_mismatch"; next }
+    if (!aligned_key[i] %in% meta_key) { aligned$reason[i] <- "no_exact_metadata_match"; next }
+    ri <- raw_groups[[key(r$Subject_ID,r$Pathology_Sample_ID,canonical_tissue(r$Pathology_Tissue_Name))]]
+    if (!length(ri)) { aligned$reason[i] <- "pathology_record_not_found"; next }
+    raw_scores <- unique(score_value(raw[["P Tdp 43 Inclusions Neuronal"]][ri]))
+    if (length(raw_scores)!=1L || is.na(raw_scores[1]) || raw_scores[1]!=r$normalized_score) {
+      aligned$reason[i] <- "pathology_score_mismatch_or_conflict"
+    }
+  }
+  # Different scores within a subject/tissue cannot become independent subjects.
+  by_subject <- split(seq_len(nrow(aligned)),aligned$Subject_ID)
+  for (ii in by_subject) {
+    v <- unique(aligned$normalized_score[ii][!is.na(aligned$normalized_score[ii])])
+    if (length(v)>1 || any(aligned$reason[ii]=="pathology_score_mismatch_or_conflict")) {
+      aligned$reason[ii] <- "conflicting_subject_tissue_scores"
+    }
+  }
+  write.table(aligned,file.path(a$outdir,paste0(a$prefix,".pathology_alignment.tsv")),sep="\t",quote=FALSE,row.names=FALSE)
+  meta$group <- NA_character_
+  meta$Pathology_Sample_ID <- NA_character_
+  meta$Pathology_Tissue_Name <- NA_character_
+  meta$mapping_status <- "no_verified_pathology_score"
+  for (i in seq_len(nrow(meta))) {
+    ii <- which(aligned_key==meta_key[i])
+    if (!length(ii)) next
+    good <- ii[aligned$reason[ii]=="verified"]
+    if (!length(good)) { meta$mapping_status[i] <- paste(sort(unique(aligned$reason[ii])),collapse=";"); next }
+    meta$group[i] <- aligned$normalized_score[good[1]]
+    meta$Pathology_Sample_ID[i] <- paste(sort(unique(aligned$Pathology_Sample_ID[good])),collapse=";")
+    meta$Pathology_Tissue_Name[i] <- paste(sort(unique(aligned$Pathology_Tissue_Name[good])),collapse=";")
+    meta$mapping_status[i] <- "eligible"
+  }
+  meta$.mapping_row <- seq_len(nrow(meta))
+  pathology_mapping <- meta
+  meta <- meta[!is.na(meta$group), , drop=FALSE]
+  meta$GT <- NA_character_ # Internal compatibility only; omitted from pathology output.
+  if (!nrow(meta)) {
+    write.table(pathology_mapping,file.path(a$outdir,paste0(a$prefix,".pathology_mapping.tsv")),sep="\t",quote=FALSE,row.names=FALSE)
+    stop("No RNA-seq samples have a verified, unambiguous tissue-matched neuronal TDP43 score. See pathology audits.")
+  }
+} else {
 cat("Loading VCF genotypes...\n")
 gt <- read.delim(a$genotypes, stringsAsFactors = FALSE, check.names = FALSE)
 
@@ -102,6 +203,8 @@ if (!nrow(meta)) {
   stop("No tissue-matched RNA-seq samples had usable 0/0, 0/1, or 1/1 genotypes.")
 }
 
+}
+
 # Select one RNA-seq sample per subject before checking PSI/event coverage.
 # Highest RIN wins; ties (including missing RIN) use sample ID, then row order.
 rin_headers <- tolower(gsub("[^A-Za-z0-9]", "", colnames(meta)))
@@ -111,6 +214,7 @@ sample_rin <- rep(-Inf, nrow(meta))
 if (!is.na(rin_col)) {
   sample_rin <- suppressWarnings(as.numeric(as.character(meta[[rin_col]])))
   sample_rin[!is.finite(sample_rin)] <- -Inf
+  if (pathology_mode) sample_rin[sample_rin<0 | sample_rin>10] <- -Inf
 }
 selection_order <- order(
   meta$externalsubjectid, -sample_rin, meta$externalsampleid,
@@ -123,10 +227,15 @@ cat(
   "Subject-level sample selection: kept", length(selected_rows), "of",
   nrow(meta), "metadata rows (one sample per subject).\n"
 )
+if (pathology_mode) {
+  pathology_mapping$mapping_status[pathology_mapping$mapping_status=="eligible"] <- "alternate_rna_sample"
+  pathology_mapping$mapping_status[meta$.mapping_row[selected_rows]] <- "selected"
+  write.table(pathology_mapping,file.path(a$outdir,paste0(a$prefix,".pathology_mapping.tsv")),sep="\t",quote=FALSE,row.names=FALSE)
+}
 # Preserve the original ordering of the retained rows.
 meta <- meta[sort(selected_rows), , drop = FALSE]
 
-group_levels <- c("Ref/Ref", "Het", "Hom Alt")
+group_levels <- if (pathology_mode) score_levels else c("Ref/Ref", "Het", "Hom Alt")
 meta$group <- factor(meta$group, levels = group_levels)
 
 # Build an index of all per-sample PSI files across tissue folders.
@@ -167,6 +276,14 @@ psi_index <- data.frame(
 )
 
 psi_index <- psi_index[!is.na(psi_index$sample_dir), , drop = FALSE]
+if (pathology_mode) {
+  path_tissue <- vapply(strsplit(psi_index$psi_file, .Platform$file.sep, fixed=TRUE), function(parts) {
+    k <- which(parts=="Processed"); if (!length(k) || k[1]<3) return(NA_character_)
+    parts[k[1]-2]
+  }, character(1))
+  psi_index <- psi_index[!is.na(path_tissue) & canonical_tissue(path_tissue)==wanted_tissue, , drop=FALSE]
+  pathology_selected <- meta
+}
 
 meta <- merge(meta, psi_index, by = "sample_dir", all.x = TRUE)
 
@@ -187,6 +304,7 @@ missing_psi <- meta[is.na(meta$psi_file), c(
   "externalsampleid", "externalsubjectid", "tissue", "sample_dir", "GT", "group"
 ), drop = FALSE]
 
+if (pathology_mode) missing_psi$GT <- NULL
 if (nrow(missing_psi)) {
   write.table(
     missing_psi,
@@ -338,12 +456,28 @@ sample_qc <- data.frame(
   stringsAsFactors = FALSE
 )
 
+if (pathology_mode) {
+  sample_qc$GT <- NULL
+  sample_qc$Neuronal_TDP43_Score <- as.character(meta$group)
+  sample_qc$Pathology_Sample_ID <- meta$Pathology_Sample_ID
+  sample_qc$Pathology_Tissue_Name <- meta$Pathology_Tissue_Name
+}
 write.table(
   sample_qc,
   file = file.path(a$outdir, paste0(a$prefix, ".samples.tsv")),
   sep = "\t", quote = FALSE, row.names = FALSE
 )
 
+if (pathology_mode) {
+  counts <- do.call(rbind,lapply(group_levels,function(g) data.frame(
+    tissue=a$tissue, Neuronal_TDP43_Score=g,
+    mapped_unique_subjects=length(unique(pathology_mapping$externalsubjectid[!is.na(pathology_mapping$group) & pathology_mapping$group==g])),
+    selected_subjects=sum(as.character(pathology_selected$group)==g),
+    subjects_with_psi_file=sum(as.character(meta$group)==g),
+    subjects_with_event_coverage=sum(as.character(meta$group)==g & usable))))
+  counts$small_group <- counts$subjects_with_event_coverage<5
+  write.table(counts,file.path(a$outdir,paste0(a$prefix,".group_counts.tsv")),sep="\t",quote=FALSE,row.names=FALSE)
+}
 if (!any(usable)) {
   stop("No selected samples had reads supporting the anchor-connected event.")
 }
@@ -539,6 +673,12 @@ if (nrow(gene_exons)) {
 # Plot
 # -------------------------------------------------------------------------
 make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
+  if (pathology_mode && group_n[g]==0) {
+    p <- ggplot() + annotate("text",x=0,y=0,label=paste(g,"— no data"),size=5) +
+      theme_void() + ylab(sprintf("%s (n=0)",g))
+    if (show_title) p <- p + ggtitle(a$gene,subtitle=paste(a$anchor,"Neuronal TDP43 score",sep=" | "))
+    return(p)
+  }
   vals <- group_mean[g, ]
   vals[is.na(vals)] <- 0
 
@@ -553,7 +693,7 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
   ed$side <- ifelse(seq_len(nrow(ed)) %% 2 == 1, 1, -1)
   ed$ymid <- ed$side * (ed$span^0.65 / 2 + 0.25)
 
-  # Original LeafViz effectively scales thickness ~ PSI^2.
+  # Original LeafViz effectively scales thickness ~ PSI^2
   ed$line_size <- 0.25 + 9.75 * (ed$mean_PSI^2)
   ed$label <- paste0(
     format(ed$mean_PSI, digits = 2, nsmall = 2, scientific = FALSE),
@@ -571,7 +711,7 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
       axis.text = element_blank(),
       axis.ticks = element_blank(),
       axis.title.x = element_blank(),
-      axis.title.y = element_text(size = 12),
+      axis.title.y = element_text(size = if (pathology_mode) 10 else 12),
       panel.border = element_blank(),
       legend.position = if (show_legend) "bottom" else "none",
       plot.title = element_text(face = "bold.italic", hjust = 0.5, size = 15),
@@ -683,22 +823,22 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
       drop = FALSE
     ) +
     coord_cartesian(xlim = xlim_vals, ylim = c(-ymax, ymax), clip = "off") +
-    ylab(sprintf("%s (n=%d)", g, group_n[g]))
+    ylab(sprintf("%s (n=%d)%s", g, group_n[g],
+                 if (pathology_mode && group_n[g]<5) "\nsmall group" else ""))
 
   if (show_title) {
-    variant_label <- paste0(
-      a[["variant-chr"]], ":", a[["variant-pos"]],
-      " ", a[["variant-ref"]], ">", a[["variant-alt"]]
-    )
-    if (!is.na(a[["variant-id"]]) && nzchar(a[["variant-id"]]) && a[["variant-id"]] != ".") {
-      variant_label <- paste0(a[["variant-id"]], " | ", variant_label)
-    }
-
-    p <- p +
-      ggtitle(
-        a$gene,
-        subtitle = paste0(a$anchor, " | ", variant_label)
+    if (pathology_mode) {
+      variant_label <- "Neuronal TDP43 score"
+    } else {
+      variant_label <- paste0(
+        a[["variant-chr"]], ":", a[["variant-pos"]],
+        " ", a[["variant-ref"]], ">", a[["variant-alt"]]
       )
+      if (!is.na(a[["variant-id"]]) && nzchar(a[["variant-id"]]) && a[["variant-id"]] != ".") {
+        variant_label <- paste0(a[["variant-id"]], " | ", variant_label)
+      }
+    }
+    p <- p + ggtitle(a$gene, subtitle=paste0(a$anchor, " | ", variant_label))
   }
 
   p
@@ -738,11 +878,11 @@ pdf_file <- file.path(a$outdir, paste0(a$prefix, ".pdf"))
 png_file <- file.path(a$outdir, paste0(a$prefix, ".png"))
 svg_file <- file.path(a$outdir, paste0(a$prefix, ".svg"))
 
-ggsave(pdf_file, combined, width = 11, height = 10, units = "in")
-ggsave(png_file, combined, width = 11, height = 10, units = "in", dpi = 300)
-ggsave(svg_file, combined, width = 11, height = 10, units = "in")
+ggsave(pdf_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in")
+ggsave(png_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in", dpi = 300)
+ggsave(svg_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in")
 
-cat("\nGenotype sample counts with event coverage:\n")
+cat(if (pathology_mode) "\nNeuronal TDP43 sample counts with event coverage:\n" else "\nGenotype sample counts with event coverage:\n")
 print(group_n)
 
 cat("\nOutputs:\n")
