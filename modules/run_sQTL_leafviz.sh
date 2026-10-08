@@ -2,7 +2,7 @@
 #SBATCH --job-name=sQTL_leafviz
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=12:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/leafviz/%x_%j.err
 
@@ -11,14 +11,21 @@ set -euo pipefail
 # ============================================================
 # ENVIRONMENT
 # ============================================================
-eval "$(conda shell.bash hook)"
-conda activate RNAseq
-module load R >/dev/null 2>&1
-module load BCFtools >/dev/null 2>&1
 
 usage() {
   cat <<'EOF'
-Usage:
+Usage (genotype is the default; existing commands are unchanged):
+
+  Pathology, all significant junctions for a gene (one plot per unique junction):
+     sbatch run_sQTL_leafviz.sh TISSUE GENE --group-by tdp43
+
+  Pathology, one junction (no SNP needed):
+     sbatch run_sQTL_leafviz.sh TISSUE ANCHOR_JUNCTION GENE --group-by tdp43
+
+  Optional pathology file overrides:
+     --tdp43 ALIGNED_CSV --pathology ORIGINAL_PATHOLOGY_CSV
+  Defaults: the existing pathology CSVs under $HOME/donglab/data/target_ALS.
+  TDP43 outputs use a _tdp43_ prefix; genotype outputs retain their original names.
 
   1) Plot ALL significant sQTL SNP-junction pairs for one gene/tissue:
      sbatch run_sQTL_leafviz.sh TISSUE GENE
@@ -28,19 +35,19 @@ Usage:
 
 Examples:
 
-  # NEW: all significant sQTL events for UNC13A in Frontal Cortex
+  # All significant sQTL events for UNC13A in Frontal Cortex
   sbatch run_sQTL_leafviz.sh \
     Frontal_Cortex \
     UNC13A
 
-  # EXISTING: one specific event
+  # One specific event
   sbatch run_sQTL_leafviz.sh \
     Frontal_Cortex \
     chr19:-:17636157-17639083 \
     rs8106014 \
     UNC13A
 
-  # Existing coordinate-style SNP input still works
+  # Existing coordinate-style SNP input
   sbatch run_sQTL_leafviz.sh \
     Frontal_Cortex \
     chr19:-:17636157-17639083 \
@@ -64,20 +71,60 @@ Notes for ALL mode:
 EOF
 }
 
+GROUP_BY="genotype"
+TDP43_CSV=""
+PATHOLOGY_CSV=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --group-by|--tdp43|--pathology)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "ERROR: $1 requires a value." >&2; exit 1; }
+      case "$1" in
+        --group-by) GROUP_BY="$2" ;;
+        --tdp43) TDP43_CSV="$2" ;;
+        --pathology) PATHOLOGY_CSV="$2" ;;
+      esac
+      shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    --*) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+[[ "$GROUP_BY" == genotype || "$GROUP_BY" == tdp43 ]] || { echo "ERROR: --group-by must be genotype or tdp43." >&2; exit 1; }
+if [[ "$GROUP_BY" == genotype && ( -n "$TDP43_CSV" || -n "$PATHOLOGY_CSV" ) ]]; then
+  echo "ERROR: --tdp43 and --pathology require --group-by tdp43." >&2
+  exit 1
+fi
+set -- "${POSITIONAL[@]}"
 if [[ $# -eq 2 ]]; then
   MODE="all"
   TISSUE="$1"
   GENE="$2"
+elif [[ "$GROUP_BY" == tdp43 && $# -eq 3 ]]; then
+  MODE="single"
+  TISSUE="$1"
+  ANCHOR="$2"
+  SNP="."
+  GENE="$3"
 elif [[ $# -eq 4 ]]; then
   MODE="single"
   TISSUE="$1"
   ANCHOR="$2"
   SNP="$3"
   GENE="$4"
+  if [[ "$GROUP_BY" == tdp43 ]]; then
+    echo "TDP43 mode: SNP argument is ignored; grouping uses pathology scores."
+  fi
 else
   usage
   exit 1
 fi
+
+# Load the established environment after validating arguments.
+eval "$(conda shell.bash hook)"
+conda activate RNAseq
+module load R >/dev/null 2>&1
+if [[ "$GROUP_BY" == genotype ]]; then module load BCFtools >/dev/null 2>&1; fi
 
 # ============================================================
 # PATHS
@@ -95,16 +142,27 @@ GTF="$ANNOT/gencode.v49.annotation.gtf"
 DBSNP="$ANNOT/GCF_000001405.40.gz"
 CHR_MAP="$ANNOT/ncbi_to_ucsc.txt"
 
-SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+# Slurm executes a spool copy; resolve the shared plotter independently of submit cwd.
+SCRIPT_DIR="$HOME/donglab/pipelines/scripts/QTL"
 R_SCRIPT="$SCRIPT_DIR/plot_sQTL_leafviz.R"
 
 mkdir -p "$OUTDIR"
 
-for f in "$META" "$RAW" "$SNP_MAT" "$SNP_LOC" "$GTF" "$DBSNP" "$DBSNP.tbi" "$CHR_MAP" "$R_SCRIPT"; do
+REQUIRED_FILES=("$META" "$GTF" "$R_SCRIPT")
+REQUIRED_COMMANDS=(Rscript python awk sed grep head)
+if [[ "$GROUP_BY" == genotype ]]; then
+  REQUIRED_FILES+=("$RAW" "$SNP_MAT" "$SNP_LOC" "$DBSNP" "$DBSNP.tbi" "$CHR_MAP")
+  REQUIRED_COMMANDS+=(bcftools)
+else
+  TDP43_CSV="${TDP43_CSV:-$DATA/aligned_rnaseq_tdp43_by_subject.csv}"
+  PATHOLOGY_CSV="${PATHOLOGY_CSV:-$DATA/collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv}"
+  REQUIRED_FILES+=("$TDP43_CSV" "$PATHOLOGY_CSV")
+fi
+for f in "${REQUIRED_FILES[@]}"; do
   [[ -e "$f" ]] || { echo "ERROR: required file not found: $f" >&2; exit 1; }
 done
 
-for cmd in bcftools Rscript python awk sed grep head; do
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "ERROR: $cmd is not available in PATH." >&2
     exit 1
@@ -216,10 +274,36 @@ raw_columns_at_position() {
     '
 }
 
+process_pathology() {
+  local anchor="$1" gene="$2" prefix
+  prefix="${TISSUE}_$(sanitize "$gene")_tdp43_$(sanitize "$anchor")"
+  echo "TDP43 LeafViz | tissue=$TISSUE | gene=$gene | junction=$anchor"
+  echo "Panels: Absent, Sparse, Moderate, Frequent"
+  Rscript --vanilla "$R_SCRIPT" \
+    --group-by tdp43 \
+    --tdp43 "$TDP43_CSV" \
+    --pathology "$PATHOLOGY_CSV" \
+    --tissue "$TISSUE" \
+    --tissue-regex "$TISSUE_REGEX" \
+    --anchor "$anchor" \
+    --gene "$gene" \
+    --metadata "$META" \
+    --data-root "$DATA" \
+    --gtf "$GTF" \
+    --outdir "$OUTDIR" \
+    --prefix "$prefix" || return $?
+  echo "Results: $OUTDIR/$prefix.*"
+}
+
 process_one() {
   local ANCHOR="$1"
   local SNP="$2"
   local GENE="$3"
+
+  if [[ "$GROUP_BY" == tdp43 ]]; then
+    process_pathology "$ANCHOR" "$GENE"
+    return $?
+  fi
 
   # ============================================================
   # HEADER
@@ -652,13 +736,13 @@ find_all_significant_pairs() {
   printf '  %s\n' "${SIG_FILES[@]}"
   echo
 
-  python - "$GTF" "$gene" "$pair_tsv" "${SIG_FILES[@]}" <<'PY'
+  python - "$GTF" "$gene" "$pair_tsv" "$GROUP_BY" "${SIG_FILES[@]}" <<'PY'
 import gzip
 import re
 import sys
 from pathlib import Path
 
-gtf, gene, out_tsv, *result_files = sys.argv[1:]
+gtf, gene, out_tsv, group_by, *result_files = sys.argv[1:]
 
 def opener(path):
     return gzip.open(path, "rt") if path.endswith(".gz") else open(path)
@@ -799,7 +883,7 @@ for path in result_files:
                 continue
 
             in_gene_rows += 1
-            pairs.add((event, snp))
+            pairs.add((event, "." if group_by == "tdp43" else snp))
 
 if not pairs:
     raise SystemExit(
@@ -822,7 +906,7 @@ with open(out_tsv, "w") as out:
 print(f"Significant result rows scanned: {source_rows}")
 print(f"Junction-like rows:              {junction_rows}")
 print(f"Rows inside gene:                {in_gene_rows}")
-print(f"Unique SNP-junction pairs:       {len(pairs)}")
+print(f"Unique {'junctions' if group_by == 'tdp43' else 'SNP-junction pairs'}: {len(pairs)}")
 print(f"Pair list:                       {out_tsv}")
 PY
 }
@@ -832,6 +916,9 @@ run_all_mode() {
   local safe_gene
   safe_gene="$(sanitize "$gene")"
   local pair_tsv="$OUTDIR/${TISSUE}_${safe_gene}_all_significant_sQTL_pairs.tsv"
+  if [[ "$GROUP_BY" == tdp43 ]]; then
+    pair_tsv="$OUTDIR/${TISSUE}_${safe_gene}_tdp43_significant_junctions.tsv"
+  fi
 
   echo "============================================================"
   echo "sQTL LeafViz: ALL SIGNIFICANT EVENTS FOR GENE"
@@ -846,7 +933,11 @@ run_all_mode() {
   total="$(awk 'NR>1 {n++} END{print n+0}' "$pair_tsv")"
 
   echo
-  echo "Will plot $total unique significant SNP-junction pair(s)."
+  if [[ "$GROUP_BY" == tdp43 ]]; then
+    echo "Will plot $total unique significant junction(s), grouped by neuronal TDP43 score."
+  else
+    echo "Will plot $total unique significant SNP-junction pair(s)."
+  fi
   echo
 
   local i=0
