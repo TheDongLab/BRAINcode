@@ -18,6 +18,7 @@ Rscript -e 'p<-c("data.table","susieR","coloc","ggplot2"); x<-p[!sapply(p,requir
 BASE="$HOME/donglab/data/target_ALS"; BFILE="$BASE/QTL/plink/joint_all_chrs_filtered_bed"; RAW="$BASE/QTL/plink/joint_all_chrs_matrixEQTL.raw"
 GWAS="$HOME/donglab/references/GWAS/ALS/harmonised/34873335-GCST90027163-MONDO_0004976.h.tsv.gz"; GWAS_ORIG="$HOME/donglab/references/GWAS/ALS/GCST90027163_buildGRCh37.tsv.gz"
 TISSUES=(Cervical_Spinal_Cord Lumbar_Spinal_Cord Motor_Cortex Frontal_Cortex Cerebellum)
+[[ -z "${QTL_TISSUES:-}" ]] || read -r -a TISSUES <<< "$QTL_TISSUES"
 
 CANDIDATE_MODE="global_fdr"   # global_fdr | tissue_fdr | nominal | all
 H4_REFERENCE=0.80; MIN_SHARED_SNPS=10; MIN_SHARED_FRAC=0.50; SUSIE_L=10; MIN_F=10

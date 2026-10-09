@@ -93,13 +93,14 @@ EOF
 echo "[1] Processing cohort alignments with on-the-fly read filtering..."
 python3 << EOF
 import pandas as pd
-import sys, os
+import sys, os, re
 import numpy as np
 from collections import Counter
 
 try:
     # 1. LOAD DATA & REMOVE SEX MISMATCHES
-    breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
+    if "$TISSUE" not in ("Cortex", "Spinal_Cord"):
+        breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
     meta = pd.read_csv("$METADATA_CSV", low_memory=False)
     pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
@@ -125,6 +126,8 @@ try:
 
     # 2. DEFINE TISSUE PATTERN
     patterns = {
+        "Cortex": r"(?:^|[\W_])cortex(?:$|[\W_])",
+        "Spinal_Cord": r"(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])",
         "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
         "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
         "Lumbar_Spinal_Cord": "Lumbar Spinal Cord|Spinal_Cord_Lumbosacral|Lumbosacral_Spinal_Cord|Lumbar_spinal_cord|Lumbar|Lumbosacral",
@@ -135,9 +138,12 @@ try:
     pattern = patterns.get("$TISSUE", "$TISSUE")
 
     # 3. FILTERING & BEST REPLICATE SELECTION (PMI <= 40 & RIN >= 3)
-    approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
-    meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
-    meta_tissue = meta_filt[meta_filt.apply(lambda r: r.astype(str).str.contains(pattern, case=False).any(), axis=1)].copy()
+    if "$TISSUE" in ("Cortex", "Spinal_Cord"):
+        meta_tissue = meta[meta["tissue"].astype("string").str.contains(pattern, case=False, na=False)].copy()
+    else:
+        approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
+        meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
+        meta_tissue = meta_filt[meta_filt.apply(lambda r: r.astype(str).str.contains(pattern, case=False).any(), axis=1)].copy()
 
     def get_rin(r):
         try: return max(float(r.iloc[16]) if pd.notnull(r.iloc[16]) else 0, float(r.iloc[17]) if pd.notnull(r.iloc[17]) else 0)
@@ -171,7 +177,10 @@ try:
         proc_path = os.path.join(ROOT, name, "RNAseq", "Processed")
         if os.path.isdir(proc_path):
             name_norm = name.upper()
-            if any(term in name_norm or name_norm in term for term in pattern_terms_norm):
+            if "$TISSUE" in ("Cortex", "Spinal_Cord"):
+                if re.search(pattern, name, flags=re.I):
+                    candidate_proc_dirs.append(proc_path)
+            elif any(term in name_norm or name_norm in term for term in pattern_terms_norm):
                 candidate_proc_dirs.append(proc_path)
 
     print(f"DEBUG: matched {len(candidate_proc_dirs)} tissue-variant dirs: {candidate_proc_dirs}", file=sys.stderr)

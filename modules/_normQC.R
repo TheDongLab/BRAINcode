@@ -90,7 +90,13 @@ covariate$mapped_tissue <- sapply(covariate$tissue, function(x) {
   x
 })
 
-meta_sub <- covariate[covariate$mapped_tissue == TISSUE, ]
+if(TISSUE == "Cortex") {
+  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])cortex([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
+} else if(TISSUE == "Spinal_Cord") {
+  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
+} else {
+  meta_sub <- covariate[covariate$mapped_tissue == TISSUE, ]
+}
 meta_idx <- match(colnames(tpm), meta_sub$externalsampleid)
 
 sex <- meta_sub$sex[meta_idx]

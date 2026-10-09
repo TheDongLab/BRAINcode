@@ -72,6 +72,17 @@ INTERACTION_TISSUES_cQTL=(
     Motor_Cortex Frontal_Cortex Cervical_Spinal_Cord Lumbar_Spinal_Cord Cerebellum
 )
 
+# Optional pooled (or regional) batch selection; original defaults above are unchanged.
+if [[ -n "${QTL_TISSUES:-}" ]]; then
+    read -r -a TISSUES <<< "$QTL_TISSUES"
+    INTERACTION_TISSUES_eQTL=("${TISSUES[@]}")
+    INTERACTION_TISSUES_sQTL=("${TISSUES[@]}")
+    INTERACTION_TISSUES_cQTL=("${TISSUES[@]}")
+    # Avoid reusing completion markers from a different tissue set.
+    STATUS_DIR="$DATA_ROOT/QTL/.workflow_status_${QTL_TISSUES// /__}"
+    export QTL_TISSUES
+fi
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 status_file() { echo "$STATUS_DIR/$1.$2.done"; }
 jobid_file()  { echo "$STATUS_DIR/$1.$2.jobid"; }

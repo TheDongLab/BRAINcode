@@ -70,7 +70,8 @@ import sys
 import numpy as np
 
 # 1. LOAD DATA & CHROMOSOME MAPS
-breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
+if "$TISSUE" not in ("Cortex", "Spinal_Cord"):
+    breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 meta = pd.read_csv("$METADATA_CSV", low_memory=False)
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
 
@@ -99,6 +100,8 @@ meta = meta[~meta['externalsampleid'].isin(sex_mismatch_samples)].copy()
 
 # 2. DEFINE TISSUE PATTERN
 patterns = {
+    "Cortex": r"(?:^|[\W_])cortex(?:$|[\W_])",
+    "Spinal_Cord": r"(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])",
     "Motor_Cortex": "Motor Cortex Lateral|Motor Cortex Medial|Lateral Motor Cortex|Medial Motor Cortex|Primary Motor Cortex L|Primary Motor Cortex M|Cortex_Motor_Unspecified|Cortex_Motor_BA4|BA4 Motor Cortex|Lateral_motor_cortex|Motor Cortex|BA4",
     "Cervical_Spinal_Cord": "Spinal_Cord_Cervical|Cervical Spinal Cord|Cervical_spinal_cord|Spinal_cord_Cervical|Cervical",
     "Lumbar_Spinal_Cord": "Lumbar Spinal Cord|Spinal_Cord_Lumbosacral|Lumbosacral_Spinal_Cord|Lumbar_spinal_cord|Lumbar|Lumbosacral",
@@ -109,10 +112,13 @@ patterns = {
 pattern = patterns.get("$TISSUE", "$TISSUE")
 
 # 3. FILTERING & BEST REPLICATE SELECTION
-approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
-meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
-mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
-meta_tissue = meta_filt[mask].copy()
+if "$TISSUE" in ("Cortex", "Spinal_Cord"):
+    meta_tissue = meta[meta["tissue"].astype("string").str.contains(pattern, case=False, na=False)].copy()
+else:
+    approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
+    meta_filt = meta[meta['externalsubjectid'].isin(approved_subjects)].copy()
+    mask = meta_filt.apply(lambda row: row.astype(str).str.contains(pattern, case=False).any(), axis=1)
+    meta_tissue = meta_filt[mask].copy()
 
 def get_rin(row):
     try:

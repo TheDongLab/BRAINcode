@@ -90,6 +90,7 @@ warnings.filterwarnings("ignore")
 GENOTYPE_LABELS={0:"Ref/Ref",1:"Het",2:"Hom Alt"}
 TRACK_COLORS={0:"#228B22",1:"#4682B4",2:"#C75B7A"}
 CANONICAL_TISSUES=["Cerebellum","Frontal_Cortex","Cervical_Spinal_Cord","Lumbar_Spinal_Cord","Motor_Cortex"]
+if os.environ.get("QTL_TISSUES"):CANONICAL_TISSUES=os.environ["QTL_TISSUES"].split()
 
 def norm(s):return re.sub(r"[^a-z0-9]","",str(s).lower())
 def chr_key(s):return re.sub(r"^chr","",str(s),flags=re.I).upper()
@@ -130,7 +131,10 @@ TISSUE_REMAP_NORM={norm(k):v for k,v in TISSUE_REMAP.items()}
 for t in CANONICAL_TISSUES:TISSUE_REMAP_NORM[norm(t)]=t
 def canonical_tissue(x):
     x=str(x).strip();return TISSUE_REMAP_NORM.get(norm(x),x)
-def tissue_equal(a,b):return canonical_tissue(a)==canonical_tissue(b)
+def tissue_equal(a,b):
+    if b=="Cortex":return bool(re.search(r"(?:^|[\W_])cortex(?:$|[\W_])",str(a),re.I))
+    if b=="Spinal_Cord":return bool(re.search(r"(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])",str(a),re.I))
+    return canonical_tissue(a)==canonical_tissue(b)
 
 def extract_matrix_rows(path,wanted):
     wanted=set(map(str,wanted));wanted_nv={strip_gene_version(x) for x in wanted};out={}
@@ -334,7 +338,7 @@ def processed_roots_for_tissue(ROOT,tissue):
     roots=[];preferred=ROOT/t/"RNAseq"/"Processed"
     if preferred.is_dir():roots.append(preferred)
     for p in ROOT.iterdir():
-        if p.is_dir() and canonical_tissue(p.name)==t:
+        if p.is_dir() and tissue_equal(p.name,t):
             q=p/"RNAseq"/"Processed"
             if q.is_dir() and q not in roots:roots.append(q)
     processed_root_cache[t]=roots;print(f"  RNAseq roots for {t}: "+(" | ".join(map(str,roots)) if roots else "NONE"));return roots
@@ -514,7 +518,7 @@ def get_rin(r):
 def metadata_for_qtl_id(qid,tissue):
     rows=metadata;target=canonical_tissue(tissue)
     if meta_tissue_col:
-        z=[r for r in rows if canonical_tissue(r.get(meta_tissue_col,""))==target]
+        z=[r for r in rows if tissue_equal(r.get(meta_tissue_col,""),target)]
         if z:rows=z
     z=[r for r in rows if str(r.get(sample_col,"")).strip()==str(qid)]
     if z:return max(z,key=get_rin)

@@ -29,7 +29,20 @@ module load Python/3.12.3-GCCcore-13.3.0
 echo "Processing Tissue: $TISSUE"
 
 # --- STEP 1: FIND ALL POTENTIAL FILES ---
-find "$BASE" -name "normalization.tab" | grep -i "$TISSUE" | grep "Processed" | grep -v "/eQTL/" > "$OUT_DIR/tpm_file_list.txt" || true
+if [[ "$TISSUE" == Cortex || "$TISSUE" == Spinal_Cord ]]; then
+    if [[ "$TISSUE" == Cortex ]]; then
+        tissue_pattern='(^|[^[:alnum:]])cortex([^[:alnum:]]|$)'
+    else
+        tissue_pattern='(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)'
+    fi
+    while IFS= read -r -d '' tissue_dir; do
+        if printf '%s\n' "${tissue_dir##*/}" | grep -Eiq "$tissue_pattern"; then
+            [[ ! -d "$tissue_dir/RNAseq/Processed" ]] || find "$tissue_dir/RNAseq/Processed" -name normalization.tab
+        fi
+    done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -print0) > "$OUT_DIR/tpm_file_list.txt"
+else
+    find "$BASE" -name "normalization.tab" | grep -i "$TISSUE" | grep "Processed" | grep -v "/eQTL/" > "$OUT_DIR/tpm_file_list.txt" || true
+fi
 
 # --- STEP 2: PYTHON MERGE (Aggressive ID Resolution & Deduplication) ---
 python3 - <<EOF
@@ -66,7 +79,12 @@ sub_col = 'externalsubjectid'
 
 # 2. Filter for Tissue
 meta['mapped_tissue'] = meta['tissue'].map(TISSUE_REMAP).fillna(meta['tissue'])
-meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
+if target_tissue == "Cortex":
+    meta_subset = meta[meta['tissue'].astype('string').str.contains(r'(?:^|[\W_])cortex(?:$|[\W_])', case=False, na=False)].copy()
+elif target_tissue == "Spinal_Cord":
+    meta_subset = meta[meta['tissue'].astype('string').str.contains(r'(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])', case=False, na=False)].copy()
+else:
+    meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
 
 # 3. AGGRESSIVE MAPPING DICTIONARY
 # This maps every possible ID variant (JHU, NEU, SD, SiteID) to the Official Dash-ID
