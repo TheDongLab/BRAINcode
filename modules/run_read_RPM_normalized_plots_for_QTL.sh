@@ -24,11 +24,6 @@ MIN_MEAN_JUNCTION_RPM=0.01
 MAX_JUNCTIONS=30
 MAX_HITS=0
 
-# Max. number of SNP-specific plots per QTL event/gene.
-# eQTL  : max 2 SNPs per gene
-# sQTL  : max 2 SNPs per junction
-# cQTL  : max 2 SNPs per circRNA
-# Set to 0 for no per-event limit.
 MAX_PLOTS_PER_EVENT=2
 
 TISSUE_FILTER=""
