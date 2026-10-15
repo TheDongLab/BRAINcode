@@ -27,6 +27,7 @@ parse_args <- function(x) {
 }
 
 a <- parse_args(args)
+a$prefix <- paste0(a$prefix, ".read_percentage")
 group_by <- if (is.null(a[["group-by"]])) "genotype" else a[["group-by"]]
 if (!group_by %in% c("genotype", "tdp43")) stop("--group-by must be genotype or tdp43")
 pathology_mode <- group_by == "tdp43"
@@ -693,7 +694,7 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
   ed$side <- ifelse(seq_len(nrow(ed)) %% 2 == 1, 1, -1)
   ed$ymid <- ed$side * (ed$span^0.65 / 2 + 0.25)
 
-  # Original LeafViz effectively scales thickness ~ PSI^2
+  # Original LeafViz effectively scales thickness ~ PSI^2.
   ed$line_size <- 0.25 + 9.75 * (ed$mean_PSI^2)
   ed$label <- paste0(
     format(ed$mean_PSI, digits = 2, nsmall = 2, scientific = FALSE),

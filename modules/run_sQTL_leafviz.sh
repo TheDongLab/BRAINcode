@@ -144,11 +144,16 @@ CHR_MAP="$ANNOT/ncbi_to_ucsc.txt"
 
 # Slurm executes a spool copy; resolve the shared plotter independently of submit cwd.
 SCRIPT_DIR="$HOME/donglab/pipelines/scripts/QTL"
-R_SCRIPT="$SCRIPT_DIR/plot_sQTL_leafviz.R"
+R_READ="$SCRIPT_DIR/plot_sQTL_leafviz_read_percentage.R"
+R_PSI="$SCRIPT_DIR/plot_sQTL_leafviz_PSI.R"
+run_leafviz_both() {
+  Rscript --vanilla "$R_READ" "$@" || return $?
+  Rscript --vanilla "$R_PSI" "$@" || return $?
+}
 
 mkdir -p "$OUTDIR"
 
-REQUIRED_FILES=("$META" "$GTF" "$R_SCRIPT")
+REQUIRED_FILES=("$META" "$GTF" "$R_READ" "$R_PSI")
 REQUIRED_COMMANDS=(Rscript python awk sed grep head)
 if [[ "$GROUP_BY" == genotype ]]; then
   REQUIRED_FILES+=("$RAW" "$SNP_MAT" "$SNP_LOC" "$DBSNP" "$DBSNP.tbi" "$CHR_MAP")
@@ -279,7 +284,7 @@ process_pathology() {
   prefix="${TISSUE}_$(sanitize "$gene")_tdp43_$(sanitize "$anchor")"
   echo "TDP43 LeafViz | tissue=$TISSUE | gene=$gene | junction=$anchor"
   echo "Panels: Absent, Sparse, Moderate, Frequent"
-  Rscript --vanilla "$R_SCRIPT" \
+  run_leafviz_both \
     --group-by tdp43 \
     --tdp43 "$TDP43_CSV" \
     --pathology "$PATHOLOGY_CSV" \
@@ -683,7 +688,7 @@ PY
   # ============================================================
   # RUN STATIC LEAFVIZ-STYLE PLOT
   # ============================================================
-  Rscript --vanilla "$R_SCRIPT" \
+  run_leafviz_both \
     --tissue "$TISSUE" \
     --tissue-regex "$TISSUE_REGEX" \
     --anchor "$ANCHOR" \
