@@ -4,8 +4,8 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=23:00:00
-#SBATCH --output=cqtl_circ_difference_%j.out
-#SBATCH --error=cqtl_circ_difference_%j.err
+#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/cqtl_circ_difference_%j.out
+#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/cqtl_circ_difference_%j.err
 
 # Usage for specific tissues: QTL_TISSUES="Cortex Spinal_Cord" sbatch --export=ALL run_cQTL_circ_difference.sh
 
