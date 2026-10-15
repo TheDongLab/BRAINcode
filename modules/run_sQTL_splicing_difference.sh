@@ -6,11 +6,11 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/sqtl_splicing_difference/ranking_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/sqtl_splicing_difference/ranking_%j.err
-
 # Usage: sbatch ~/donglab/pipelines/scripts/QTL/run_sQTL_splicing_difference.sh
+# Check environment: bash run_sQTL_splicing_difference.sh --check
 # Ranking: absolute difference of observed mean matrix PSI, ALT/ALT minus REF/REF.
 # NA stays missing. Require >=5 usable subjects in BOTH homozygote groups.
-# Plot the top five qualifying SNP-junction pairs per tissue (not five unique genes).
+# Plot up to 10 qualifying SNP-junction pairs per tissue, at most 2 SNPs per junction.
 # Uses existing _sQTL_boxplot.R and plot_sQTL_leafviz.R without copying or modifying them.
 # LeafViz arcs use anchor-connected event normalization; matrix PSI drives the ranking.
 set -euo pipefail
@@ -144,13 +144,14 @@ def main():
         allrows=pd.DataFrame(records)
         if allrows.empty: raise ValueError(f'No mapped pairs in {t}')
         rank=rank_qualifying(allrows)
+        selected_pairs=rank.loc[rank.groupby('junction_id',sort=False).cumcount()<2].head(10)
         table(rank,out/'ranked_qualifying.tsv')
         table(rank.drop_duplicates('junction_id'),out/'best_snp_per_junction.tsv')
         rejected=allrows[~allrows.both_homozygotes_n_ge_5].copy()
         rejected['reason']='fewer_than_5_usable_subjects_in_one_or_both_homozygote_groups'
         table(rejected,out/'excluded_homozygote_counts.tsv')
         table(pd.DataFrame(excluded,columns=list(s.columns)+['reason']),out/'excluded_mapping.tsv')
-        audit.append(dict(tissue=t,significant_pairs=len(s),qualifying_pairs=len(rank),selected_for_plots=min(5,len(rank)),excluded_homozygote_counts=len(rejected),mapping_excluded=len(excluded)))
+        audit.append(dict(tissue=t,significant_pairs=len(s),qualifying_pairs=len(rank),selected_for_plots=len(selected_pairs),excluded_homozygote_counts=len(rejected),mapping_excluded=len(excluded)))
         # Reconstruct prep_sQTL's sample selection, then restrict to matrix subjects.
         mt=meta.copy(); mismatch=a.root/t/'eQTL/potential_sex_mismatches.txt'
         if mismatch.exists(): mt=mt[~mt.externalsampleid.isin(mismatch.read_text().splitlines())]
@@ -160,7 +161,7 @@ def main():
         mt=mt[(pd.to_numeric(mt.post_mortem_interval_in_hours,errors='coerce')<=40)&(mt.RIN_score>=3)]
         mt=mt.sort_values('RIN_score',ascending=False).drop_duplicates('externalsubjectid')
         picks={}
-        for top in rank.head(5).to_dict('records'):
+        for top in selected_pairs.to_dict('records'):
             assert top['n_ref_ref']>=5 and top['n_hom_alt']>=5
             tops.append(top)
             picks[(top['junction_id'],top['snpid'])]=top
@@ -190,8 +191,8 @@ def main():
             selected.to_csv(out/(prefix+'.metadata.csv'),index=False)
             if set(selected.externalsubjectid)!=set(sample.externalsubjectid): raise ValueError(f'Sample metadata mismatch for {prefix}')
             plot_jobs.append(dict(top,prefix=prefix,outdir=str(out),metadata=str(out/(prefix+'.metadata.csv')),genotypes=str(out/(prefix+'.genotypes.tsv'))))
-        print(t,'qualifying (both homozygotes n>=5)',len(rank),'top 5',rank[['junction_id','snpid','abs_delta_pp','n_ref_ref','n_hom_alt']].head(5).to_dict('records'),flush=True)
-    table(pd.DataFrame(tops),a.outdir/'top5_per_tissue.tsv');table(pd.DataFrame(audit),a.outdir/'audit.tsv')
+        print(t,'qualifying (both homozygotes n>=5)',len(rank),'top 10 (max 2 SNPs per junction)',selected_pairs[['junction_id','snpid','abs_delta_pp','n_ref_ref','n_hom_alt']].to_dict('records'),flush=True)
+    table(pd.DataFrame(tops),a.outdir/'top10_per_tissue.tsv');table(pd.DataFrame(audit),a.outdir/'audit.tsv')
     (a.outdir/'plot_jobs.json').write_text(json.dumps(plot_jobs,indent=2))
     if not a.no_plots:
         for t in TISSUES:
