@@ -7,12 +7,14 @@
 # defaults are aligned_rnaseq_tdp43_by_subject.csv and
 # collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv under --data-root.
 # TDP43 mode matches subject + RNA sample + tissue, verifies pathology provenance,
-# selects one highest-valid-RIN sample per subject before inspecting event coverage,
-# excludes missing/conflicting/unsupported scores, and writes mapping/count audits.
-# Arcs show unweighted mean original junction PSI, never normalized to displayed junctions.
-# Optional --psi-matrix: override matching junctions using QTL matrix subject columns.
-# The matrix must contain the anchor; other displayed junctions use source-file PSI.
-# PSI means junction usage under its ORIGINAL denominator, not inferred exon inclusion.
+# selects one highest-valid-RIN sample per subject before inspecting event coverage, excludes missing/conflicting/unsupported scores, and writes mapping/count audits.
+# Arcs show mean per-subject PSI using ONE full, authoritative cluster denominator.
+# Default: use each sample's leafcutter/clusters/leafcutter_clusters_refined.
+# Display the union of full anchor-containing clusters, preserving each sample denominator.
+# Outside-cluster junctions contribute no share of that sample's anchor cluster.
+# Missing files/anchor exclude the whole sample; they are not zero measurements.
+# Optional --cluster-counts: a common unfiltered LeafCutter count matrix instead.
+# --psi-matrix is rejected: filtered, sample-local PSI cannot define a full cluster.
 # No installed leafcutter R package is required.
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -50,6 +52,8 @@ missing_args <- required[!required %in% names(a)]
 if (length(missing_args)) {
   stop("Missing required arguments: ", paste(missing_args, collapse = ", "))
 }
+
+if (!is.null(a[["psi-matrix"]])) stop("--psi-matrix cannot supply full-cluster PSI. Use refined cluster files (default) or --cluster-counts instead.")
 
 suppressPackageStartupMessages({
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
@@ -243,86 +247,9 @@ meta <- meta[sort(selected_rows), , drop = FALSE]
 group_levels <- if (pathology_mode) score_levels else c("Ref/Ref", "Het", "Hom Alt")
 meta$group <- factor(meta$group, levels = group_levels)
 
-# Build an index of all per-sample PSI files across tissue folders.
-cat("Indexing LeafCutter PSI files...\n")
-psi_files <- Sys.glob(
-  file.path(
-    a[["data-root"]],
-    "*",
-    "RNAseq",
-    "Processed",
-    "*",
-    "leafcutter",
-    "psi",
-    "*.leafcutter.PSI.tsv"
-  )
-)
-
-if (!length(psi_files)) {
-  stop("No LeafCutter PSI files found beneath ", a[["data-root"]])
-}
-
-# Prefer non-sorted PSI file if both exist; both have equivalent fields, but the
-# exact *.leafcutter.PSI.tsv path is the canonical source used here.
-psi_files <- psi_files[!grepl("\\.leafcutter\\.PSI\\.sorted\\.tsv$", psi_files)]
-
-sample_from_path <- function(p) {
-  # .../Processed/SAMPLE/leafcutter/psi/SAMPLE.leafcutter.PSI.tsv
-  parts <- strsplit(normalizePath(p, mustWork = FALSE), .Platform$file.sep, fixed = TRUE)[[1]]
-  k <- which(parts == "Processed")
-  if (!length(k) || k[length(k)] == length(parts)) return(NA_character_)
-  parts[k[length(k)] + 1]
-}
-
-psi_index <- data.frame(
-  sample_dir = vapply(psi_files, sample_from_path, character(1)),
-  psi_file = psi_files,
-  stringsAsFactors = FALSE
-)
-
-psi_index <- psi_index[!is.na(psi_index$sample_dir), , drop = FALSE]
-if (pathology_mode) {
-  path_tissue <- vapply(strsplit(psi_index$psi_file, .Platform$file.sep, fixed=TRUE), function(parts) {
-    k <- which(parts=="Processed"); if (!length(k) || k[1]<3) return(NA_character_)
-    parts[k[1]-2]
-  }, character(1))
-  psi_index <- psi_index[!is.na(path_tissue) & canonical_tissue(path_tissue)==wanted_tissue, , drop=FALSE]
-  pathology_selected <- meta
-}
-
-meta <- merge(meta, psi_index, by = "sample_dir", all.x = TRUE)
-
-# A selected sample must not multiply into several rows during the PSI join.
-if (anyDuplicated(meta$externalsubjectid)) {
-  duplicate_subjects <- unique(meta$externalsubjectid[
-    duplicated(meta$externalsubjectid) |
-      duplicated(meta$externalsubjectid, fromLast = TRUE)
-  ])
-  stop(
-    "Multiple PSI paths matched selected samples for subject(s): ",
-    paste(duplicate_subjects, collapse = ", "),
-    ". Resolve duplicate PSI paths before plotting; subjects must contribute once."
-  )
-}
-
-missing_psi <- meta[is.na(meta$psi_file), c(
-  "externalsampleid", "externalsubjectid", "tissue", "sample_dir", "GT", "group"
-), drop = FALSE]
-
-if (pathology_mode) missing_psi$GT <- NULL
-if (nrow(missing_psi)) {
-  write.table(
-    missing_psi,
-    file = file.path(a$outdir, paste0(a$prefix, ".missing_psi.tsv")),
-    sep = "\t", quote = FALSE, row.names = FALSE
-  )
-}
-
-if (is.null(a[["psi-matrix"]])) meta <- meta[!is.na(meta$psi_file), , drop = FALSE]
-
-if (!nrow(meta)) {
-  stop("None of the genotype-matched metadata samples had a LeafCutter PSI file.")
-}
+# Cluster counts define both membership and measurements; sample-local PSI is not used.
+if (pathology_mode) pathology_selected <- meta
+meta$psi_file <- NA_character_
 
 # Parse anchor: chr19:-:17641556-17642845
 anchor_parts <- strsplit(a$anchor, ":", fixed = TRUE)[[1]]
@@ -345,160 +272,194 @@ if (is.na(anchor_start) || is.na(anchor_end)) {
   stop("Anchor coordinates are not numeric.")
 }
 
-read_psi <- function(path) {
-  if (is.na(path) || !nzchar(path)) return(NULL)
-  x <- tryCatch(
-    read.delim(path, stringsAsFactors = FALSE, check.names = FALSE),
-    error = function(e) {
-      warning("Could not read ", path, ": ", conditionMessage(e))
-      NULL
-    }
-  )
-  if (is.null(x)) return(NULL)
-
-  need <- c("chrom", "strand", "start", "end", "reads", "cluster_reads", "PSI")
-  if (!all(need %in% colnames(x))) {
-    warning("Skipping malformed PSI file: ", path)
-    return(NULL)
+# Read one authoritative cluster, including members absent from filtered QTL matrices.
+# Standard LeafCutter IDs: chr:start:end:clu_N[_strand]. Counts or numerator/denominator.
+read_cluster_counts <- function(path, meta, anchor_chr, anchor_strand, anchor_start, anchor_end) {
+  open_counts <- function() if (grepl("\\.gz$", path)) gzfile(path, "rt") else file(path, "rt")
+  fields <- function(line) strsplit(trimws(line), "[[:space:]]+")[[1]]
+  parse_id <- function(id) {
+    z <- strsplit(id, ":", fixed = TRUE)[[1]]
+    if (length(z) != 4L) stop("Expected LeafCutter chr:start:end:cluster ID; got ", id)
+    se <- suppressWarnings(as.numeric(z[2:3]))
+    if (any(!is.finite(se)) || se[1] >= se[2]) stop("Invalid count-file coordinates: ", id)
+    strand <- if (grepl("_[+-]$", z[4])) sub(".*_([+-])$", "\\1", z[4]) else NA_character_
+    list(chrom=z[1], start=se[1], end=se[2], cluster=z[4], strand=strand)
   }
-
-  x$start <- as.numeric(x$start)
-  x$end <- as.numeric(x$end)
-  x$reads <- as.numeric(x$reads)
-  x$PSI <- suppressWarnings(as.numeric(x$PSI))
-  if (any(is.finite(x$PSI) & (x$PSI < 0 | x$PSI > 1))) stop("PSI must be a fraction in [0,1]: ",path)
-  x
-}
-
-# -------------------------------------------------------------------------
-# Full cluster discovery. Cluster IDs are local to each source file, never
-# compared across samples. Where IDs are unavailable, reconstruct the full
-# transitive splice-site component (not just immediate anchor neighbours).
-# Across samples, take the closure of these memberships using junction identity.
-# This is a union of available sample clusters, not a new PSI denominator.
-# -------------------------------------------------------------------------
-cat("Discovering full LeafCutter cluster...\n")
-
-junction_key <- function(x) paste(x$chrom, x$strand,
-                                paste0(x$start, "-", x$end), sep = ":")
-cluster_sources <- list()
-for (i in seq_len(nrow(meta))) {
-  path <- meta$psi_file[i]
-  if (is.na(path) || !nzchar(path)) next
-  x <- read_psi(path)
-  if (is.null(x)) next
-  x <- x[which(x$chrom == anchor_chr & x$strand == anchor_strand), , drop = FALSE]
-  if (!nrow(x)) next
-  if (any(!is.finite(x$start) | !is.finite(x$end) | x$start >= x$end)) {
-    stop("Invalid junction coordinates in ", path)
+  con <- open_counts()
+  header <- fields(readLines(con, n=1L, warn=FALSE))
+  first <- readLines(con, n=1L, warn=FALSE)
+  close(con)
+  if (!length(first)) stop("Empty cluster count file: ", path)
+  ncols <- length(fields(first)) - 1L
+  if (length(header) == ncols + 1L) header <- header[-1L]
+  if (length(header) != ncols || anyDuplicated(header)) stop("Invalid/duplicate sample header in ", path)
+  normalize_sample <- function(x) {
+    x <- basename(x)
+    x <- sub("\\.gz$", "", x)
+    x <- sub("\\.junc$", "", x)
+    x <- sub("\\.bam$", "", x)
+    gsub("-", "_", x, fixed=TRUE)
   }
-  x$.junction_id <- junction_key(x)
-  if (anyDuplicated(x$.junction_id)) stop("Duplicate junctions in ", path)
-  # cluster_reads is a denominator, not a cluster identifier.
-  candidates <- intersect(c("cluster", "cluster_id", "clu", "clu_id"), names(x))
-  x$.cluster_id <- NA_character_
-  if (length(candidates)) {
-    x$.cluster_id <- trimws(as.character(x[[candidates[1]]]))
-    if (any(is.na(x$.cluster_id) | x$.cluster_id %in% c("", ".", "NA"))) {
-      stop("Missing cluster IDs in ", path, "; cannot establish complete membership")
+  normalized <- normalize_sample(header)
+  columns <- vapply(seq_len(nrow(meta)), function(i) {
+    aliases <- normalize_sample(c(meta$externalsampleid[i], meta$externalsubjectid[i]))
+    hits <- which(normalized %in% aliases)
+    if (length(hits) != 1L) stop("Expected exactly one count column for sample ", meta$externalsampleid[i],
+                               "; found ", length(hits), ". Use matching sample or subject IDs in count headers.")
+    hits
+  }, integer(1))
+  if (anyDuplicated(columns)) stop("Multiple selected samples map to the same count column")
+  scan_rows <- function(callback) {
+    con <- open_counts(); on.exit(close(con))
+    readLines(con, n=1L, warn=FALSE)
+    repeat {
+      lines <- readLines(con, n=2000L, warn=FALSE)
+      if (!length(lines)) break
+      for (line in lines) {
+        if (!nzchar(trimws(line))) next
+        id <- sub("[[:space:]].*$", "", line)
+        if (!startsWith(id, paste0(anchor_chr, ":"))) next
+        callback(parse_id(id), line)
+      }
     }
   }
-  cluster_sources[[length(cluster_sources) + 1L]] <- x[, c(
-    "chrom", "strand", "start", "end", ".junction_id", ".cluster_id")]
-}
-
-anchor_row <- data.frame(chrom = anchor_chr, strand = anchor_strand,
-                         start = anchor_start, end = anchor_end)
-event <- anchor_row
-repeat {
-  before <- junction_key(event)
-  additions <- list(event)
-  for (x in cluster_sources) {
-    if (all(is.na(x$.cluster_id))) {
-      # Repeated passes also discover junctions multiple splice-site hops away.
-      hit <- x$start %in% event$start | x$end %in% event$end
-    } else {
-      touched <- unique(x$.cluster_id[x$.junction_id %in% before])
-      hit <- x$.cluster_id %in% touched
+  clusters <- character()
+  scan_rows(function(z, line) {
+    if (z$start == anchor_start && z$end == anchor_end &&
+        (is.na(z$strand) || z$strand == anchor_strand)) clusters <<- c(clusters, z$cluster)
+  })
+  clusters <- unique(clusters)
+  if (length(clusters) != 1L) stop("Anchor must identify exactly one cluster in --cluster-counts; found ", length(clusters))
+  event_rows <- list(); count_rows <- list(); denominators <- list()
+  scan_rows(function(z, line) {
+    if (z$cluster != clusters[1]) return(invisible(NULL))
+    values <- fields(line)[-1L]
+    if (length(values) != length(header)) stop("Wrong number of count columns")
+    values <- values[columns]
+    ratio <- grepl("/", values, fixed=TRUE)
+    numer <- suppressWarnings(as.numeric(sub("/.*$", "", values)))
+    missing <- values %in% c("NA", "NaN", "nan", ".")
+    if (any(!missing & (!is.finite(numer) | numer < 0 | numer != floor(numer)))) stop("Invalid junction counts")
+    denom <- rep(NA_real_, length(values))
+    if (any(ratio)) {
+      if (any(!grepl("^[0-9]+/[0-9]+$", values[ratio]))) stop("Invalid numerator/denominator count")
+      denom[ratio] <- as.numeric(sub("^.*/", "", values[ratio]))
+      if (any(numer[ratio] > denom[ratio])) stop("Junction count exceeds cluster denominator")
     }
-    additions[[length(additions) + 1L]] <- x[hit, c("chrom", "strand", "start", "end"), drop = FALSE]
+    event_rows[[length(event_rows)+1L]] <<- data.frame(chrom=z$chrom, strand=anchor_strand,
+        start=z$start, end=z$end, cluster_id=z$cluster)
+    count_rows[[length(count_rows)+1L]] <<- numer
+    denominators[[length(denominators)+1L]] <<- denom
+  })
+  event <- do.call(rbind, event_rows)
+  event$junction_id <- paste(event$chrom, event$strand, paste0(event$start, "-", event$end), sep=":")
+  if (anyDuplicated(event$junction_id)) stop("Duplicate junction in authoritative cluster")
+  ord <- order(event$start, event$end)
+  event <- event[ord, , drop=FALSE]
+  counts <- t(do.call(rbind, count_rows))[, ord, drop=FALSE]
+  denom <- t(do.call(rbind, denominators))[, ord, drop=FALSE]
+  total <- rowSums(counts)
+  complete <- is.finite(total)
+  for (i in which(complete)) {
+    d <- denom[i, is.finite(denom[i, ])]
+    if (length(d) && any(d != total[i])) stop("Count denominators disagree with full cluster sum for ", meta$externalsampleid[i],
+                                            "; supply an unfiltered cluster count file")
   }
-  event <- unique(do.call(rbind, additions))
-  if (nrow(event) == length(before)) break
-}
-if (any(vapply(cluster_sources, function(x) all(is.na(x$.cluster_id)), logical(1)))) {
-  warning("Some PSI files lack cluster IDs: membership reconstructed by transitive shared splice sites. Only junctions present in supplied sample files can be recovered.")
-}
-rm(cluster_sources)
-event <- event[order(event$start, event$end), , drop = FALSE]
-event$junction_id <- junction_key(event)
-write.table(event, file.path(a$outdir, paste0(a$prefix, ".cluster_junctions.tsv")),
-            sep = "\t", quote = FALSE, row.names = FALSE)
-cat("Discovered ", nrow(event), " full-cluster junction(s):\n", sep = "")
-cat(paste0("  ", event$junction_id, collapse = "\n"), "\n")
-
-# -------------------------------------------------------------------------
-# Build sample x junction read-count matrix.
-# Missing PSI stays NA; observed zero PSI remains valid. Read counts are audit-only.
-# -------------------------------------------------------------------------
-psi_mat <- matrix(NA_real_, nrow=nrow(meta), ncol=nrow(event),
-                  dimnames=list(meta$externalsampleid,event$junction_id))
-psi_source <- rep("sample_file_PSI",nrow(event))
-count_mat <- matrix(
-  0,
-  nrow = nrow(meta),
-  ncol = nrow(event),
-  dimnames = list(meta$externalsampleid, event$junction_id)
-)
-
-for (i in seq_len(nrow(meta))) {
-  x <- read_psi(meta$psi_file[i])
-  if (is.null(x)) next
-
-  x <- x[x$chrom == anchor_chr & x$strand == anchor_strand, , drop = FALSE]
-  if (!nrow(x)) next
-
-  xid <- paste(x$chrom, x$strand, paste0(x$start, "-", x$end), sep = ":")
-  m <- match(event$junction_id, xid)
-  ok <- !is.na(m)
-  count_mat[i, ok] <- x$reads[m[ok]]
-  if (anyDuplicated(xid[xid %in% event$junction_id])) stop("Duplicate junctions in ",meta$psi_file[i])
-  psi_mat[i, ok] <- x$PSI[m[ok]]
+  dimnames(counts) <- list(meta$externalsampleid, event$junction_id)
+  list(event=event, counts=counts, total=total, cluster=clusters[1], sample_columns=header[columns])
 }
 
-event_total <- rowSums(count_mat, na.rm = TRUE)
-# Stream the optional matrix: only event rows are retained in memory.
-if (!is.null(a[["psi-matrix"]])) {
-  con <- file(a[["psi-matrix"]],open="r")
-  header <- strsplit(readLines(con,n=1),"\t",fixed=TRUE)[[1]][-1]
-  if (anyDuplicated(header)) stop("Duplicate subjects in PSI matrix")
-  subject_idx <- match(meta$externalsubjectid,header)
-  if (anyNA(subject_idx)) stop("PSI matrix lacks selected subjects; refusing to change the ranking cohort")
-  found <- character()
+# A refined-file line is the authoritative sample-local cluster membership.
+# Never infer membership from shared splice sites or equal cluster_reads values.
+read_refined_cluster <- function(path, chrom, strand, start, end) {
+  if (!file.exists(path)) return(list(reason="missing_refined_file"))
+  con <- file(path, "rt"); on.exit(close(con))
+  locus <- paste(chrom, strand, sep=":")
+  anchor <- paste(start, end, sep=":")
+  hit <- NULL; line_number <- 0L
   repeat {
-    lines <- readLines(con,n=1000,warn=FALSE)
+    lines <- readLines(con, n=2000L, warn=FALSE)
     if (!length(lines)) break
     for (line in lines) {
-      id <- sub("\t.*$","",line)
-      j <- match(id,event$junction_id)
-      if (is.na(j)) next
-      if (id %in% found) stop("Duplicate junction in PSI matrix: ",id)
-      values <- strsplit(line,"\t",fixed=TRUE)[[1]][-1]
-      if (length(values)!=length(header)) stop("Wrong PSI matrix row length: ",id)
-      v <- suppressWarnings(as.numeric(values[subject_idx]))
-      if (any(is.finite(v) & (v<0 | v>1))) stop("Matrix PSI must be in [0,1]")
-      psi_mat[,j] <- v
-      psi_source[j] <- "QTL_matrix_PSI"
-      found <- c(found,id)
+      line_number <- line_number + 1L
+      fields <- strsplit(trimws(line), "[[:space:]]+")[[1]]
+      if (fields[1] != locus) next
+      tokens <- fields[-1L]
+      ids <- sub(":[^:]+$", "", tokens)
+      if (!anchor %in% ids) next
+      if (!is.null(hit)) stop("Anchor occurs in multiple refined clusters: ", path)
+      z <- strsplit(tokens, ":", fixed=TRUE)
+      if (any(lengths(z) != 3L)) stop("Malformed refined cluster: ", path)
+      vals <- matrix(suppressWarnings(as.numeric(unlist(z))), ncol=3L, byrow=TRUE)
+      if (any(!is.finite(vals)) || any(vals < 0) || any(vals != floor(vals)) ||
+          any(vals[,1] >= vals[,2]) || anyDuplicated(ids)) stop("Invalid refined cluster counts/coordinates: ", path)
+      hit <- list(reason="included", line=line_number,
+                  event=data.frame(chrom=chrom, strand=strand, start=vals[,1], end=vals[,2]),
+                  counts=vals[,3])
     }
   }
-  close(con)
-  if (!a$anchor %in% found) stop("Anchor missing from --psi-matrix")
+  if (is.null(hit)) list(reason="anchor_absent_from_refined_clusters") else hit
 }
-psi_mat[!is.finite(psi_mat)] <- NA_real_
-anchor_index <- match(a$anchor,event$junction_id)
-usable <- is.finite(psi_mat[,anchor_index])
 
+read_sample_refined_clusters <- function(meta, root, tissue, chrom, strand, start, end) {
+  paths <- file.path(root, tissue, "RNAseq", "Processed", meta$sample_dir,
+                     "leafcutter", "clusters", "leafcutter_clusters_refined")
+  samples <- lapply(paths, read_refined_cluster, chrom=chrom, strand=strand, start=start, end=end)
+  valid <- vapply(samples, function(x) x$reason == "included", logical(1))
+  if (!any(valid)) stop("No selected sample has the anchor in leafcutter_clusters_refined. Checked ", paths[1])
+  key <- function(x) paste(x$chrom, x$strand, paste0(x$start, "-", x$end), sep=":")
+  event <- unique(do.call(rbind, lapply(samples[valid], `[[`, "event")))
+  event <- event[order(event$start, event$end), , drop=FALSE]
+  event$junction_id <- key(event)
+  event$cluster_id <- "union_of_sample_anchor_clusters"
+  counts <- matrix(NA_real_, nrow=nrow(meta), ncol=nrow(event),
+                   dimnames=list(meta$externalsampleid, event$junction_id))
+  membership <- matrix(FALSE, nrow=nrow(meta), ncol=nrow(event), dimnames=dimnames(counts))
+  audit <- list()
+  for (i in which(valid)) {
+    # Zero outside this sample's anchor cluster means no share of THIS cluster;
+    # it is not an imputed zero measurement or a claim of no reads at that locus.
+    counts[i, ] <- 0
+    j <- match(key(samples[[i]]$event), event$junction_id)
+    counts[i, j] <- samples[[i]]$counts
+    membership[i, j] <- TRUE
+    audit[[length(audit)+1L]] <- data.frame(externalsampleid=meta$externalsampleid[i],
+        junction_id=event$junction_id, member_of_sample_cluster=membership[i, ],
+        cluster_assigned_reads=counts[i, ], refined_file=paths[i], cluster_line=samples[[i]]$line)
+  }
+  list(event=event, counts=counts, total=rowSums(counts),
+       cluster="union_of_sample_anchor_clusters", sample_columns=meta$externalsampleid,
+       paths=paths, reasons=vapply(samples, `[[`, character(1), "reason"),
+       membership_audit=do.call(rbind, audit), memberships=membership)
+}
+
+if (is.null(a[["cluster-counts"]])) {
+  cluster_data <- read_sample_refined_clusters(meta, a[["data-root"]], a$tissue,
+                                              anchor_chr, anchor_strand, anchor_start, anchor_end)
+  meta$psi_file <- cluster_data$paths
+  write.table(cluster_data$membership_audit,
+              file.path(a$outdir, paste0(a$prefix, ".sample_cluster_membership.tsv")),
+              sep="\t", quote=FALSE, row.names=FALSE)
+} else {
+  cluster_data <- read_cluster_counts(a[["cluster-counts"]], meta, anchor_chr, anchor_strand, anchor_start, anchor_end)
+  meta$psi_file <- a[["cluster-counts"]]
+  cluster_data$reasons <- rep("included", nrow(meta))
+}
+
+event <- cluster_data$event
+count_mat <- cluster_data$counts
+event_total <- cluster_data$total
+# A missing measurement excludes that subject from ALL arcs; measured zeros stay zero.
+usable <- is.finite(event_total) & event_total > 0
+psi_mat <- count_mat
+psi_mat[,] <- NA_real_
+psi_mat[usable, ] <- count_mat[usable, , drop=FALSE] / event_total[usable]
+psi_source <- rep("full_cluster_counts", nrow(event))
+anchor_index <- match(a$anchor, event$junction_id)
+write.table(event, file.path(a$outdir, paste0(a$prefix, ".cluster_junctions.tsv")),
+            sep="\t", quote=FALSE, row.names=FALSE)
+cat("Full cluster ", cluster_data$cluster, ": ", nrow(event), " junctions spanning ",
+    min(event$start), "-", max(event$end), "\n", sep="")
 
 sample_qc <- data.frame(
   externalsampleid = meta$externalsampleid,
@@ -511,7 +472,11 @@ sample_qc <- data.frame(
   anchor_PSI = psi_mat[,anchor_index],
   anchor_PSI_source = psi_source[anchor_index],
   usable_event = usable,
-  psi_file = meta$psi_file,
+  count_file = meta$psi_file,
+  count_sample_column = cluster_data$sample_columns,
+  cluster_id = cluster_data$cluster,
+  exclusion_reason = ifelse(usable, "included", ifelse(cluster_data$reasons != "included", cluster_data$reasons,
+      ifelse(is.finite(event_total), "zero_cluster_coverage", "incomplete_cluster_counts"))),
   stringsAsFactors = FALSE
 )
 
@@ -532,13 +497,13 @@ if (pathology_mode) {
     tissue=a$tissue, Neuronal_TDP43_Score=g,
     mapped_unique_subjects=length(unique(pathology_mapping$externalsubjectid[!is.na(pathology_mapping$group) & pathology_mapping$group==g])),
     selected_subjects=sum(as.character(pathology_selected$group)==g),
-    subjects_with_psi_file=sum(as.character(meta$group)==g),
+    subjects_with_count_column=sum(as.character(meta$group)==g),
     subjects_with_event_coverage=sum(as.character(meta$group)==g & usable))))
   counts$small_group <- counts$subjects_with_event_coverage<5
   write.table(counts,file.path(a$outdir,paste0(a$prefix,".group_counts.tsv")),sep="\t",quote=FALSE,row.names=FALSE)
 }
 if (!any(usable)) {
-  stop("No selected samples had finite original PSI for the anchor.")
+  stop("No selected samples had complete counts and positive coverage for the full cluster.")
 }
 
 write.table(data.frame(externalsubjectid=meta$externalsubjectid, group=meta$group, psi_mat,check.names=FALSE),
@@ -565,12 +530,25 @@ for (g in group_levels) {
   }
 }
 
+# Enforce the same cohort and a 100% sum in every non-empty group.
+for (g in group_levels[group_n > 0]) {
+  if (abs(sum(group_mean[g, ]) - 1) > 1e-8) stop("Cluster PSI does not sum to 100% for ", g)
+  if (any(junction_n[g, ] != group_n[g])) stop("Inconsistent sample cohort across cluster arcs")
+}
+write.table(data.frame(group=group_levels, n=as.integer(group_n),
+                      sum_PSI_percent=100*rowSums(group_mean)),
+            file.path(a$outdir, paste0(a$prefix, ".cluster_totals.tsv")),
+            sep="\t", quote=FALSE, row.names=FALSE)
+
 # Diagnostic long table.
 usage_long <- do.call(rbind, lapply(group_levels, function(g) {
   data.frame(
     group = g,
     n = as.integer(junction_n[g, ]),
-    anchor_group_n = group_n[g],
+    cluster_group_n = group_n[g],
+    cluster_id = cluster_data$cluster,
+    subjects_with_junction_in_cluster = if (is.null(cluster_data$memberships)) as.integer(junction_n[g, ]) else
+      colSums(cluster_data$memberships[usable & as.character(meta$group)==g, , drop=FALSE]),
     PSI_source = psi_source,
     junction_id = event$junction_id,
     chrom = event$chrom,
@@ -791,9 +769,10 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
     theme(
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid = element_blank(),
-      axis.text = element_blank(),
+      axis.text.y = element_blank(),
+      axis.text.x = element_text(size=8, angle=45, hjust=1),
       axis.ticks = element_blank(),
-      axis.title.x = element_blank(),
+      axis.title.x = element_text(size=9),
       axis.title.y = element_text(size = if (pathology_mode) 10 else 12),
       panel.border = element_blank(),
       legend.position = if (show_legend) "bottom" else "none",
@@ -907,6 +886,9 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
       name = NULL,
       drop = FALSE
     ) +
+    scale_x_continuous(breaks=coords[unique(round(seq(1, length(s), length.out=min(8, length(s)))))],
+                       labels=format(s[unique(round(seq(1, length(s), length.out=min(8, length(s)))))], scientific=FALSE, trim=TRUE),
+                       name=paste0(anchor_chr, " genomic position (compressed spacing)")) +
     coord_cartesian(xlim = xlim_vals, ylim = c(-ymax, ymax), clip = "off") +
     ylab(sprintf("%s (n=%d)%s", g, group_n[g],
                  if (pathology_mode && group_n[g]<5) "\nsmall group" else ""))
@@ -923,7 +905,8 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
         variant_label <- paste0(a[["variant-id"]], " | ", variant_label)
       }
     }
-    p <- p + ggtitle(a$gene, subtitle=paste0(a$anchor, " | ", variant_label," | Original junction PSI (%)"))
+    p <- p + ggtitle(a$gene, subtitle=paste0(a$anchor, " | ", variant_label," | Full cluster PSI (%)",
+      if (is.null(a[["cluster-counts"]])) " | Union of sample anchor clusters" else ""))
   }
 
   p
@@ -971,7 +954,7 @@ ggsave(pdf_file, combined, width = 11, height = figure_height, units = "in", lim
 ggsave(png_file, combined, width = 11, height = figure_height, units = "in", dpi = min(300, 30000 / figure_height), limitsize = FALSE)
 ggsave(svg_file, combined, width = 11, height = figure_height, units = "in", limitsize = FALSE)
 
-cat(if (pathology_mode) "\nNeuronal TDP43 sample counts with finite anchor PSI:\n" else "\nGenotype sample counts with finite anchor PSI:\n")
+cat(if (pathology_mode) "\nNeuronal TDP43 sample counts with complete cluster coverage:\n" else "\nGenotype sample counts with complete cluster coverage:\n")
 print(group_n)
 
 cat("\nOutputs:\n")
