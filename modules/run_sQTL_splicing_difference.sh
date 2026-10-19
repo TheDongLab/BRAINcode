@@ -11,8 +11,9 @@
 # Ranking: absolute difference of observed mean matrix PSI, ALT/ALT minus REF/REF.
 # NA stays missing. Require >=5 usable subjects in BOTH homozygote groups.
 # Plot up to 10 qualifying SNP-junction pairs per tissue, at most 2 SNPs per junction.
-# Uses existing _sQTL_boxplot.R and both read-percentage and original-PSI LeafViz views.
-# Read-percentage arcs use event normalization; PSI arcs use the ranking matrix.
+# Uses existing _sQTL_boxplot.R plus full-cluster PSI LeafViz plots.
+# Ranking still uses QTL PSI; cluster arcs use unfiltered cluster counts.
+# --tissues Cerebellum (uses existing per-sample refined cluster files automatically)
 set -euo pipefail
 TASK_PYTHON=/home/zw529/donglab/pipelines/modules/miniconda3/bin/python
 TASK_SCRIPTS=/home/zw529/donglab/pipelines/scripts/QTL
@@ -21,7 +22,7 @@ module load R
 # -I ignores PYTHONPATH/PYTHONHOME and user packages injected by the R module.
 "$TASK_PYTHON" -I -c 'import sys,numpy,pandas; print("Python:",sys.executable); print("NumPy:",numpy.__file__); print("pandas:",pandas.__file__)'
 Rscript -e 'stopifnot(requireNamespace("data.table",quietly=TRUE),requireNamespace("ggplot2",quietly=TRUE),requireNamespace("gridExtra",quietly=TRUE),requireNamespace("svglite",quietly=TRUE)); cat("R plotting dependencies OK\n")'
-for task_file in _sQTL_boxplot.R plot_sQTL_leafviz_read_percentage.R plot_sQTL_leafviz_PSI.R; do
+for task_file in _sQTL_boxplot.R plot_sQTL_leafviz_PSI.R; do
     test -r "$TASK_SCRIPTS/$task_file"
 done
 if [[ "${1:-}" == "--check" ]]; then exit 0; fi
@@ -71,11 +72,19 @@ def main():
     ap.add_argument('--root',type=Path,default=Path.home()/'donglab/data/target_ALS')
     ap.add_argument('--outdir',type=Path,required=True)
     ap.add_argument('--scripts-dir',type=Path,default=Path.home()/'donglab/pipelines/scripts/QTL')
+    ap.add_argument('--tissues', nargs='+', choices=TISSUES, default=TISSUES)
+    ap.add_argument('--cluster-counts', help='Unfiltered LeafCutter counts; use {tissue} for multiple tissues')
     ap.add_argument('--no-plots',action='store_true',help='Calculate rankings only')
     ap.add_argument('--gtf',type=Path,default=Path.home()/'donglab/references/genome/Homo_sapiens/UCSC/hg38/Annotation/gencode/gencode.v49.annotation.gtf')
     a=ap.parse_args(); a.outdir.mkdir(parents=True,exist_ok=True)
+    if not a.no_plots and a.cluster_counts:
+        if len(a.tissues)>1 and '{tissue}' not in a.cluster_counts:
+            ap.error('Use --tissues for one tissue or a --cluster-counts path containing {tissue}')
+        for t in a.tissues:
+            if not Path(a.cluster_counts.replace('{tissue}',t)).is_file():
+                ap.error(f'Cluster counts missing for {t}')
     sigs={}; locs={}; targets=set()
-    for t in TISSUES:
+    for t in a.tissues:
         q=a.root/t/'sQTL'
         s=pd.read_csv(q/'results'/f'{t}_sQTL.FDR0.05.txt',sep='\t')
         s=s[pd.to_numeric(s.FDR,errors='coerce')<=0.05].drop_duplicates(['junction_id','snpid'])
@@ -107,7 +116,7 @@ def main():
             m=re.search(r'gene_name "([^"]+)"',z[8])
             if m: genes.setdefault((z[0],z[6]),[]).append((int(z[3]),int(z[4]),m[1]))
     tops=[]; audit=[]; plot_jobs=[]
-    for t in TISSUES:
+    for t in a.tissues:
         print('Loading selected matrix rows:',t,flush=True)
         q=a.root/t/'sQTL'; out=a.outdir/t; out.mkdir(exist_ok=True)
         s=sigs[t]; subjects,psi=matrix(q/f'splicing_{t}.txt',set(s.junction_id))
@@ -195,7 +204,7 @@ def main():
     table(pd.DataFrame(tops),a.outdir/'top10_per_tissue.tsv');table(pd.DataFrame(audit),a.outdir/'audit.tsv')
     (a.outdir/'plot_jobs.json').write_text(json.dumps(plot_jobs,indent=2))
     if not a.no_plots:
-        for t in TISSUES:
+        for t in a.tissues:
             out=a.outdir/t
             if not (out/'top_pairs.tsv').stat().st_size: continue
             cmd=['Rscript',str(a.scripts_dir/'_sQTL_boxplot.R'),str(out/'top_pairs.tsv'),
@@ -204,18 +213,18 @@ def main():
             with (out/'boxplots.log').open('w') as log:
                 subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,check=True)
         for p in plot_jobs:
-            command=['Rscript',str(a.scripts_dir/'plot_sQTL_leafviz_read_percentage.R'),'--tissue',p['tissue'],'--tissue-regex',PATTERNS[p['tissue']],
+            command=['Rscript',str(a.scripts_dir/'plot_sQTL_leafviz_PSI.R'),'--tissue',p['tissue'],'--tissue-regex',PATTERNS[p['tissue']],
                 '--anchor',p['junction_id'],'--gene',p['gene_name'].split(';')[0],
                 '--variant-chr',p['variant_chr'],'--variant-pos',str(p['variant_pos']),
                 '--variant-id',p['snpid'],'--variant-ref',p['ref'],'--variant-alt',p['alt'],
                 '--genotypes',p['genotypes'],'--metadata',p['metadata'],'--data-root',str(a.root),
                 '--gtf',str(a.gtf),'--outdir',p['outdir'],'--prefix',p['prefix']]
             print('Plotting',p['prefix'],flush=True)
-            for view in ['read_percentage','PSI']:
+            for view in ['PSI']:
                 paired=command.copy()
                 paired[1]=str(a.scripts_dir/f'plot_sQTL_leafviz_{view}.R')
-                if view=='PSI':
-                    paired += ['--psi-matrix',str(Path(p['outdir'])/'top_splicing_matrix.tsv')]
+                if a.cluster_counts:
+                    paired += ['--cluster-counts',a.cluster_counts.replace('{tissue}',p['tissue'])]
                 with open(Path(p['outdir'])/(p['prefix']+f'.{view}.plot.log'),'w') as log:
                     subprocess.run(paired,stdout=log,stderr=subprocess.STDOUT,check=True)
     print('COMPLETE',flush=True)
