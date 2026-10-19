@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 
-# Static LeafViz-style plot. Existing calls default to genotype mode unchanged.
+# Static LeafViz-style plot of the full discovered LeafCutter cluster.
+# Existing calls default to genotype mode unchanged.
 # Opt in: --group-by tdp43 (no genotype or variant arguments required).
 # Optional --tdp43 <aligned CSV> and --pathology <original pathology CSV>;
 # defaults are aligned_rnaseq_tdp43_by_subject.csv and
@@ -345,6 +346,7 @@ if (is.na(anchor_start) || is.na(anchor_end)) {
 }
 
 read_psi <- function(path) {
+  if (is.na(path) || !nzchar(path)) return(NULL)
   x <- tryCatch(
     read.delim(path, stringsAsFactors = FALSE, check.names = FALSE),
     error = function(e) {
@@ -369,56 +371,70 @@ read_psi <- function(path) {
 }
 
 # -------------------------------------------------------------------------
-# Event discovery
-#
-# Stable identity is chr:start:end:strand. We intentionally ignore sample-local
-# clu_N identifiers. Starting from the sQTL anchor junction, recover the union
-# across subjects of all refined LeafCutter junctions that share either the
-# anchor donor/start site or anchor acceptor/end site.
-#
-# For UNC13A this recovers:
-#   17641556-17642414
-#   17641556-17642845  (anchor)
-#   17642541-17642845
+# Full cluster discovery. Cluster IDs are local to each source file, never
+# compared across samples. Where IDs are unavailable, reconstruct the full
+# transitive splice-site component (not just immediate anchor neighbours).
+# Across samples, take the closure of these memberships using junction identity.
+# This is a union of available sample clusters, not a new PSI denominator.
 # -------------------------------------------------------------------------
-cat("Discovering anchor-connected splice junctions...\n")
+cat("Discovering full LeafCutter cluster...\n")
 
-event_rows <- list()
-
+junction_key <- function(x) paste(x$chrom, x$strand,
+                                paste0(x$start, "-", x$end), sep = ":")
+cluster_sources <- list()
 for (i in seq_len(nrow(meta))) {
-  x <- read_psi(meta$psi_file[i])
+  path <- meta$psi_file[i]
+  if (is.na(path) || !nzchar(path)) next
+  x <- read_psi(path)
   if (is.null(x)) next
-
-  hit <- x[
-    x$chrom == anchor_chr &
-      x$strand == anchor_strand &
-      (x$start == anchor_start | x$end == anchor_end),
-    c("chrom", "strand", "start", "end"),
-    drop = FALSE
-  ]
-
-  if (nrow(hit)) event_rows[[length(event_rows) + 1]] <- hit
+  x <- x[which(x$chrom == anchor_chr & x$strand == anchor_strand), , drop = FALSE]
+  if (!nrow(x)) next
+  if (any(!is.finite(x$start) | !is.finite(x$end) | x$start >= x$end)) {
+    stop("Invalid junction coordinates in ", path)
+  }
+  x$.junction_id <- junction_key(x)
+  if (anyDuplicated(x$.junction_id)) stop("Duplicate junctions in ", path)
+  # cluster_reads is a denominator, not a cluster identifier.
+  candidates <- intersect(c("cluster", "cluster_id", "clu", "clu_id"), names(x))
+  x$.cluster_id <- NA_character_
+  if (length(candidates)) {
+    x$.cluster_id <- trimws(as.character(x[[candidates[1]]]))
+    if (any(is.na(x$.cluster_id) | x$.cluster_id %in% c("", ".", "NA"))) {
+      stop("Missing cluster IDs in ", path, "; cannot establish complete membership")
+    }
+  }
+  cluster_sources[[length(cluster_sources) + 1L]] <- x[, c(
+    "chrom", "strand", "start", "end", ".junction_id", ".cluster_id")]
 }
 
-# Always retain the anchor itself.
-event_rows[[length(event_rows) + 1]] <- data.frame(
-  chrom = anchor_chr,
-  strand = anchor_strand,
-  start = anchor_start,
-  end = anchor_end,
-  stringsAsFactors = FALSE
-)
-
-event <- unique(do.call(rbind, event_rows))
+anchor_row <- data.frame(chrom = anchor_chr, strand = anchor_strand,
+                         start = anchor_start, end = anchor_end)
+event <- anchor_row
+repeat {
+  before <- junction_key(event)
+  additions <- list(event)
+  for (x in cluster_sources) {
+    if (all(is.na(x$.cluster_id))) {
+      # Repeated passes also discover junctions multiple splice-site hops away.
+      hit <- x$start %in% event$start | x$end %in% event$end
+    } else {
+      touched <- unique(x$.cluster_id[x$.junction_id %in% before])
+      hit <- x$.cluster_id %in% touched
+    }
+    additions[[length(additions) + 1L]] <- x[hit, c("chrom", "strand", "start", "end"), drop = FALSE]
+  }
+  event <- unique(do.call(rbind, additions))
+  if (nrow(event) == length(before)) break
+}
+if (any(vapply(cluster_sources, function(x) all(is.na(x$.cluster_id)), logical(1)))) {
+  warning("Some PSI files lack cluster IDs: membership reconstructed by transitive shared splice sites. Only junctions present in supplied sample files can be recovered.")
+}
+rm(cluster_sources)
 event <- event[order(event$start, event$end), , drop = FALSE]
-event$junction_id <- paste(event$chrom, event$strand,
-                           paste0(event$start, "-", event$end), sep = ":")
-
-if (!nrow(event)) {
-  stop("No junctions discovered for anchor ", a$anchor)
-}
-
-cat("Discovered ", nrow(event), " anchor-connected junction(s):\n", sep = "")
+event$junction_id <- junction_key(event)
+write.table(event, file.path(a$outdir, paste0(a$prefix, ".cluster_junctions.tsv")),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+cat("Discovered ", nrow(event), " full-cluster junction(s):\n", sep = "")
 cat(paste0("  ", event$junction_id, collapse = "\n"), "\n")
 
 # -------------------------------------------------------------------------
@@ -644,7 +660,16 @@ if (nrow(gene_exons) && any(!is.na(gene_exons$transcript_id))) {
 
 event$key <- paste(event$start, event$end, sep = ":")
 event$verdict <- ifelse(event$key %in% annotated_keys, "annotated", "cryptic")
-event$letter <- letters[seq_len(nrow(event))]
+# Stable IDs remain defined beyond the 26th junction.
+event$letter <- vapply(seq_len(nrow(event)), function(i) {
+  label <- ""
+  while (i > 0L) {
+    i <- i - 1L
+    label <- paste0(letters[i %% 26L + 1L], label)
+    i <- i %/% 26L
+  }
+  label
+}, character(1))
 
 usage_long$verdict <- event$verdict[match(usage_long$junction_id, event$junction_id)]
 usage_long$letter <- event$letter[match(usage_long$junction_id, event$junction_id)]
@@ -739,6 +764,19 @@ make_panel <- function(g, show_title = FALSE, show_legend = FALSE) {
   # Alternate arcs above/below exactly as the original LeafViz plot does.
   ed$side <- ifelse(seq_len(nrow(ed)) %% 2 == 1, 1, -1)
   ed$ymid <- ed$side * (ed$span^0.65 / 2 + 0.25)
+  # Give nearby labels separate vertical lanes on each side of the baseline.
+  for (side in c(-1, 1)) {
+    ii <- which(ed$side == side)
+    ii <- ii[order(abs(ed$ymid[ii]))]
+    placed <- integer()
+    for (j in ii) {
+      height <- abs(ed$ymid[j])
+      nearby <- placed[abs(ed$xmid[placed] - ed$xmid[j]) < 0.20 * total_length]
+      if (length(nearby)) height <- max(height, max(abs(ed$ymid[nearby])) + 1.2)
+      ed$ymid[j] <- side * height
+      placed <- c(placed, j)
+    }
+  }
 
   # PSI view: linear width on a common 0–100% scale across all groups.
   ed$line_size <- ifelse(is.na(ed$mean_PSI),0.25,0.25 + 9.75 * ed$mean_PSI)
@@ -915,19 +953,23 @@ table_grob <- gridExtra::tableGrob(
   )
 )
 
+panel_height <- max(2.5, 1.5 + 0.16 * nrow(event))
+table_height <- max(1.5, 0.24 * (nrow(event) + 1))
+figure_height <- length(plots) * panel_height + table_height
+
 combined <- gridExtra::arrangeGrob(
   grobs = c(plots, list(table_grob)),
   ncol = 1,
-  heights = c(rep(1, length(plots)), 0.8)
+  heights = c(rep(panel_height, length(plots)), table_height)
 )
 
 pdf_file <- file.path(a$outdir, paste0(a$prefix, ".pdf"))
 png_file <- file.path(a$outdir, paste0(a$prefix, ".png"))
 svg_file <- file.path(a$outdir, paste0(a$prefix, ".svg"))
 
-ggsave(pdf_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in")
-ggsave(png_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in", dpi = 300)
-ggsave(svg_file, combined, width = 11, height = if (pathology_mode) 12 else 10, units = "in")
+ggsave(pdf_file, combined, width = 11, height = figure_height, units = "in", limitsize = FALSE)
+ggsave(png_file, combined, width = 11, height = figure_height, units = "in", dpi = min(300, 30000 / figure_height), limitsize = FALSE)
+ggsave(svg_file, combined, width = 11, height = figure_height, units = "in", limitsize = FALSE)
 
 cat(if (pathology_mode) "\nNeuronal TDP43 sample counts with finite anchor PSI:\n" else "\nGenotype sample counts with finite anchor PSI:\n")
 print(group_n)
