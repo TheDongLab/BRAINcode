@@ -3,7 +3,8 @@
 #SBATCH --partition=day
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=80G
-#SBATCH --time=23:00:00
+#SBATCH --time=1-23:00:00
+#SBATCH --partition=week
 #SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/cqtl_circ_difference_%j.out
 #SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/cqtl_circ_difference_%j.err
 
