@@ -7,7 +7,8 @@
 # defaults are aligned_rnaseq_tdp43_by_subject.csv and
 # collections.postmortem_tissue_core.semiquantitative_tdp43_data.csv under --data-root.
 # TDP43 mode matches subject + RNA sample + tissue, verifies pathology provenance,
-# selects one highest-valid-RIN sample per subject before inspecting event coverage, excludes missing/conflicting/unsupported scores, and writes mapping/count audits.
+# selects one highest-valid-RIN sample per subject before inspecting event coverage,
+# excludes missing/conflicting/unsupported scores, and writes mapping/count audits.
 # Arcs show mean per-subject PSI using ONE full, authoritative cluster denominator.
 # Default: use each sample's leafcutter/clusters/leafcutter_clusters_refined.
 # Display the union of full anchor-containing clusters, preserving each sample denominator.
@@ -33,7 +34,7 @@ parse_args <- function(x) {
 }
 
 a <- parse_args(args)
-a$prefix <- paste0(a$prefix, ".PSI")
+a$prefix <- paste0(a$prefix, ".PSI_all_juncs")
 group_by <- if (is.null(a[["group-by"]])) "genotype" else a[["group-by"]]
 if (!group_by %in% c("genotype", "tdp43")) stop("--group-by must be genotype or tdp43")
 pathology_mode <- group_by == "tdp43"
