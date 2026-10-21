@@ -8,10 +8,10 @@
 
 # Outputs in target_ALS/QTL (raw counts and RPM are BEFORE the fraction SD filter):
 #   circ_counts_matrix.txt: CIRCexplorer2 readNumber, one row per BSJ.
-#   circ_rpm_matrix.txt: BSJ support / (STAR unique + multi mapped fragments) * 1e6.
+#   circ_rpm_matrix.txt: readNumber / primary mapped reads from bam.stat * 1e6.
 #   circ_rpm_sample_metadata.tsv: denominators, mapping rates, source files, audit.
-# Assumes the paired-end STAR workflow in _RNAseq.sh. Every selected sample must
-# retain STAR.Log.final.out. No bam.stat or input-read-count fallback is used.
+# Every selected sample uses bam.stat: primary mapped QC-pass + QC-fail reads.
+# No STAR-log, total-read, or read-pair fallback; do not divide the denominator by 2.
 # Optional STAR.Chimeric.out.junction/back_spliced_junction.bed enable a parser
 # consistency audit; absent audit inputs are recorded, not claimed as verified.
 # Original circ_matrix.txt remains a fraction matrix; no INT is applied to RPM.
@@ -27,6 +27,7 @@ module load Python-bundle-PyPI/2024.06-GCCcore-13.3.0
 python3 - <<'EOF'
 import pandas as pd
 import numpy as np
+import re
 from pathlib import Path
 from collections import defaultdict
 
@@ -41,32 +42,32 @@ GENE_BED = Path("/home/zw529/donglab/references/genome/Homo_sapiens/UCSC/hg38/An
 def norm_id(x):
     return str(x).strip().replace("-", "_")
 
-# This TargetALS pipeline uses paired-end STAR input. STAR Log.final.out counts
-# read pairs, and the STAR chimeric format stores both mates in one row.
-# CIRCexplorer2 star_parse counts qualifying junction rows (not BAM records).
-def mapped_fragment_stats(sample_dir):
-    path = sample_dir / "STAR.Log.final.out"
+# Use the exact same original-library statistic for every sample. The standalone
+# first line and generic "mapped" field in bam.stat are NOT this denominator.
+def mapped_read_stats(sample_dir):
+    path = sample_dir / "bam.stat"
     if not path.is_file():
-        raise ValueError(f"Missing {path}; cannot infer mapped fragments from bam.stat")
-    fields = {}
-    for line in path.read_text().splitlines():
-        if "|" in line:
-            key, value = line.split("|", 1)
-            fields[key.strip()] = value.strip()
-    keys = ["Number of input reads", "Uniquely mapped reads number",
-            "Number of reads mapped to multiple loci"]
-    try:
-        total, unique, multi = [int(fields[k]) for k in keys]
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"Incomplete or malformed STAR counts in {path}") from exc
-    mapped = unique + multi
-    if min(unique, multi) < 0 or total <= 0 or not 0 < mapped <= total:
-        raise ValueError(f"Invalid mapping totals in {path}")
-    return dict(mapping_log=str(path), input_fragments=total,
-                uniquely_mapped_fragments=unique, multimapped_fragments=multi,
-                mapped_fragments=mapped, mapped_fraction=mapped / total,
+        raise ValueError(f"Missing {path}; no alternate RPM denominator is permitted")
+    text = path.read_text()
+    matches = re.findall(r"^\s*(\d+)\s*\+\s*(\d+)\s+primary mapped\s*(?:\(|$)", text, re.M)
+    if len(matches) != 1:
+        raise ValueError(f"Expected exactly one primary mapped field in {path}")
+    passed, failed = map(int, matches[0])
+    mapped = passed + failed
+    if mapped <= 0:
+        raise ValueError(f"Zero primary mapped reads in {path}")
+    totals = re.findall(r"^\s*(\d+)\s*\+\s*(\d+)\s+primary\s*$", text, re.M)
+    if len(totals) != 1:
+        raise ValueError(f"Expected exactly one primary total field in {path}")
+    total = sum(map(int, totals[0]))
+    if total < mapped:
+        raise ValueError(f"Primary mapped reads exceed primary total in {path}")
+    return dict(mapping_stats_file=str(path),
+                primary_mapped_qc_pass=passed, primary_mapped_qc_fail=failed,
+                primary_mapped_reads=mapped, primary_reads=total,
+                primary_mapped_fraction=mapped / total,
                 rpm_multiplier=1e6 / mapped,
-                denominator_definition="STAR_unique_plus_multi_mapped_fragments_PE")
+                denominator_definition="bam.stat_primary_mapped_QCpass_plus_QCfail_reads")
 
 
 def audit_star_junctions(sample_dir):
@@ -96,10 +97,9 @@ def audit_star_junctions(sample_dir):
             duplicates += support in seen
             seen.add(support)
             counts[key] += 1
-    if duplicates:
-        raise ValueError(f"{path}: {duplicates} repeated fragment/junction records; "
-                         "resolve counting ambiguity before RPM normalization")
-    status = "unique_fragment_support_bed_unavailable"
+    # In the unmapped-read single-FASTQ workflow, mates can share a read name.
+    # Report repeated names without deduplicating or reinterpreting readNumber.
+    status = "junction_records_bed_unavailable"
     if bed.is_file():
         observed = {}
         for line in bed.read_text().splitlines():
@@ -112,9 +112,9 @@ def audit_star_junctions(sample_dir):
             observed[key] = int(c[3].rsplit("/", 1)[1])
         if dict(counts) != observed:
             raise ValueError(f"STAR support counts disagree with {bed}; check parser/version")
-        status = "unique_fragment_support_matches_parsed_bed"
+        status = "junction_records_match_parsed_bed"
     return dict(junction_audit=status, qualifying_bsj_records=sum(counts.values()),
-                repeated_fragment_junction_records=duplicates)
+                repeated_read_name_junction_records=duplicates)
 
 
 # =========================================================================
@@ -206,9 +206,9 @@ for _, row in rna_found.iterrows():
     if "circ_reads" in circ.columns:
         if not np.array_equal(pd.to_numeric(circ["circ_reads"], errors="raise"), counts):
             raise ValueError(f"circ_reads disagrees with readNumber in {circ_file}")
-    stats = mapped_fragment_stats(circ_file.parent)
+    stats = mapped_read_stats(circ_file.parent)
     audit = audit_star_junctions(circ_file.parent)
-    print(f"{sample}: {stats['mapped_fragments']:,} mapped fragments; {audit['junction_audit']}")
+    print(f"{sample}: {stats['primary_mapped_reads']:,} primary mapped reads; {audit['junction_audit']}")
     rpm_metadata.append(dict(sample_id=sample, circ_file=str(circ_file), **stats, **audit))
 
     circ["circ_id"] = (
@@ -245,11 +245,11 @@ read_columns = reads_master.columns.drop("circ_id")
 reads_master[read_columns] = reads_master[read_columns].astype("int64")
 # Align factors by sample name, never by incidental file order.
 rpm_meta = pd.DataFrame(rpm_metadata).set_index("sample_id").loc[read_columns]
-rpm_master = reads_master.set_index("circ_id").div(rpm_meta["mapped_fragments"], axis=1) * 1e6
-# RPM here means BSJ support per million mapped fragments (paired-end STAR).
+rpm_master = reads_master.set_index("circ_id").div(rpm_meta["primary_mapped_reads"], axis=1) * 1e6
+# RPM here means BSJ support per million original-library primary mapped reads.
 rpm_master.to_csv(OUT / "circ_rpm_matrix.txt", sep="\t", index=True)
 rpm_meta.to_csv(OUT / "circ_rpm_sample_metadata.tsv", sep="\t", index=True)
-print(f"Saved BSJ RPM per mapped fragment: {OUT / 'circ_rpm_matrix.txt'}")
+print(f"Saved BSJ RPM per primary mapped read: {OUT / 'circ_rpm_matrix.txt'}")
 # Export the full BSJ count matrix before the circ-fraction SD filter.
 # Rows are circ_id; columns are samples. Values are raw readNumber counts, not RPM.
 reads_master.to_csv(OUT / "circ_counts_matrix.txt", sep="\t", index=False)

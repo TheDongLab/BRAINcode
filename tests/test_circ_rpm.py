@@ -4,6 +4,7 @@ import contextlib
 import io
 from pathlib import Path
 import tempfile
+import re
 import unittest
 import numpy as np
 import pandas as pd
@@ -11,17 +12,19 @@ from collections import defaultdict
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'modules/build_circ_matrix_for_QTL.sh'
 CODE = SCRIPT.read_text().split("python3 - <<'EOF'\n", 1)[1].split('\nEOF', 1)[0]
-NS = dict(defaultdict=defaultdict)
+NS = dict(defaultdict=defaultdict, re=re)
 for node in ast.parse(CODE).body:
-    if isinstance(node, ast.FunctionDef) and node.name in ('mapped_fragment_stats', 'audit_star_junctions', 'norm_id', 'find_circ'):
+    if isinstance(node, ast.FunctionDef) and node.name in ('mapped_read_stats', 'audit_star_junctions', 'norm_id', 'find_circ'):
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SCRIPT), 'exec'), NS)
 
 
-def mapping(path, unique=15000000, multi=5000000):
-    (path / 'STAR.Log.final.out').write_text(
-        'Number of input reads | 25000000\n'
-        f'Uniquely mapped reads number | {unique}\n'
-        f'Number of reads mapped to multiple loci | {multi}\n')
+def mapping(path, passed=15000000, failed=5000000):
+    (path / 'bam.stat').write_text(
+        '99999999\n'
+        '99999999 + 0 in total (QC-passed reads + QC-failed reads)\n'
+        '60000000 + 5000000 primary\n'
+        '90000000 + 0 mapped (90.00% : N/A)\n'
+        f'{passed} + {failed} primary mapped (80.00% : N/A)\n')
 
 
 class CircRPMTests(unittest.TestCase):
@@ -37,13 +40,21 @@ class CircRPMTests(unittest.TestCase):
     def test_mapping_denominator(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d); mapping(p)
-            stats = NS['mapped_fragment_stats'](p)
-            self.assertEqual(stats['mapped_fragments'], 20000000)
+            stats = NS['mapped_read_stats'](p)
+            self.assertEqual(stats['primary_mapped_reads'], 20000000)
             self.assertAlmostEqual(stats['rpm_multiplier'] * 10, .5)
+            self.assertEqual(stats['primary_mapped_qc_fail'], 5000000)
+            # Never accept the generic mapped field or a duplicate denominator line.
+            original = (p / 'bam.stat').read_text()
+            for broken in [original.replace('primary mapped', 'other mapped'),
+                           original + '1 + 0 primary mapped (1% : N/A)\n',
+                           original.replace('60000000 + 5000000 primary', '1 + 0 primary')]:
+                (p / 'bam.stat').write_text(broken)
+                with self.assertRaises(ValueError): NS['mapped_read_stats'](p)
             mapping(p, 0, 0)
-            with self.assertRaises(ValueError): NS['mapped_fragment_stats'](p)
-            (p / 'STAR.Log.final.out').unlink()
-            with self.assertRaises(ValueError): NS['mapped_fragment_stats'](p)
+            with self.assertRaises(ValueError): NS['mapped_read_stats'](p)
+            (p / 'bam.stat').unlink()
+            with self.assertRaises(ValueError): NS['mapped_read_stats'](p)
 
     def test_junction_audit(self):
         with tempfile.TemporaryDirectory() as d:
@@ -52,9 +63,10 @@ class CircRPMTests(unittest.TestCase):
             (p / 'STAR.Chimeric.out.junction').write_text(row)
             (p / 'back_spliced_junction.bed').write_text('chr1\t100\t200\tFUSIONJUNC_0/1\t0\t+\n')
             self.assertEqual(NS['audit_star_junctions'](p)['junction_audit'],
-                             'unique_fragment_support_matches_parsed_bed')
+                             'junction_records_match_parsed_bed')
             (p / 'STAR.Chimeric.out.junction').write_text(row + row)
-            with self.assertRaisesRegex(ValueError, 'repeated fragment'): NS['audit_star_junctions'](p)
+            (p / 'back_spliced_junction.bed').write_text('chr1\t100\t200\tFUSIONJUNC_0/2\t0\t+\n')
+            self.assertEqual(NS['audit_star_junctions'](p)['repeated_read_name_junction_records'], 1)
             (p / 'STAR.Chimeric.out.junction').write_text(row.replace('201', '301'))
             with self.assertRaisesRegex(ValueError, 'disagree'): NS['audit_star_junctions'](p)
 
@@ -68,9 +80,6 @@ class CircRPMTests(unittest.TestCase):
                                                    ('B', 35000000, [20, 0], [.2, 0])]:
                 p = root / 'Motor_Cortex/RNAseq/Processed' / sid
                 p.mkdir(parents=True); mapping(p, unique, 5000000)
-                # Correct total input for sample B.
-                f = p / 'STAR.Log.final.out'
-                f.write_text(f.read_text().replace('25000000', '50000000'))
                 pd.DataFrame(dict(chrom=['chr1'] * 2, start=[100, 300], end=[200, 400],
                                   strand=['+'] * 2, readNumber=counts, circ_reads=counts,
                                   circ_percent=fractions)).to_csv(p / 'circularRNA_known_circ_percentage.txt', sep='\t', index=False)
@@ -87,7 +96,7 @@ class CircRPMTests(unittest.TestCase):
             self.assertAlmostEqual(rpm.loc['chr1:100-200:+', 'A'], .5)
             self.assertAlmostEqual(rpm.loc['chr1:100-200:+', 'B'], .5)
             self.assertEqual(rpm.loc['chr1:300-400:+', 'B'], 0)
-            self.assertEqual(meta.loc['B', 'mapped_fragments'], 40000000)
+            self.assertEqual(meta.loc['B', 'primary_mapped_reads'], 40000000)
             self.assertEqual(meta.loc['A', 'junction_audit'], 'unavailable_no_chimeric_file')
 
 if __name__ == '__main__': unittest.main()
