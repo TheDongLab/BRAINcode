@@ -13,7 +13,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'modules/build_circ_matrix_for_QT
 CODE = SCRIPT.read_text().split("python3 - <<'EOF'\n", 1)[1].split('\nEOF', 1)[0]
 NS = dict(defaultdict=defaultdict)
 for node in ast.parse(CODE).body:
-    if isinstance(node, ast.FunctionDef) and node.name in ('mapped_fragment_stats', 'audit_star_junctions'):
+    if isinstance(node, ast.FunctionDef) and node.name in ('mapped_fragment_stats', 'audit_star_junctions', 'norm_id', 'find_circ'):
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SCRIPT), 'exec'), NS)
 
 
@@ -25,6 +25,15 @@ def mapping(path, unique=15000000, multi=5000000):
 
 
 class CircRPMTests(unittest.TestCase):
+    def test_first_matching_path(self):
+        first = Path('/data/Cervical_Spinal_Cord/RNAseq/Processed/CGND_HRA_03699/circularRNA_known_circ_percentage.txt')
+        second = Path('/data/Cervical_spinal_cord/RNAseq/Processed/CGND_HRA_03699/circularRNA_known_circ_percentage.txt')
+        NS['all_circ'] = [first, second]
+        self.assertEqual(NS['find_circ']('CGND-HRA-03699'), first)
+        NS['all_circ'] = [second, first]
+        self.assertEqual(NS['find_circ']('CGND-HRA-03699'), second)
+        self.assertIsNone(NS['find_circ']('absent'))
+
     def test_mapping_denominator(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d); mapping(p)

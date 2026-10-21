@@ -169,11 +169,13 @@ rna.columns = rna.columns.str.strip().str.lower()
 all_circ = list(BASE.glob("**/RNAseq/Processed/*/circularRNA_known_circ_percentage.txt"))
 
 def find_circ(sample_id):
+    # Preserve the original pipeline's first-match selection and traversal order.
     sid_norm = norm_id(sample_id)
-    matches = [c for c in all_circ if norm_id(c.parent.name) == sid_norm]
-    if len(matches) > 1:
-        raise ValueError(f"Multiple circ files for sample {sample_id}: {matches}")
-    return matches[0] if matches else None
+    for c in all_circ:
+        if norm_id(c.parent.name) == sid_norm:
+            return c
+    return None
+
 
 rna["circ_path"] = rna["externalsampleid"].apply(find_circ)
 rna_found = rna[rna["circ_path"].notna()].copy()
