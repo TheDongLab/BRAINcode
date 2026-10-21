@@ -54,6 +54,8 @@ mkdir -p $OUTDIR
 
 # Match the filenames from your structure dynamically
 SNP_FILE=$INDIR/snp_${FILE_PREFIX}.txt
+# circ matrices store fractions (0–1). Models retain fraction-scale effects;
+# plotting/reporting scripts convert to percentages exactly once.
 CIRC_FILE=$INDIR/circ_${FILE_PREFIX}.txt
 COV_FILE=$INDIR/covariates_${FILE_PREFIX}_encoded.txt
 CIRC_LOC=$INDIR/circ_location.txt

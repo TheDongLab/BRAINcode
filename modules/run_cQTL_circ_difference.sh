@@ -323,7 +323,7 @@ def quant_rows(path,wanted):
                 if key in result:duplicate.add(key);continue
                 values={k:float(row[k]) for k in ['circ_percent','circ_reads','linear_reads']}
                 if not all(np.isfinite(v) for v in values.values()):continue
-                if not 0<=values['circ_percent']<=100 or min(values['circ_reads'],values['linear_reads'])<0:continue
+                if not 0<=values['circ_percent']<=1 or min(values['circ_reads'],values['linear_reads'])<0:continue
                 result[key]=values
             except (KeyError,ValueError):continue
     for key in duplicate:result.pop(key,None)
@@ -360,7 +360,8 @@ def render(pair,records,out,gtf,loc):
         draw_circ_arc(ax,start,end,circ[g],cmax,color,strand)
         ax.axhline(0,color='#555555',lw=.8);ax.axvspan(start,end,alpha=.1,color='#999999')
         if chr_key(snpchrom)==chr_key(chrom) and left<=snppos<=right:ax.axvline(snppos,ls='--',color='black',alpha=.8)
-        mean=np.mean([r['circ_percent'] for r in groups[g]])
+        # Source circ_percent is a fraction; convert only for percentage reporting.
+        mean=100*np.mean([r['circ_percent'] for r in groups[g]])
         ax.set_title(f'{GENOTYPE_LABELS[g]} (N={len(groups[g])}) | mean circ={mean:.3f}%',loc='left',color=color,fontsize=13,y=.84,pad=0)
         ax.set_xlim(left,right);ax.set_ylim(-2.05*cmax,2.05*cmax)
         ax.yaxis.set_major_formatter(FuncFormatter(density_formatter));ax.tick_params(axis='x',labelbottom=False)
@@ -457,7 +458,7 @@ def main():
             result=dict(pair,tissue=tissue,ref=ref,alt=alt,plink_counted_allele=counted)
             for value,label in [(0,'ref_ref'),(1,'het'),(2,'hom_alt')]:
                 v=[r['circ_percent'] for r in records if r['genotype']==value]
-                result['n_'+label]=len(v);result['mean_'+label+'_pct']=np.mean(v) if v else np.nan
+                result['n_'+label]=len(v);result['mean_'+label+'_pct']=100*np.mean(v) if v else np.nan
             result['delta_alt_minus_ref_pp']=result['mean_hom_alt_pct']-result['mean_ref_ref_pct'];result['abs_delta_pp']=abs(result['delta_alt_minus_ref_pp'])
             rows.append(result)
         columns=list(sig.columns)+['tissue','ref','alt','plink_counted_allele','n_ref_ref','n_het','n_hom_alt','mean_ref_ref_pct','mean_het_pct','mean_hom_alt_pct','delta_alt_minus_ref_pp','abs_delta_pp']

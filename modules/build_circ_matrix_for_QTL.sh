@@ -142,6 +142,10 @@ reads_master = reads_list[0]
 for next_df in reads_list[1:]:
     reads_master = reads_master.merge(next_df, on="circ_id", how="outer")
 reads_master = reads_master.fillna(0)
+# Export the full BSJ count matrix before the circ-fraction SD filter.
+# Rows are circ_id; columns are samples. Values are raw readNumber counts, not RPM.
+reads_master.to_csv(OUT / "circ_counts_matrix.txt", sep="\t", index=False)
+print(f"Saved unfiltered BSJ counts: {OUT / 'circ_counts_matrix.txt'}")
 
 circ_ids = expr['circ_id']
 numeric_data = expr.drop('circ_id', axis=1)

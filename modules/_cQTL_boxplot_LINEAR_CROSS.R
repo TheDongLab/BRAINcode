@@ -92,6 +92,11 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         }
 
         expr_vals <- as.numeric(unlist(expr_row[, -1, with=FALSE], use.names=FALSE))
+        # Input circ matrix stores fractions (0–1); display percentages (0–100).
+        if (any(!is.na(expr_vals) & (!is.finite(expr_vals) | expr_vals < 0 | expr_vals > 1))) {
+            stop("Expected circ fractions in [0, 1]; do not supply a percent-scaled matrix.")
+        }
+        expr_vals <- 100 * expr_vals
         snp_vals  <- as.numeric(unlist(snp_row[, -1, with=FALSE], use.names=FALSE))
 
         if (length(expr_vals) == 0 || length(snp_vals) == 0 || length(expr_vals) != length(snp_vals)) {
@@ -144,7 +149,7 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df_ctrl$SNP_f <- factor(df_ctrl$SNP, levels=0:2, labels=ctrl_labels)
 
         boxplot(expression ~ SNP_f, data=df_ctrl, col="lightblue", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype", main="Controls Only")
+                ylab="circRNA Percentage (%)", xlab="Genotype", main="Controls Only")
         points(jitter(as.numeric(df_ctrl$SNP_f), amount=0.15), df_ctrl$expression,
                pch=df_ctrl$p_pch, col=df_ctrl$p_col, cex=df_ctrl$p_cex)
 
@@ -155,13 +160,13 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df_als$SNP_f <- factor(df_als$SNP, levels=0:2, labels=als_labels)
 
         boxplot(expression ~ SNP_f, data=df_als, col="lightpink", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype", main="ALS Only")
+                ylab="circRNA Percentage (%)", xlab="Genotype", main="ALS Only")
         points(jitter(as.numeric(df_als$SNP_f), amount=0.15), df_als$expression,
                pch=df_als$p_pch, col=df_als$p_col, cex=df_als$p_cex)
 
         # 3. Interaction Slope Visualization
         plot(df$SNP, df$expression, type="n", xaxt="n", xlab="Genotype",
-             ylab="Expression (Z-score)", main="Interaction Slope Context",
+             ylab="circRNA Percentage (%)", main="Interaction Slope Context",
              sub=paste("Interaction p =", get_interaction_p(df)), col.sub="darkblue", font.sub=2)
 
         axis(1, at=0:2, labels=c("Ref/Ref", "Het", "Hom Alt"))

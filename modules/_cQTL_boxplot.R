@@ -95,6 +95,11 @@ run_plotting <- function(pdf_path, use_status_colors = FALSE) {
         }
 
         circ_vals <- as.numeric(unlist(circ_row[, -1, with=FALSE], use.names=FALSE))
+        # Input circ matrix stores fractions (0–1); display percentages (0–100).
+        if (any(!is.na(circ_vals) & (!is.finite(circ_vals) | circ_vals < 0 | circ_vals > 1))) {
+            stop("Expected circ fractions in [0, 1]; do not supply a percent-scaled matrix.")
+        }
+        circ_vals <- 100 * circ_vals
         snp_vals  <- as.numeric(unlist(snp_row[, -1, with=FALSE], use.names=FALSE))
 
         if (length(circ_vals) == 0 || length(snp_vals) == 0 || length(circ_vals) != length(snp_vals)) {
