@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 ###########################################
 # _eQTL_postprocess_LINEAR_CROSS.R
 # Post-processing script for interaction eQTLs
@@ -35,6 +36,11 @@ if("gene" %in% names(eqtl)) setnames(eqtl, "gene", "geneid")
 
 eqtl <- merge(eqtl, snploc, by="snpid", all.x=TRUE)
 eqtl <- merge(eqtl, geneloc, by="geneid", all.x=TRUE)
+if (circ_mode) {
+    annotation <- fread(file.path(dirname(gene_loc_file), "circ_annotation.tsv"))
+    eqtl <- merge(eqtl, annotation, by="geneid", all.x=TRUE)
+}
+
 
 # Flag SNPs near telomeres
 eqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
@@ -44,7 +50,7 @@ eqtl[, telomeric_flag := ifelse(!is.na(pos) & pos < TELOMERE_DIST, TRUE, FALSE)]
 eqtl_fdr <- eqtl[FDR < fdr_thresh]
 
 # Fallback mechanism: If FDR filters out everything but raw p-values are strong
-if (nrow(eqtl_fdr) == 0) {
+if (!circ_mode && nrow(eqtl_fdr) == 0) {
   message("## No pairs passed strict FDR. Falling back to top hits by raw p-value...")
   
   # Sort by raw p-value and take pairs meeting a standard nominal threshold (e.g., p < 0.01)
@@ -69,7 +75,7 @@ message(sprintf("## Total interaction pairs to plot: %d", nrow(eqtl_top)))
 fwrite(eqtl, file=paste0(out_prefix, ".full_annotated.txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_fdr_compact, file=paste0(out_prefix, ".FDR", fdr_thresh, ".txt"), sep="\t", quote=FALSE)
 fwrite(eqtl_lead, file=paste0(out_prefix, ".lead_snps.txt"), sep="\t", quote=FALSE)
-fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=FALSE)
+fwrite(eqtl_top, file=paste0(out_prefix, ".top_for_boxplot.txt"), sep="\t", quote=FALSE, col.names=circ_mode)
 message(sprintf("## Boxplot input file written with %d pairs", nrow(eqtl_top)))
 
 ########################################################################
@@ -79,7 +85,7 @@ current_sex <- ifelse(grepl("Male", out_prefix), "Male", "Female")
 other_sex   <- ifelse(current_sex == "Male", "Female", "Male")
 other_sex_file <- gsub(paste0("/", current_sex, "/"), paste0("/", other_sex, "/"), paste0(out_prefix, ".full_annotated.txt"))
 
-if (file.exists(other_sex_file)) {
+if (file.exists(other_sex_file) && (!circ_mode || other_sex_file != paste0(out_prefix, ".full_annotated.txt"))) {
     message("## Found opposite sex results. Running Interaction Meta-analysis...")
     
     combined_dir <- gsub(paste0("/", current_sex, "/results.*"), "/Combined/results", out_prefix)

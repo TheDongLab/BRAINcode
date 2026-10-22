@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 ###########################################
 # _eQTL_boxplot.R
 # Lightweight allele-aware eQTL boxplots
@@ -22,11 +23,19 @@ out_dir   <- args[6]
 tissue    <- args[7]
 
 RAW_FILE <- "/home/zw529/donglab/data/target_ALS/QTL/plink/joint_all_chrs_matrixEQTL.raw"
+if (circ_mode) RAW_FILE <- Sys.getenv("EQTL_RAW_FILE", RAW_FILE)
 
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_eQTL_boxplots_colored.pdf"))
 
 pairs <- fread(GSfile, header=TRUE)
+if (circ_mode) {
+    if (nrow(pairs) == 0) { message("No significant circRNA pairs to plot"); quit(status=0) }
+    annotation <- fread(file.path(dirname(expr_file), "circ_annotation.tsv"))
+    pairs <- merge(pairs, annotation, by="geneid", all.x=TRUE, sort=FALSE)
+    pairs[, gene_symbol := ifelse(is.na(host_gene) | host_gene == "", geneid, paste0(host_gene, " | ", geneid))]
+}
+phenotype_label <- if (circ_mode) "circRNA RPM (inverse-normal transformed)" else "Expression (Z-score)"
 
 message("# Loading genomic matrices...")
 snp_mat  <- fread(snp_file, header=TRUE)
@@ -133,7 +142,7 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df$SNP_f <- factor(df$SNP, levels=0:2, labels=add_labels)
 
         boxplot(expression ~ SNP_f, data=df, col="lightgreen", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype",
+                ylab=phenotype_label, xlab="Genotype",
                 main=paste0("Additive Model\n(p = ", get_p(expression ~ SNP, df), ")"))
 
         points(jitter(as.numeric(df$SNP_f), amount=0.15), df$expression,
@@ -150,7 +159,7 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df$dom_f <- factor(df$dom_val, levels=0:1, labels=dom_labels)
 
         boxplot(expression ~ dom_f, data=df, col="lightblue", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype",
+                ylab=phenotype_label, xlab="Genotype",
                 main=paste0("Dominant Model\n(p = ", get_p(expression ~ dom_val, df), ")"))
 
         points(jitter(as.numeric(df$dom_f), amount=0.15), df$expression,
@@ -167,7 +176,7 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df$rec_f <- factor(df$rec_val, levels=0:1, labels=rec_labels)
 
         boxplot(expression ~ rec_f, data=df, col="lightpink", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype",
+                ylab=phenotype_label, xlab="Genotype",
                 main=paste0("Recessive Model\n(p = ", get_p(expression ~ rec_val, df), ")"))
 
         points(jitter(as.numeric(df$rec_f), amount=0.15), df$expression,

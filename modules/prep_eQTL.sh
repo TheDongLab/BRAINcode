@@ -11,14 +11,23 @@ set -euo pipefail
 module load BCFtools
 
 TISSUE="$1"
+MODE="${2:-gene}"
+case "$MODE" in gene|circ) ;; *) echo "Usage: prep_eQTL.sh TISSUE [circ]" >&2; exit 1;; esac
+ANALYSIS=eQTL
+if [ "$MODE" = circ ]; then ANALYSIS=circ_eQTL; fi
+SCRIPT_DIR="${QTL_PIPELINE:-/home/zw529/donglab/pipelines/scripts/QTL}"
+if [ "$MODE" = circ ]; then
+    module load Python/3.12.3-GCCcore-13.3.0 Python-bundle-PyPI/2024.06-GCCcore-13.3.0
+fi
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
-OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL
+OUTDIR=/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/$ANALYSIS
 mkdir -p $OUTDIR
 
 ### Paths ###
 QTL_DIR=/home/zw529/donglab/data/target_ALS/QTL
 PLINK=$QTL_DIR/plink
 EXPR=$QTL_DIR/expression_matrix.txt
+if [ "$MODE" = circ ]; then EXPR=$QTL_DIR/circ_rpm_matrix.txt; fi
 METADATA_CSV=/home/zw529/donglab/data/target_ALS/targetALS_rnaseq_metadata.csv
 BREAKDOWN_TSV=$QTL_DIR/patient_tissue_breakdown.tsv
 COV_FILE=/home/zw529/donglab/data/target_ALS/QTL/covariates.tsv
@@ -68,9 +77,11 @@ python3 << EOF
 import pandas as pd
 import sys
 import numpy as np
+circ_mode = "$MODE" == "circ"
+sys.path.insert(0, "$SCRIPT_DIR")
 
 # 1. LOAD DATA & CHROMOSOME MAPS
-if "$TISSUE" not in ("Cortex", "Spinal_Cord"):
+if not circ_mode and "$TISSUE" not in ("Cortex", "Spinal_Cord"):
     breakdown = pd.read_csv("$BREAKDOWN_TSV", sep='\t')
 meta = pd.read_csv("$METADATA_CSV", low_memory=False)
 pca = pd.read_csv("$PCA", sep=r'\s+').rename(columns={'#IID': 'IID'})
@@ -96,6 +107,12 @@ try:
 except FileNotFoundError:
     sex_mismatch_samples = set()
 
+if circ_mode:
+    # Reuse existing tissue-level exclusions as well as any circ-specific list.
+    from pathlib import Path
+    existing_exclusions = Path("/home/zw529/donglab/data/target_ALS/$TISSUE_DIR/eQTL/potential_sex_mismatches.txt")
+    if existing_exclusions.exists():
+        sex_mismatch_samples.update(x.strip() for x in existing_exclusions.read_text().splitlines() if x.strip())
 meta = meta[~meta['externalsampleid'].isin(sex_mismatch_samples)].copy()
 
 # 2. DEFINE TISSUE PATTERN
@@ -109,10 +126,12 @@ patterns = {
     "Frontal_Cortex": "Frontal Cortex|Frontal",
     "Cerebellum": "Cerebellum"
 }
+if circ_mode:
+    patterns["Lumbar_Spinal_Cord"] += "|Lumbosacaral"
 pattern = patterns.get("$TISSUE", "$TISSUE")
 
 # 3. FILTERING & BEST REPLICATE SELECTION
-if "$TISSUE" in ("Cortex", "Spinal_Cord"):
+if circ_mode or "$TISSUE" in ("Cortex", "Spinal_Cord"):
     meta_tissue = meta[meta["tissue"].astype("string").str.contains(pattern, case=False, na=False)].copy()
 else:
     approved_subjects = breakdown[breakdown['tissues'].str.contains("$TISSUE", na=False)]['subject_id'].unique()
@@ -142,7 +161,7 @@ sub_to_hra = {}
 final_aligned_subjects = []
 for s in common_subjects:
     hra = meta_unique.loc[meta_unique['externalsubjectid'] == s, 'hra_clean'].values[0]
-    matches = [c for c in expr_headers if c.startswith(hra)]
+    matches = [c for c in expr_headers if c == hra] if circ_mode else [c for c in expr_headers if c.startswith(hra)]
     if matches:
         final_aligned_subjects.append(s)
         sub_to_hra[s] = matches[0]
@@ -150,35 +169,36 @@ for s in common_subjects:
 num_final = len(final_aligned_subjects)
 
 # 5. ALIGN EXPRESSION & SNPS
-expr = pd.read_csv("$EXPR", sep='\t', usecols=['gene_id'] + [sub_to_hra[s] for s in final_aligned_subjects], index_col=0)
+expr = pd.read_csv("$EXPR", sep='\t', usecols=[('circ_id' if circ_mode else 'gene_id')] + [sub_to_hra[s] for s in final_aligned_subjects], index_col=0)
 expr_final = expr[[sub_to_hra[s] for s in final_aligned_subjects]]
 expr_final.columns = final_aligned_subjects
 
 snp_matrix = raw_df[raw_df['IID'].isin(final_aligned_subjects)].set_index('IID').drop(columns=['FID']).loc[final_aligned_subjects]
 snp_final = snp_matrix.T
 
-# Tissue-specific MAF filter
-min_maf = 0.05
-snp_numeric = snp_final.apply(pd.to_numeric, errors='coerce')
-n_called = snp_numeric.notna().sum(axis=1)
-allele_freq = snp_numeric.sum(axis=1, skipna=True) / (2 * n_called)
-maf = np.minimum(allele_freq, 1 - allele_freq)
-n_before_maf = len(snp_final)
-snp_final = snp_final.loc[(n_called > 0) & (maf >= min_maf)]
-print(f"DEBUG: Tissue-specific MAF >= {min_maf}: {n_before_maf} -> {len(snp_final)} SNPs.")
+if not circ_mode:
+    # Tissue-specific MAF filter
+    min_maf = 0.05
+    snp_numeric = snp_final.apply(pd.to_numeric, errors='coerce')
+    n_called = snp_numeric.notna().sum(axis=1)
+    allele_freq = snp_numeric.sum(axis=1, skipna=True) / (2 * n_called)
+    maf = np.minimum(allele_freq, 1 - allele_freq)
+    n_before_maf = len(snp_final)
+    snp_final = snp_final.loc[(n_called > 0) & (maf >= min_maf)]
+    print(f"DEBUG: Tissue-specific MAF >= {min_maf}: {n_before_maf} -> {len(snp_final)} SNPs.")
 
-# Require every observed genotype group to contain >=5 subjects
-min_genotype_n = 5
+    # Require every observed genotype group to contain >=5 subjects
+    min_genotype_n = 5
 
-def genotype_groups_pass(row):
-    g = pd.to_numeric(row, errors='coerce').dropna()
-    counts = g.value_counts()
-    return len(counts) >= 2 and counts.min() >= min_genotype_n
+    def genotype_groups_pass(row):
+        g = pd.to_numeric(row, errors='coerce').dropna()
+        counts = g.value_counts()
+        return len(counts) >= 2 and counts.min() >= min_genotype_n
 
-n_before_genotype = len(snp_final)
-keep_genotype = snp_final.apply(genotype_groups_pass, axis=1)
-snp_final = snp_final.loc[keep_genotype]
-print(f"DEBUG: Minimum genotype-group N >= {min_genotype_n}: {n_before_genotype} -> {len(snp_final)} SNPs.")
+    n_before_genotype = len(snp_final)
+    keep_genotype = snp_final.apply(genotype_groups_pass, axis=1)
+    snp_final = snp_final.loc[keep_genotype]
+    print(f"DEBUG: Minimum genotype-group N >= {min_genotype_n}: {n_before_genotype} -> {len(snp_final)} SNPs.")
 
 def convert_to_rsid(full_id):
     clean_id = full_id.rsplit('_', 1)[0] if '_' in full_id else full_id
@@ -209,6 +229,14 @@ cov_merged['sex_bin'] = cov_merged['sex'].astype(str).str.lower().map({'male': 1
 
 cov_final = cov_merged.set_index('externalsubjectid').reindex(final_aligned_subjects)
 cov_final = cov_final[['sex_bin', 'age_at_death', 'PC1', 'PC2', 'PC3', 'PC4', 'PC5', 'is_als']].T
+
+# Circ mode: complete donors first, then transform within this tissue.
+if circ_mode:
+    from circ_eqtl import prepare_circ
+    expr_final, snp_final, cov_final = prepare_circ(
+        expr_final, snp_final, cov_final, "$OUTDIR", "$TISSUE_DIR",
+        "$QTL_DIR/circ_rpm_sample_metadata.tsv", sub_to_hra)
+    num_final = expr_final.shape[1]
 
 # 7. SAVE
 expr_final.to_csv("$OUTDIR/expression_${TISSUE_DIR}.txt", sep='\t', index=True, index_label="geneid")
@@ -246,8 +274,11 @@ BEGIN {
     }
 }' $BIM >> $OUTDIR/snp_location.txt
 
+if [ "$MODE" != circ ]; then
 echo -e "geneid\tchr\tleft\tright" > $OUTDIR/gene_location.txt
 awk 'BEGIN{OFS="\t"} {gene=$4; sub(/___.*$/, "", gene); if (!seen[gene]++) print gene, $1, $2, $3}' $GTF_BED6 >> $OUTDIR/gene_location.txt
+
+fi
 
 rm -f $TMP_RSID_MAP
 echo "Location files complete for $TISSUE."

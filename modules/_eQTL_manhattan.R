@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 ###########################################
 # _eQTL_manhattan.R
 # UPDATED: Generates both directional and gene-colored diagnostic plots
@@ -23,6 +24,7 @@ std_path   <- if(length(args) >= 6) args[6] else NULL
 message("## Reading data...")
 snp_plot  <- fread(input_file)
 lead_plot <- fread(lead_file)
+if (circ_mode && nrow(snp_plot) == 0) { message("No circRNA associations to plot"); quit(status=0) }
 
 # Use FDR column if it exists, otherwise fall back to p-value
 if ("FDR" %in% names(snp_plot)) {
@@ -150,7 +152,7 @@ p1 <- ggplot(snp_plot, aes(x=cum_pos, y=log10p)) +
     scale_colour_manual(values=c("0"="#444444", "1"="#999999", "23"="#555555", "increase"="red", "decrease"="blue", "telomere"="#E69F00", "inc_lead"="red", "dec_lead"="blue", "none"="white")) +
     scale_x_continuous(labels=tick_labels, breaks=tick_breaks, expand=x_expand) +
     scale_y_continuous(expand=c(0.02, 0.5)) +
-    labs(title=paste("cis-eQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste("Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x=x_axis_label, y=expression(-log[10](p))) +
+    labs(title=paste(if (circ_mode) "circRNA abundance cis-eQTL -" else "cis-eQTL Manhattan Plot -", basename(out_prefix)), subtitle=paste(if (circ_mode) "Reds: Increased circRNA abundance | Blues: Decreased circRNA abundance | FDR <" else "Reds: Increased expression | Blues: Decreased expression | FDR <", sig_thresh_fdr), x=x_axis_label, y=expression(-log[10](p))) +
     theme_bw() + theme(legend.position="none", panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
 
 out_file_png1 <- paste0(out_prefix, ".manhattan_by_SNP.png")

@@ -12,13 +12,23 @@ module load R
 # ── Arguments ─────────────────────────────────────────────────────────
 if [ $# -lt 1 ]; then
     echo "ERROR: Missing tissue argument."
-    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\" [interaction] [sub_dir]"
+    echo "Usage: sbatch run_eQTL.sh \"Cerebellum\" [circ] [standard|interaction] [sub_dir]"
     exit 1
 fi
 
 TISSUE="$1"
-RUN_TYPE="${2:-standard}"   # Default to standard if second argument is empty
-SUB_DIR="${3:-}"            # Optional 3rd argument to process subfolder runs natively
+# circ may appear before or after the existing run-type/subdirectory arguments.
+MODE=gene
+POSITIONAL=()
+for arg in "${@:2}"; do
+    if [ "$arg" = circ ]; then MODE=circ; else POSITIONAL+=("$arg"); fi
+done
+RUN_TYPE="${POSITIONAL[0]:-standard}"
+SUB_DIR="${POSITIONAL[1]:-}"
+if [ "${#POSITIONAL[@]}" -gt 2 ]; then echo "Too many arguments" >&2; exit 1; fi
+ANALYSIS=eQTL
+if [ "$MODE" = circ ]; then ANALYSIS=circ_eQTL; fi
+export EQTL_MODE="$MODE"
 TISSUE_DIR=$(echo "$TISSUE" | tr ' ' '_')
 
 echo "========================================================"
@@ -32,15 +42,15 @@ echo "========================================================"
 
 # ── Paths ─────────────────────────────────────────────────────────────
 BASE=/home/zw529/donglab/data/target_ALS
-PIPELINE=/home/zw529/donglab/pipelines/scripts/QTL
+PIPELINE="${QTL_PIPELINE:-/home/zw529/donglab/pipelines/scripts/QTL}"
 PLINK=$BASE/QTL/plink
 
 # Adjust working directory and naming prefixes if a subfolder run is specified
 if [ -n "$SUB_DIR" ]; then
-    INDIR=$BASE/$TISSUE_DIR/eQTL/$SUB_DIR
+    INDIR=$BASE/$TISSUE_DIR/$ANALYSIS/$SUB_DIR
     FILE_PREFIX="${SUB_DIR}"
 else
-    INDIR=$BASE/$TISSUE_DIR/eQTL
+    INDIR=$BASE/$TISSUE_DIR/$ANALYSIS
     FILE_PREFIX="${TISSUE_DIR}"
 fi
 
@@ -87,6 +97,16 @@ if [[ "$S_N" -ne "$E_N" ]] || [[ "$S_N" -ne "$C_N" ]]; then
     exit 1
 fi
 
+# Exact identity/order check, including duplicated donor IDs.
+python3 - "$SNP_FILE" "$EXPR_FILE" "$COV_FILE" <<'PYALIGN'
+import sys
+headers=[]
+for path in sys.argv[1:]:
+    with open(path) as f: headers.append(f.readline().rstrip("\n").split("\t")[1:])
+if not headers[0] or len(set(headers[0])) != len(headers[0]) or not all(h == headers[0] for h in headers):
+    raise SystemExit("Donor IDs/order differ between genotype, phenotype and covariates")
+PYALIGN
+
 # ── Step 1: Run Matrix eQTL ───────────────────────────────────────────
 echo "[1] Running Matrix eQTL..."
 if [ "$RUN_TYPE" == "interaction" ]; then
@@ -113,7 +133,9 @@ TOP_PAIRS="${OUTPUT_PREFIX}.top_for_boxplot.txt"
 
 # ── Step 2.5: In-Place Gene Name Conversion (AnnotationHub) ───────────
 echo "[2.5] Overwriting Ensembl IDs with common symbols..."
-if [ -n "$SUB_DIR" ]; then
+if [ "$MODE" = circ ]; then
+    echo "Keeping circRNA IDs and CIRCexplorer2 host annotations."
+elif [ -n "$SUB_DIR" ]; then
     # 1. Create a clean version of the script without its trailing execution block
     sed '/# TARGET EXECUTION PATHS/,$d' /home/zw529/donglab/pipelines/scripts/QTL/convert_eqtl_names.R > tmpscript.R
     

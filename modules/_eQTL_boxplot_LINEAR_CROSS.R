@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 ###########################################
 # _eQTL_boxplot_LINEAR_CROSS.R
 # Interaction Layout: Split Boxplots + Regression Slopes
@@ -23,11 +24,19 @@ out_dir   <- args[6]
 tissue    <- args[7]
 
 RAW_FILE <- "/home/zw529/donglab/data/target_ALS/QTL/plink/joint_all_chrs_matrixEQTL.raw"
+if (circ_mode) RAW_FILE <- Sys.getenv("EQTL_RAW_FILE", RAW_FILE)
 
 out_file_std <- file.path(out_dir, paste0(tissue, "_all_sig_Interaction_boxplots.pdf"))
 out_file_col <- file.path(out_dir, paste0(tissue, "_all_sig_Interaction_boxplots_colored.pdf"))
 
 pairs <- fread(GSfile, header=TRUE)
+if (circ_mode) {
+    if (nrow(pairs) == 0) { message("No significant circRNA pairs to plot"); quit(status=0) }
+    annotation <- fread(file.path(dirname(expr_file), "circ_annotation.tsv"))
+    pairs <- merge(pairs, annotation, by="geneid", all.x=TRUE, sort=FALSE)
+    pairs[, gene_symbol := ifelse(is.na(host_gene) | host_gene == "", geneid, paste0(host_gene, " | ", geneid))]
+}
+phenotype_label <- if (circ_mode) "circRNA RPM (inverse-normal transformed)" else "Expression (Z-score)"
 
 message("# Loading genomic matrices...")
 snp_mat  <- fread(snp_file, header=TRUE)
@@ -142,7 +151,7 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df_ctrl$SNP_f <- factor(df_ctrl$SNP, levels=0:2, labels=ctrl_labels)
 
         boxplot(expression ~ SNP_f, data=df_ctrl, col="lightblue", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype", main="Controls Only")
+                ylab=phenotype_label, xlab="Genotype", main="Controls Only")
         points(jitter(as.numeric(df_ctrl$SNP_f), amount=0.15), df_ctrl$expression,
                pch=df_ctrl$p_pch, col=df_ctrl$p_col, cex=df_ctrl$p_cex)
 
@@ -153,13 +162,13 @@ run_plotting <- function(pdf_path, use_status_colors=FALSE) {
         df_als$SNP_f <- factor(df_als$SNP, levels=0:2, labels=als_labels)
 
         boxplot(expression ~ SNP_f, data=df_als, col="lightpink", outline=FALSE,
-                ylab="Expression (Z-score)", xlab="Genotype", main="ALS Only")
+                ylab=phenotype_label, xlab="Genotype", main="ALS Only")
         points(jitter(as.numeric(df_als$SNP_f), amount=0.15), df_als$expression,
                pch=df_als$p_pch, col=df_als$p_col, cex=df_als$p_cex)
 
         # 3. Interaction Slope Visualization
         plot(df$SNP, df$expression, type="n", xaxt="n", xlab="Genotype",
-             ylab="Expression (Z-score)", main="Interaction Slope Context",
+             ylab=phenotype_label, main="Interaction Slope Context",
              sub=paste("Interaction p =", get_interaction_p(df)), col.sub="darkblue", font.sub=2)
 
         axis(1, at=0:2, labels=c("Ref/Ref", "Het", "Hom Alt"))

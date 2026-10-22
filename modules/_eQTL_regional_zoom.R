@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 library(data.table)
 library(ggplot2)
 library(ggrepel)
@@ -30,7 +31,7 @@ chr_label_full  <- paste0("chr", chr_num_clean)
 x_label_dynamic <- sprintf("Chromosome %s Position (Mb)", chr_num_clean)
 
 # Base directory path setup
-base_dir <- paste0("~/donglab/data/target_ALS/", tissue, "/eQTL/")
+base_dir <- paste0("~/donglab/data/target_ALS/", tissue, if (circ_mode) "/circ_eQTL/" else "/eQTL/")
 
 # Dynamically set results folder depending on the run type
 if (run_type == "interaction") {
@@ -65,7 +66,10 @@ setkey(snp_raw, snpid); setkey(lead_raw, snpid); setkey(snp_loc_sub, snpid)
 snp_zoom  <- snp_raw[snp_loc_sub, nomatch = NULL]
 lead_zoom <- lead_raw[snp_loc_sub, nomatch = NULL]
 
-if (nrow(snp_zoom) == 0) stop("## Zero variants found in this window.")
+if (nrow(snp_zoom) == 0) {
+  if (circ_mode) { message("No circRNA associations in regional window; skipping."); quit(status=0) }
+  stop("## Zero variants found in this window.")
+}
 
 # Find the absolute top signal gene in this window
 top_gene <- snp_zoom[order(-log10p)][1, geneid]

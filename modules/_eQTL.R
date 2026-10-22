@@ -1,3 +1,4 @@
+circ_mode <- identical(Sys.getenv("EQTL_MODE", "gene"), "circ")
 ###########################################
 # Rscript to run eQTL analysis using Matrix eQTL
 # Matrix eQTL by Andrey A. Shabalin
@@ -75,6 +76,12 @@ if(gene_location_file_name != "" && snp_location_file_name!="")
     message("## Load gene/SNP location data...")
     snpspos = read.table(snp_location_file_name, header = TRUE, stringsAsFactors = FALSE);
     genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+    if (circ_mode) {
+        if (anyDuplicated(genepos[[1]])) stop("Duplicated circRNA locations")
+        if (!any(genepos[[2]] %in% snpspos[[2]])) stop("No shared circRNA/SNP chromosome labels")
+        message("CircRNA abundance: inverse-normal RPM; cis window around circRNA interval")
+    }
+
 
     message("## Run the cis-/trans-eQTL analysis...")
     
