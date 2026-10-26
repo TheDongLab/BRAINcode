@@ -7,102 +7,253 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-# ── Meta RNAseq submission script ─────────────────────────────────────────────
-# Discovers all RNAseq samples across target experiments and runs _RNAseq.sh
-# on each sample as a SLURM array job.
-#
-# For most experiments: discovers samples from RNAseq/Raw/ subdirectories
-#                        and writes output to RNAseq/Processed/.
-# For target_ALS:        discovers samples from RNAseq/Processed/ subdirectories
-#                        (BAM already present; steps 1-4 are skipped via status
-#                        files, and the BAM is symlinked to the expected name).
-#
-# Lives in: $HOME/donglab/pipelines/scripts/rnaseq/
-#
-# Usage:
-#   bash bulkRNAseq.pipeline.sh [<username>]             # count samples and self-submit
-#   bash bulkRNAseq.pipeline.sh [<username>] --dry-run   # preview without submitting
-# ──────────────────────────────────────────────────────────────────────────────
+# Submit one RNA-seq worker per sample.
+# For AnswerALS, submit a cohort LeafCutter job after all sample workers succeed.
 
 set -euo pipefail
 
-# ── Parse Arguments & Dynamic User Resolution ─────────────────────────────────
+###########################################
+# Arguments
+###########################################
 DRY_RUN=false
+LEAFCUTTER_COHORT=false
 TARGET_USER=""
 
-for arg in "${@:-}"; do
-    if [[ "$arg" == "--dry-run" ]]; then
-        DRY_RUN=true
-    elif [[ -n "$arg" ]]; then
-        TARGET_USER="$arg"
-    fi
+while (($#)); do
+    case "$1" in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --leafcutter-cohort)
+            LEAFCUTTER_COHORT=true
+            shift
+            ;;
+        *)
+            TARGET_USER="$1"
+            shift
+            ;;
+    esac
 done
 
-# Fall back to current system user if no target user was explicitly passed
 TARGET_USER="${TARGET_USER:-$USER}"
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+###########################################
+# Paths and settings
+###########################################
 DATA_DIR="/home/${TARGET_USER}/donglab/data"
 PIPELINE_DIR="/home/${TARGET_USER}/donglab/pipelines/scripts/rnaseq"
 SCRIPT="$PIPELINE_DIR/_RNAseq.sh"
 
-# ── Target experiments ────────────────────────────────────────────────────────
-# Format: "EXPERIMENT_NAME|raw"   --> discover from RNAseq/Raw/, output to RNAseq/Processed/
-#          "EXPERIMENT_NAME|processed" --> discover from RNAseq/Processed/ (BAM already present)
+ANSWERALS_TISSUE="iPSC_Motor_Neuron"
+ANSWERALS_RNASEQ_DIR="$DATA_DIR/answer_ALS/${ANSWERALS_TISSUE}/RNAseq"
+ANSWERALS_PROCESSED_DIR="$ANSWERALS_RNASEQ_DIR/Processed"
+ANSWERALS_LEAFCUTTER_DIR="$ANSWERALS_RNASEQ_DIR/leafcutter/original_bams"
+
+LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
+
+###########################################
+# Experiments to include
+#
+# Keep TargetALS as the current default.
+# Uncomment AnswerALS when ready to include that cohort.
+###########################################
 EXPERIMENTS=(
-#    "AMPALS_GSE124439|raw"
-#    "AMPALS_GSE219281|raw"
-#    "GEO_GSE153960|raw"
     "target_ALS|processed"
+    # "answer_ALS|answerals"
 )
 
-# ── Shared function: build ordered master sample list into MASTER array ────────
-# Each entry: "EXP|tissue|sample|mode"
+###########################################
+# Build deterministic ordered sample list
+# Entries are:
+#   EXP|TISSUE|SAMPLE|MODE|BAM
+###########################################
 build_master() {
     MASTER=()
-    for entry in "${EXPERIMENTS[@]}"; do
-        EXP=$(echo "$entry"  | cut -d'|' -f1)
-        MODE=$(echo "$entry" | cut -d'|' -f2)
-        EXP_DIR="$DATA_DIR/$EXP"
-        [[ -d "$EXP_DIR" ]] || continue
+    HAS_ANSWERALS=false
 
-        if [[ "$MODE" == "raw" ]]; then
-            # Discover sample subdirectories inside RNAseq/Raw/
+    for entry in "${EXPERIMENTS[@]}"; do
+        EXP="${entry%%|*}"
+        REST="${entry#*|}"
+        MODE="$REST"
+
+        if [[ "$EXP" == "answer_ALS" && "$MODE" == "answerals" ]]; then
+            HAS_ANSWERALS=true
+
+            [[ -d "$ANSWERALS_PROCESSED_DIR" ]] || {
+                echo "[ERROR] AnswerALS RNA-seq directory not found: $ANSWERALS_PROCESSED_DIR" >&2
+                return 1
+            }
+
+            while IFS= read -r donor_dir; do
+                [[ -d "$donor_dir" ]] || continue
+                donor="$(basename "$donor_dir")"
+
+                # This control was excluded from the agreed 1,101-BAM cohort.
+                [[ "$donor" == "CTRL-NEUEU392AE8" ]] && continue
+
+                # Select exactly one original BAM. Exclude release5, remap,
+                # and STAR-generated BAMs; fail on ambiguous donors.
+                matches=()
+                while IFS= read -r bam; do
+                    [[ -f "$bam" ]] || continue
+                    case "$(basename "$bam")" in
+                        *release5*|*remap*|STAR.*) continue ;;
+                    esac
+                    matches+=("$bam")
+                done < <(find "$donor_dir" -maxdepth 1 -type f -name "*.sorted.bam" | sort)
+
+                if ((${#matches[@]} != 1)); then
+                    echo "[ERROR] Expected exactly one selected original BAM for $donor; found ${#matches[@]}." >&2
+                    printf '  %s\n' "${matches[@]:-}" >&2
+                    return 1
+                fi
+
+                MASTER+=("answer_ALS|${ANSWERALS_TISSUE}|${donor}|answerals|${matches[0]}")
+            done < <(find "$ANSWERALS_PROCESSED_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
+
+        elif [[ "$MODE" == "raw" ]]; then
+            EXP_DIR="$DATA_DIR/$EXP"
+            [[ -d "$EXP_DIR" ]] || continue
+
             while IFS= read -r raw_dir; do
-                rnaseq_dir=$(dirname "$raw_dir")
-                tissue=$(basename "$(dirname "$rnaseq_dir")")
+                rnaseq_dir="$(dirname "$raw_dir")"
+                tissue="$(basename "$(dirname "$rnaseq_dir")")"
+
                 for sample_dir in "$raw_dir"/*/; do
                     [[ -d "$sample_dir" ]] || continue
-                    sample=$(basename "$sample_dir")
-                    MASTER+=("${EXP}|${tissue}|${sample}|raw")
+                    sample="$(basename "$sample_dir")"
+                    MASTER+=("${EXP}|${tissue}|${sample}|raw|")
                 done
             done < <(find "$EXP_DIR" -type d -path '*/RNAseq/Raw' 2>/dev/null | sort)
 
         elif [[ "$MODE" == "processed" ]]; then
-            # Discover sample subdirectories inside RNAseq/Processed/
+            EXP_DIR="$DATA_DIR/$EXP"
+            [[ -d "$EXP_DIR" ]] || continue
+
             while IFS= read -r proc_dir; do
-                rnaseq_dir=$(dirname "$proc_dir")
-                tissue=$(basename "$(dirname "$rnaseq_dir")")
+                rnaseq_dir="$(dirname "$proc_dir")"
+                tissue="$(basename "$(dirname "$rnaseq_dir")")"
+
                 for sample_dir in "$proc_dir"/*/; do
                     [[ -d "$sample_dir" ]] || continue
-                    sample=$(basename "$sample_dir")
-                    MASTER+=("${EXP}|${tissue}|${sample}|processed")
+                    sample="$(basename "$sample_dir")"
+                    MASTER+=("${EXP}|${tissue}|${sample}|processed|")
                 done
             done < <(find "$EXP_DIR" -type d -path '*/RNAseq/Processed' 2>/dev/null | sort)
         fi
     done
 }
 
-# ── Array task: process one sample ────────────────────────────────────────────
-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+###########################################
+# Shared AnswerALS LeafCutter cohort stage
+###########################################
+run_answerals_leafcutter_cohort() {
+    echo "[LeafCutter] Starting AnswerALS cohort processing."
 
+    set +u
+    source "/home/${TARGET_USER}/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh"
+    conda activate RNAseq
+    set -u
+
+    export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
+
+    mkdir -p \
+        "$ANSWERALS_LEAFCUTTER_DIR/juncs" \
+        "$ANSWERALS_LEAFCUTTER_DIR/clusters" \
+        "$ANSWERALS_LEAFCUTTER_DIR/psi"
+
+    JUNC_LIST="$ANSWERALS_LEAFCUTTER_DIR/juncs/juncfile_list.txt"
+    : > "$JUNC_LIST"
+
+    expected=0
+    for entry in "${MASTER[@]}"; do
+        IFS='|' read -r EXP TISSUE SAMPLE MODE BAM <<< "$entry"
+        [[ "$MODE" == "answerals" ]] || continue
+        ((expected += 1))
+
+        OUTDIR="$ANSWERALS_PROCESSED_DIR/$SAMPLE"
+        JUNC="$OUTDIR/leafcutter/juncs/${SAMPLE}.junc"
+
+        [[ -f "$OUTDIR/.status.RNAseq.leafcutter_junctions" && -s "$JUNC" ]] || {
+            echo "[ERROR] Missing or incomplete AnswerALS junction output for $SAMPLE: $JUNC" >&2
+            exit 1
+        }
+
+        printf '%s\n' "$JUNC" >> "$JUNC_LIST"
+    done
+
+    actual=$(wc -l < "$JUNC_LIST")
+    if [[ "$actual" -ne "$expected" || "$actual" -eq 0 ]]; then
+        echo "[ERROR] Expected $expected junction files, found $actual." >&2
+        exit 1
+    fi
+
+    CLUSTER_DIR="$ANSWERALS_LEAFCUTTER_DIR/clusters"
+    PSI_DIR="$ANSWERALS_LEAFCUTTER_DIR/psi"
+
+    # Create the cohort's refined clusters from all per-sample junction files.
+    python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
+        -j "$JUNC_LIST" \
+        -o leafcutter_clusters \
+        -r "$CLUSTER_DIR"
+
+    # Quantify using the refined clusters just created above.
+    python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
+        -j "$JUNC_LIST" \
+        -o leafcutter_clusters \
+        -r "$CLUSTER_DIR"
+
+    CLUSTERS="$CLUSTER_DIR/leafcutter_clusters_refined"
+    [[ -s "$CLUSTERS" ]] || {
+        echo "[ERROR] LeafCutter refined cluster file was not created: $CLUSTERS" >&2
+        exit 1
+    }
+
+    # Produce one PSI file per sample from the shared cohort clusters.
+    for entry in "${MASTER[@]}"; do
+        IFS='|' read -r EXP TISSUE SAMPLE MODE BAM <<< "$entry"
+        [[ "$MODE" == "answerals" ]] || continue
+
+        JUNC="$ANSWERALS_PROCESSED_DIR/$SAMPLE/leafcutter/juncs/${SAMPLE}.junc"
+        PSI="$PSI_DIR/${SAMPLE}.leafcutter.PSI.tsv"
+
+        python "$LEAFCUTTER_BASE/scripts/leafcutter_psi.py" \
+            "$CLUSTERS" "$JUNC" "$PSI"
+
+        {
+            head -n 1 "$PSI"
+            tail -n +2 "$PSI" | sort -k7,7nr
+        } > "$PSI_DIR/${SAMPLE}.leafcutter.PSI.sorted.tsv"
+    done
+
+    touch "$ANSWERALS_LEAFCUTTER_DIR/.status.leafcutter_cohort"
+    echo "[LeafCutter] Cohort processing completed for $actual samples."
+}
+
+###########################################
+# Cohort-only job mode
+###########################################
+if "$LEAFCUTTER_COHORT"; then
+    build_master
+    run_answerals_leafcutter_cohort
+    exit 0
+fi
+
+###########################################
+# Array task: process one sample
+###########################################
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     build_master
 
-    ENTRY="${MASTER[$((SLURM_ARRAY_TASK_ID - 1))]}"
-    EXP=$(echo "$ENTRY"    | cut -d'|' -f1)
-    TISSUE=$(echo "$ENTRY" | cut -d'|' -f2)
-    SAMPLE=$(echo "$ENTRY" | cut -d'|' -f3)
-    MODE=$(echo "$ENTRY"   | cut -d'|' -f4)
+    TASK_INDEX=$((SLURM_ARRAY_TASK_ID - 1))
+    if ((TASK_INDEX < 0 || TASK_INDEX >= ${#MASTER[@]})); then
+        echo "[ERROR] Array task ID $SLURM_ARRAY_TASK_ID is outside the sample list." >&2
+        exit 1
+    fi
+
+    ENTRY="${MASTER[$TASK_INDEX]}"
+    IFS='|' read -r EXP TISSUE SAMPLE MODE ANSWERALS_BAM <<< "$ENTRY"
 
     echo "=============================="
     echo "Task   : $SLURM_ARRAY_TASK_ID"
@@ -112,8 +263,21 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     echo "Sample : $SAMPLE"
     echo "Mode   : $MODE"
 
-    if [[ "$MODE" == "raw" ]]; then
+    if [[ "$MODE" == "answerals" ]]; then
+        OUTDIR="$ANSWERALS_PROCESSED_DIR/$SAMPLE"
 
+        echo "BAM    : $ANSWERALS_BAM"
+        echo "Output : $OUTDIR"
+        echo "=============================="
+
+        mkdir -p "$OUTDIR"
+        cd "$PIPELINE_DIR"
+
+        bash "$SCRIPT" "SKIP" "SKIP" "$OUTDIR" "$TARGET_USER" "$ANSWERALS_BAM" \
+            > "$OUTDIR/output.out" \
+            2> "$OUTDIR/output.err"
+
+    elif [[ "$MODE" == "raw" ]]; then
         RAW_DIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/Raw/$SAMPLE"
         OUTDIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/Processed/$SAMPLE"
 
@@ -121,7 +285,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
         FASTQ2=$(ls "$RAW_DIR"/*_2.fastq.gz 2>/dev/null | head -1 || true)
 
         if [[ -z "$FASTQ1" || -z "$FASTQ2" ]]; then
-            echo "ERROR: No paired FASTQs found in $RAW_DIR — skipping."
+            echo "[ERROR] No paired FASTQs found in $RAW_DIR." >&2
             exit 1
         fi
 
@@ -132,38 +296,35 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 
         mkdir -p "$OUTDIR"
         cd "$PIPELINE_DIR"
+
         bash "$SCRIPT" "$FASTQ1" "$FASTQ2" "$OUTDIR" "$TARGET_USER" \
             > "$OUTDIR/output.out" \
             2> "$OUTDIR/output.err"
 
     elif [[ "$MODE" == "processed" ]]; then
-
         OUTDIR="$DATA_DIR/$EXP/$TISSUE/RNAseq/Processed/$SAMPLE"
         EXPECTED_BAM="$OUTDIR/STAR.Aligned.sortedByCoord.out.bam"
 
         echo "Output : $OUTDIR"
         echo "=============================="
 
-        # ── Bulletproof BAM Discovery ──
-        # Scan folder for genuine, physical .bam files while filtering out remaps or symlink debris
+        # Preserve the existing TargetALS BAM discovery and call behavior.
         EXISTING_BAM=""
         while IFS= read -r candidate; do
-            if [[ -f "$candidate" && ! "$candidate" =~ "remap" ]]; then
+            if [[ -f "$candidate" && ! "$candidate" =~ remap ]]; then
                 EXISTING_BAM="$candidate"
                 break
             fi
         done < <(find "$OUTDIR" -maxdepth 1 -type f -name "*.bam" 2>/dev/null)
 
         if [[ -z "$EXISTING_BAM" ]]; then
-            echo "ERROR: No valid, non-remapped BAM found in $OUTDIR — skipping." >&2
+            echo "[ERROR] No valid, non-remapped BAM found in $OUTDIR." >&2
             exit 1
         fi
 
-        # Force overwrite (-sf) to resolve double-nested or broken link states safely
         ln -sf "$EXISTING_BAM" "$EXPECTED_BAM"
         echo "Symlinked: $(basename "$EXISTING_BAM") -> STAR.Aligned.sortedByCoord.out.bam"
 
-        # Resolve BAI indexes supporting both sample.bam.bai and sample.bai extensions
         EXISTING_BAI=""
         if [[ -f "${EXISTING_BAM}.bai" ]]; then
             EXISTING_BAI="${EXISTING_BAM}.bai"
@@ -175,16 +336,13 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
             ln -sf "$EXISTING_BAI" "${EXPECTED_BAM}.bai"
             echo "Symlinked: $(basename "$EXISTING_BAI") -> STAR.Aligned.sortedByCoord.out.bam.bai"
         else
-            echo "WARNING: No .bai found — samtools index will run in step 5."
+            echo "WARNING: No .bai found — samtools index will run when needed."
         fi
 
-        # Pre-touch status files for steps 1-4 so _RNAseq.sh skips them
         for step in fastqc trim kpal mapping; do
             touch "$OUTDIR/.status.RNAseq.${step}"
         done
-        echo "Pre-touched status files for steps 1-4 (fastqc, trim, kpal, mapping)."
 
-        # Call _RNAseq.sh with dummy FASTQ args (steps 1-4 will be skipped) and username argument
         cd "$PIPELINE_DIR"
         bash "$SCRIPT" "SKIP" "SKIP" "$OUTDIR" "$TARGET_USER" \
             > "$OUTDIR/output.out" \
@@ -194,27 +352,44 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     exit 0
 fi
 
-# ── Initial run: count samples and self-submit as array ───────────────────────
+###########################################
+# Initial run: build list, preview or submit
+###########################################
 echo "Scanning data directory for user: $TARGET_USER"
 build_master
+
 COUNT=${#MASTER[@]}
 echo "Found $COUNT samples."
 
 if [[ "$COUNT" -eq 0 ]]; then
-    echo "No samples found. Exiting."
+    echo "[ERROR] No samples found. Check EXPERIMENTS and the data paths." >&2
     exit 1
 fi
 
-if $DRY_RUN; then
+if "$DRY_RUN"; then
     for i in "${!MASTER[@]}"; do
-        echo "  [$((i+1))] ${MASTER[$i]}"
+        echo "  [$((i + 1))] ${MASTER[$i]}"
     done
-    echo ""
-    echo "Would submit: --array=1-${COUNT}%99"
+    echo
+    echo "Would submit array: --array=1-${COUNT}%99"
+
+    if "$HAS_ANSWERALS"; then
+        echo "Would submit AnswerALS LeafCutter cohort job after the array succeeds."
+    fi
     exit 0
 fi
 
 echo "Submitting array job: 1-${COUNT} (max 99 concurrent)..."
-# Explicitly forward the targeted username argument down to the self-submitted sbatch job
-sbatch --array="1-${COUNT}%99" "$0" "$TARGET_USER"
-echo "Done. Monitor with: squeue -u $USER"
+ARRAY_SUBMISSION=$(sbatch --parsable --array="1-${COUNT}%99" "$0" "$TARGET_USER")
+ARRAY_JOB_ID="${ARRAY_SUBMISSION%%;*}"
+echo "Submitted array job $ARRAY_JOB_ID."
+
+if "$HAS_ANSWERALS"; then
+    echo "Submitting AnswerALS LeafCutter cohort job, dependent on successful array completion..."
+    COHORT_JOB_ID=$(sbatch --parsable \
+        --dependency="afterok:${ARRAY_JOB_ID}" \
+        "$0" --leafcutter-cohort "$TARGET_USER")
+    echo "Submitted LeafCutter cohort job ${COHORT_JOB_ID%%;*}."
+fi
+
+echo "Monitor with: squeue -u $TARGET_USER"
