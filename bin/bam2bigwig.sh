@@ -2,7 +2,7 @@
 #############################################
 # Strand-specific BigWig generation.
 # Default reference supports existing TargetALS calls.
-# An optional third argument supplies AnswerALS chromosome sizes.
+# An optional third argument supplies AnswerALS chromosome sizes and restricts analysis to the contigs listed in that file.
 #############################################
 
 set -euo pipefail
@@ -15,6 +15,12 @@ DEFAULT_CHROMINFO="$HOME/donglab/references/genome/Homo_sapiens/UCSC/hg38/Sequen
 inputfile="${1:-}"
 split="${2:--nosplit}"
 CHROMINFO="${3:-$DEFAULT_CHROMINFO}"
+
+# Supplying a third argument enables strict contig-whitelist mode.
+CANONICAL_ONLY=false
+if [[ $# -ge 3 ]]; then
+    CANONICAL_ONLY=true
+fi
 
 if [[ -z "$inputfile" || ! -e "$inputfile" ]]; then
     echo "Usage: bam2bigwig.sh <in.bam|cram> <-split|-nosplit> [genome.sizes]" >&2
@@ -49,40 +55,108 @@ case "$split" in
 esac
 
 ###########################################
-# Check that BAM/CRAM references occur in the supplied sizes file.
-# This catches a chr-prefixed/unprefixed mismatch before conversion.
-###########################################
-while IFS=$'\t' read -r chrom length rest; do
-    [[ -n "$chrom" && -n "$length" ]] || continue
-    if ! awk -F'\t' -v chrom="$chrom" '$1 == chrom { found=1; exit } END { exit !found }' "$CHROMINFO"; then
-        echo "[ERROR] BAM/CRAM contig '$chrom' is absent from $CHROMINFO" >&2
-        exit 1
-    fi
-done < <(
-    samtools view -H "$inputfile" |
-        awk -F'\t' '$1 == "@SQ" {
-            sn=""; ln="";
-            for (i=2; i<=NF; i++) {
-                if ($i ~ /^SN:/) sn=substr($i,4);
-                if ($i ~ /^LN:/) ln=substr($i,4);
-            }
-            if (sn != "" && ln != "") print sn "\t" ln;
-        }'
-)
-
-###########################################
 # Temporary directory
 ###########################################
 WORK_TMPDIR=$(mktemp -d "/tmp/bam2bigwig_${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-$$}_XXXXXX")
 trap 'rm -rf "$WORK_TMPDIR"' EXIT
 
 ###########################################
+# Read the BAM/CRAM reference dictionary
+###########################################
+BAM_REFS="$WORK_TMPDIR/bam.references.tsv"
+
+samtools view -H "$inputfile" |
+    awk -F'\t' '$1 == "@SQ" {
+        sn=""; ln="";
+        for (i=2; i<=NF; i++) {
+            if ($i ~ /^SN:/) sn=substr($i,4);
+            if ($i ~ /^LN:/) ln=substr($i,4);
+        }
+        if (sn != "" && ln != "") print sn "\t" ln;
+    }' > "$BAM_REFS"
+
+if [[ ! -s "$BAM_REFS" ]]; then
+    echo "[ERROR] Could not read any reference contigs from $inputfile" >&2
+    exit 1
+fi
+
+###########################################
+# Validate references and build whitelist BED
+###########################################
+FILTER_ARGS=()
+CANONICAL_BED=""
+
+if "$CANONICAL_ONLY"; then
+    # Region-based selection requires an index.
+    if [[ "$ext" == "bam" ]]; then
+        if [[ ! -s "${inputfile}.bai" && ! -s "${bname}.bai" ]]; then
+            echo "[ERROR] Canonical-contig filtering requires a BAM index for $inputfile" >&2
+            exit 1
+        fi
+    else
+        if [[ ! -s "${inputfile}.crai" && ! -s "${bname}.crai" ]]; then
+            echo "[ERROR] Canonical-contig filtering requires a CRAM index for $inputfile" >&2
+            exit 1
+        fi
+    fi
+
+    # Every contig in the supplied whitelist must exist in the BAM/CRAM
+    # with the same length. Extra BAM/CRAM contigs are allowed and excluded.
+    while IFS=$'\t ' read -r chrom length rest; do
+        [[ -n "$chrom" && -n "$length" ]] || continue
+
+        if [[ ! "$length" =~ ^[0-9]+$ ]]; then
+            echo "[ERROR] Invalid chromosome length for '$chrom' in $CHROMINFO" >&2
+            exit 1
+        fi
+
+        bam_length=$(
+            awk -F'\t' -v chrom="$chrom" '$1 == chrom { print $2; exit }' "$BAM_REFS"
+        )
+
+        if [[ -z "$bam_length" ]]; then
+            echo "[ERROR] Whitelisted contig '$chrom' is absent from $inputfile" >&2
+            exit 1
+        fi
+
+        if [[ "$bam_length" != "$length" ]]; then
+            echo "[ERROR] Length mismatch for '$chrom': BAM/CRAM=$bam_length, sizes=$length" >&2
+            exit 1
+        fi
+    done < "$CHROMINFO"
+
+    CANONICAL_BED="$WORK_TMPDIR/canonical_contigs.bed"
+    awk 'BEGIN { FS="[ \t]+"; OFS="\t" } NF >= 2 { print $1, 0, $2 }' \
+        "$CHROMINFO" > "$CANONICAL_BED"
+
+    if [[ ! -s "$CANONICAL_BED" ]]; then
+        echo "[ERROR] Could not build a contig whitelist from $CHROMINFO" >&2
+        exit 1
+    fi
+
+    FILTER_ARGS=(-L "$CANONICAL_BED")
+    echo "Contig mode         : whitelist ($CHROMINFO)"
+else
+    # Preserve the existing TargetALS check: every BAM/CRAM contig must
+    # appear in the default chromosome sizes file.
+    while IFS=$'\t' read -r chrom length; do
+        [[ -n "$chrom" && -n "$length" ]] || continue
+        if ! awk -F'\t' -v chrom="$chrom" '$1 == chrom { found=1; exit } END { exit !found }' "$CHROMINFO"; then
+            echo "[ERROR] BAM/CRAM contig '$chrom' is absent from $CHROMINFO" >&2
+            exit 1
+        fi
+    done < "$BAM_REFS"
+
+    echo "Contig mode         : existing default behavior"
+fi
+
+###########################################
 # RPM normalization: primary alignments only
 ###########################################
-PRIMARY_READS=$(samtools view -F 0x100 -c "$inputfile")
+PRIMARY_READS=$(samtools view "${FILTER_ARGS[@]}" -F 0x100 -c "$inputfile")
 
 if [[ "$PRIMARY_READS" -eq 0 ]]; then
-    echo "[ERROR] No primary alignments found in $inputfile" >&2
+    echo "[ERROR] No primary alignments found in the selected contigs of $inputfile" >&2
     exit 1
 fi
 
@@ -103,11 +177,11 @@ if [[ "$split" == "-split" ]]; then
     echo "Generating strand-specific BigWigs (reverse-stranded / fr-firststrand)."
 
     echo "[PLUS] Extracting R2 forward reads..."
-    samtools view -bh -f 0x80 -F 0x10 "$inputfile" \
+    samtools view -bh "${FILTER_ARGS[@]}" -f 0x80 -F 0x10 "$inputfile" \
         > "$WORK_TMPDIR/plus.part1.bam"
 
     echo "[PLUS] Extracting R1 reverse reads..."
-    samtools view -bh -f 0x40 -f 0x10 "$inputfile" \
+    samtools view -bh "${FILTER_ARGS[@]}" -f 0x40 -f 0x10 "$inputfile" \
         > "$WORK_TMPDIR/plus.part2.bam"
 
     echo "[PLUS] Merging read orientations..."
@@ -131,11 +205,11 @@ if [[ "$split" == "-split" ]]; then
         "$bname.plus.normalized.bw"
 
     echo "[MINUS] Extracting R1 forward reads..."
-    samtools view -bh -f 0x40 -F 0x10 "$inputfile" \
+    samtools view -bh "${FILTER_ARGS[@]}" -f 0x40 -F 0x10 "$inputfile" \
         > "$WORK_TMPDIR/minus.part1.bam"
 
     echo "[MINUS] Extracting R2 reverse reads..."
-    samtools view -bh -f 0x80 -f 0x10 "$inputfile" \
+    samtools view -bh "${FILTER_ARGS[@]}" -f 0x80 -f 0x10 "$inputfile" \
         > "$WORK_TMPDIR/minus.part2.bam"
 
     echo "[MINUS] Merging read orientations..."
@@ -168,8 +242,8 @@ if [[ "$split" == "-split" ]]; then
 else
     echo "Generating unsplit BigWig."
 
-    if [[ "$ext" == "cram" ]]; then
-        samtools view -b "$inputfile" |
+    if [[ "$ext" == "cram" || "$CANONICAL_ONLY" == true ]]; then
+        samtools view -bh "${FILTER_ARGS[@]}" "$inputfile" |
             bedtools genomecov \
                 -ibam stdin \
                 -bg \
