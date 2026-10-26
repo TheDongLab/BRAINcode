@@ -581,8 +581,10 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]]; then
 
     if "$ANSWERALS_MODE"; then
         samtools view -bh -L "$CANONICAL_BED" "$BAM" |
-            htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam - - \
-            > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr"
+            htseq-count -m intersection-strict -t exon -i gene_id \
+                -s reverse -q -f bam -r pos - "$GTF" \
+                > "$SAMPLE_DIR/htseqcount.tab" \
+                2> "$SAMPLE_DIR/htseqcount.stderr"
     else
         htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam -r pos \
             "$BAM" "$GTF" \
