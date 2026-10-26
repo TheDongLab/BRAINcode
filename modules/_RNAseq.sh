@@ -481,14 +481,15 @@ else
         "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
             "$BAM" "$JUNC_DIR/${samplename}.junc"
 
-        python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
-            -j "$JUNC_DIR"/*.junc \
-            -o "$LEAFCUTTER_OUT/${samplename}"
-
         JUNC_LIST="$JUNC_DIR/juncfile_list.txt"
         ls "$JUNC_DIR"/*.junc > "$JUNC_LIST"
 
         python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
+            -j "$JUNC_LIST" \
+            -o leafcutter_clusters \
+            -r "$CLUSTER_DIR"
+
+        python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
             -j "$JUNC_LIST" \
             -o leafcutter_clusters \
             -r "$CLUSTER_DIR"
