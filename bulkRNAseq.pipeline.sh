@@ -50,6 +50,9 @@ ANSWERALS_RNASEQ_DIR="$DATA_DIR/answer_ALS/${ANSWERALS_TISSUE}/RNAseq"
 ANSWERALS_PROCESSED_DIR="$ANSWERALS_RNASEQ_DIR/Processed"
 ANSWERALS_LEAFCUTTER_DIR="$ANSWERALS_RNASEQ_DIR/leafcutter/original_bams"
 
+GENOME_BASE="/home/${TARGET_USER}/donglab/references/genome/Homo_sapiens/UCSC/hg38"
+ANSWERALS_CHROMINFO="$GENOME_BASE/Sequence/STAR/genome.sizes.nochr"
+
 LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
 
 ###########################################
@@ -151,6 +154,11 @@ build_master() {
 run_answerals_leafcutter_cohort() {
     echo "[LeafCutter] Starting AnswerALS cohort processing."
 
+    [[ -s "$ANSWERALS_CHROMINFO" ]] || {
+        echo "[ERROR] AnswerALS canonical chromosome sizes are missing or empty: $ANSWERALS_CHROMINFO" >&2
+        exit 1
+    }
+
     set +u
     source "/home/${TARGET_USER}/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh"
     conda activate RNAseq
@@ -180,6 +188,22 @@ run_answerals_leafcutter_cohort() {
             exit 1
         }
 
+        # Enforce the canonical-contig rule again at cohort input. This also
+        # cleans up junction files left by earlier runs before the worker
+        # filtered them. Replace each derived .junc file atomically.
+        FILTERED_JUNC="$(mktemp "${JUNC}.tmp.XXXXXX")"
+        awk '
+            NR == FNR { allowed[$1] = 1; next }
+            NF && ($1 in allowed)
+        ' "$ANSWERALS_CHROMINFO" "$JUNC" > "$FILTERED_JUNC"
+
+        [[ -s "$FILTERED_JUNC" ]] || {
+            rm -f "$FILTERED_JUNC"
+            echo "[ERROR] No canonical-contig LeafCutter junctions remain for $SAMPLE: $JUNC" >&2
+            exit 1
+        }
+
+        mv "$FILTERED_JUNC" "$JUNC"
         printf '%s\n' "$JUNC" >> "$JUNC_LIST"
     done
 
