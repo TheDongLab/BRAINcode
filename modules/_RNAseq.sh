@@ -76,6 +76,9 @@ if "$ANSWERALS_MODE"; then
     for required in \
         "$GTF" \
         "$CHROMINFO" \
+        "$GENOME_FA" \
+        "$GENOME_FAI" \
+        "$REFFLAT" \
         "$ANSWERALS_ANNOT_DIR/ncbi_to_ucsc_no_chr.txt" \
         "$ANNOT_BEDS/non_rRNA_mt.sorted.bed" \
         "$ANNOT_BEDS/exons.sorted.bed" \
@@ -92,6 +95,24 @@ if "$ANSWERALS_MODE"; then
             exit 1
         }
     done
+
+    # The AnswerALS whitelist must contain exactly the 25 primary contigs.
+    awk '
+        BEGIN { FS="[ \t]+" }
+        NF {
+            n++
+            if (NF < 2 || $2 !~ /^[0-9]+$/ ||
+                $1 !~ /^(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|X|Y|MT)$/) {
+                bad=1
+            }
+        }
+        END {
+            if (bad || n != 25) exit 1
+        }
+    ' "$CHROMINFO" || {
+        echo "[ERROR] AnswerALS CHROMINFO must list exactly chromosomes 1–22, X, Y, and MT: $CHROMINFO" >&2
+        exit 1
+    }
 fi
 
 ###########################################
@@ -144,7 +165,7 @@ fi
 if [[ -n "$EXISTING_BAM" ]]; then
     echo "[INFO] Pre-existing BAM found: $(basename "$EXISTING_BAM") — skipping Steps 1–4."
     ln -sf "$EXISTING_BAM" "$STAR_BAM"
-    [[ ! -f "${EXISTING_BAM}.bai" ]] || ln -sf "${EXISTING_BAM}.bai" "${STAR_BAM}.bai"
+    [[ ! -f "${EXISTING_BAM}.bai" ]] || ln -sf "$EXISTING_BAM.bai" "$STAR_BAM.bai"
     BAM="$STAR_BAM"
 else
     ###########################################
@@ -229,6 +250,48 @@ else
 fi
 
 ###########################################
+# AnswerALS canonical-contig setup
+###########################################
+WORK_TMPDIR=""
+CANONICAL_BED=""
+
+if "$ANSWERALS_MODE"; then
+    WORK_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/answerALS_rnaseq_${SLURM_JOB_ID:-$$}_XXXXXX")
+    trap '[[ -z "${WORK_TMPDIR:-}" ]] || rm -rf "$WORK_TMPDIR"' EXIT
+
+    CANONICAL_BED="$WORK_TMPDIR/canonical_contigs.bed"
+    awk 'BEGIN { FS="[ \t]+"; OFS="\t" } NF >= 2 { print $1, 0, $2 }' \
+        "$CHROMINFO" > "$CANONICAL_BED"
+
+    BAM_REFS="$WORK_TMPDIR/bam.references.tsv"
+    samtools view -H "$BAM" |
+        awk -F'\t' '$1 == "@SQ" {
+            sn=""; ln="";
+            for (i=2; i<=NF; i++) {
+                if ($i ~ /^SN:/) sn=substr($i,4);
+                if ($i ~ /^LN:/) ln=substr($i,4);
+            }
+            if (sn != "" && ln != "") print sn "\t" ln;
+        }' > "$BAM_REFS"
+
+    while IFS=$'\t ' read -r chrom length rest; do
+        [[ -n "$chrom" && -n "$length" ]] || continue
+
+        bam_length=$(awk -F'\t' -v chrom="$chrom" '$1 == chrom { print $2; exit }' "$BAM_REFS")
+        [[ -n "$bam_length" ]] || {
+            echo "[ERROR] Canonical contig '$chrom' is missing from BAM header: $BAM" >&2
+            exit 1
+        }
+        [[ "$bam_length" == "$length" ]] || {
+            echo "[ERROR] BAM/reference length mismatch for $chrom: BAM=$bam_length reference=$length" >&2
+            exit 1
+        }
+    done < "$CHROMINFO"
+
+    echo "[INFO] AnswerALS analysis is restricted to the 25 contigs listed in $CHROMINFO."
+fi
+
+###########################################
 # STEP 5: circRNA calling
 ###########################################
 if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]]; then
@@ -240,7 +303,46 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]]; then
     else
         cd "$SAMPLE_DIR"
 
-        CIRCexplorer2 parse -t STAR STAR.Chimeric.out.junction > back_spliced_junction.txt
+        CIRC_CHIMERIC="$SAMPLE_DIR/STAR.Chimeric.out.junction"
+
+        if "$ANSWERALS_MODE"; then
+            # CIRCexplorer's reference uses UCSC-style names (chr1, chrM).
+            # Keep only canonical AnswerALS endpoints, then translate their
+            # names for CIRCexplorer. The original junction file is untouched.
+            CIRC_CHIMERIC="$WORK_TMPDIR/STAR.Chimeric.canonical.ucsc.out.junction"
+
+            awk -F'\t' -v OFS='\t' '
+                function to_answerals(chrom, base) {
+                    base=chrom
+                    sub(/^chr/, "", base)
+                    if (base == "M") base="MT"
+                    return base
+                }
+                function to_ucsc(chrom) {
+                    if (chrom == "MT") return "chrM"
+                    return "chr" chrom
+                }
+                NR == FNR {
+                    allowed[$1]=1
+                    next
+                }
+                NF >= 6 {
+                    left=to_answerals($1)
+                    right=to_answerals($4)
+                    if (!(left in allowed) || !(right in allowed)) next
+                    $1=to_ucsc(left)
+                    $4=to_ucsc(right)
+                    print
+                }
+            ' "$CHROMINFO" "$SAMPLE_DIR/STAR.Chimeric.out.junction" > "$CIRC_CHIMERIC"
+
+            [[ -s "$CIRC_CHIMERIC" ]] || {
+                echo "[ERROR] No canonical-contig chimeric junctions found for circRNA analysis." >&2
+                exit 1
+            }
+        fi
+
+        CIRCexplorer2 parse -t STAR "$CIRC_CHIMERIC" > back_spliced_junction.txt
 
         CIRCexplorer2 annotate \
             -r "$REFFLAT" \
@@ -249,33 +351,86 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]]; then
             -o circularRNA_known.txt \
             --low-confidence
 
+        if "$ANSWERALS_MODE"; then
+            # Convert CIRCexplorer's chr-prefixed annotation records back to
+            # AnswerALS BAM names and discard anything outside the whitelist.
+            normalize_circ_annotations() {
+                local annotation_file="$1"
+                local normalized_file="${annotation_file}.canonical.tmp"
+
+                [[ -f "$annotation_file" ]] || : > "$annotation_file"
+
+                awk -F'\t' -v OFS='\t' '
+                    function to_answerals(chrom, base) {
+                        base=chrom
+                        sub(/^chr/, "", base)
+                        if (base == "M") base="MT"
+                        return base
+                    }
+                    NR == FNR {
+                        allowed[$1]=1
+                        next
+                    }
+                    NF {
+                        chrom=to_answerals($1)
+                        if (chrom in allowed) {
+                            $1=chrom
+                            print
+                        }
+                    }
+                ' "$CHROMINFO" "$annotation_file" > "$normalized_file"
+
+                mv "$normalized_file" "$annotation_file"
+            }
+
+            normalize_circ_annotations "circularRNA_known.txt"
+            normalize_circ_annotations "low_conf_circularRNA_known.txt"
+        fi
+
         if [[ ! -s circularRNA_known.txt ]]; then
-            echo "[STEP 5] ERROR: No circRNAs annotated." >&2
+            echo "[STEP 5] ERROR: No canonical circRNAs annotated." >&2
             exit 1
         fi
 
         [[ -f "${STAR_BAM}.bai" ]] || samtools index "$STAR_BAM"
 
-        echo "[STEP 5a] Extracting splice-boundary coordinates..."
+        echo "[STEP 5a] Extracting canonical splice-boundary coordinates..."
         if "$ANSWERALS_MODE"; then
-            python3 - "$STAR_BAM" "$GENOME_FAI" <<'ANSWERALS_BOUNDARIES'
+            python3 - "$STAR_BAM" "$GENOME_FAI" "$CHROMINFO" <<'ANSWERALS_BOUNDARIES'
 import subprocess
 import sys
 
-bam, reference_fai = sys.argv[1:]
+bam, reference_fai, chrominfo = sys.argv[1:]
+
+allowed = {}
+with open(chrominfo) as handle:
+    for line in handle:
+        fields = line.split()
+        if len(fields) >= 2:
+            allowed[fields[0]] = int(fields[1])
+
 header = subprocess.check_output(
     ["samtools", "view", "-H", bam], universal_newlines=True
 )
-sequences = []
+
+bam_sequences = []
 for line in header.splitlines():
     if line.startswith("@SQ\t"):
         fields = dict(field.split(":", 1) for field in line.split("\t")[1:])
-        sequences.append((fields["SN"], int(fields["LN"])))
+        name = fields["SN"]
+        length = int(fields["LN"])
+        if name in allowed:
+            if allowed[name] != length:
+                raise ValueError("BAM/reference chromosome length mismatch for " + name)
+            bam_sequences.append((name, length))
 
-lengths = dict(sequences)
-order = {name: i for i, (name, _) in enumerate(sequences)}
-if not sequences or len(lengths) != len(sequences):
-    raise ValueError("Missing or duplicate BAM reference sequences")
+bam_names = [name for name, _ in bam_sequences]
+if set(bam_names) != set(allowed):
+    missing = sorted(set(allowed) - set(bam_names))
+    raise ValueError("Canonical contigs missing from BAM header: " + ", ".join(missing))
+
+lengths = dict(bam_sequences)
+order = {name: i for i, (name, _) in enumerate(bam_sequences)}
 
 with open(reference_fai) as handle:
     reference_lengths = {
@@ -283,27 +438,28 @@ with open(reference_fai) as handle:
         for fields in (line.split() for line in handle)
     }
 
+def ucsc_name(name):
+    return "chrM" if name == "MT" else "chr" + name
+
 boundaries, seen = [], set()
 with open("circularRNA_known.txt") as handle:
     for line in handle:
         if not line.strip():
             continue
+
         fields = line.rstrip("\n").split("\t")
         if len(fields) != 18:
             raise ValueError("Expected headerless CIRCexplorer annotations with 18 fields")
 
         chrom, start, end = fields[0], int(fields[1]), int(fields[2])
-        bam_chrom = (
-            chrom if chrom in lengths
-            else chrom[3:] if chrom.startswith("chr") and chrom[3:] in lengths
-            else None
-        )
-        if bam_chrom is None:
-            raise ValueError("No matching BAM chromosome for " + chrom)
-        if reference_lengths.get(chrom) != lengths[bam_chrom]:
-            raise ValueError("Reference/BAM chromosome length mismatch for " + chrom)
-        if not 0 <= start < end <= lengths[bam_chrom]:
-            raise ValueError("Invalid circRNA coordinates")
+        if chrom not in allowed:
+            raise ValueError("Noncanonical circRNA contig reached boundary stage: " + chrom)
+
+        if reference_lengths.get(ucsc_name(chrom)) != lengths[chrom]:
+            raise ValueError("FASTA/BAM chromosome length mismatch for " + chrom)
+
+        if not 0 <= start < end <= lengths[chrom]:
+            raise ValueError("Invalid circRNA coordinates for " + chrom)
 
         circ_id = chrom + "_" + str(start) + "_" + str(end)
         if circ_id in seen:
@@ -311,12 +467,12 @@ with open("circularRNA_known.txt") as handle:
         seen.add(circ_id)
 
         for left, right in ((start, start + 1), (end - 1, end)):
-            boundaries.append((bam_chrom, left, right, circ_id, "0", fields[5]))
+            boundaries.append((chrom, left, right, circ_id, "0", fields[5]))
 
 boundaries.sort(key=lambda row: (order[row[0]], row[1], row[2], row[3]))
 
 with open("temp.ends.genome", "w") as handle:
-    for name, length in sequences:
+    for name, length in bam_sequences:
         handle.write("%s\t%d\n" % (name, length))
 
 with open("temp.ends.bed", "w") as handle:
@@ -332,11 +488,12 @@ ANSWERALS_BOUNDARIES
                 sortBed -i stdin -faidx "$GENOME_FAI" > temp.ends.bed
         fi
 
-        echo "[STEP 5b] Counting linear reads at circRNA boundaries..."
+        echo "[STEP 5b] Counting linear reads at canonical circRNA boundaries..."
         if "$ANSWERALS_MODE"; then
-            bedtools coverage -split \
-                -b "$STAR_BAM" -a temp.ends.bed -sorted -counts \
-                -g temp.ends.genome > temp.ends.counts
+            samtools view -bh -L "$CANONICAL_BED" "$STAR_BAM" |
+                bedtools coverage -split \
+                    -b stdin -a temp.ends.bed -sorted -counts \
+                    -g temp.ends.genome > temp.ends.counts
         else
             bedtools coverage -split \
                 -b "$STAR_BAM" -a temp.ends.bed -sorted -counts \
@@ -365,7 +522,7 @@ ANSWERALS_BOUNDARIES
         mv low_conf_circularRNA_known.tmp low_conf_circularRNA_known.txt
 
         touch "$SAMPLE_DIR/.status.RNAseq.circRNA"
-        echo "[STEP 5] SUCCESS: Found $(tail -n +2 circularRNA_known_circ_percentage.txt | wc -l) circRNAs."
+        echo "[STEP 5] SUCCESS: Found $(tail -n +2 circularRNA_known_circ_percentage.txt | wc -l) canonical circRNAs."
         echo "[STEP 5] circRNA calling completed successfully."
     fi
 fi
@@ -391,12 +548,23 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.bam2annotation" ]]; then
     intergenic=$(count "$ANNOT_BEDS/intergenic.sorted.bed")
     intergenic_not_near_genes=$(count "$ANNOT_BEDS/intergenic_notneargene.sorted.bed")
     intergenic_near_genes=$((intergenic - intergenic_not_near_genes))
-    total=$(samtools view -c -F 0x100 "$BAM")
+
+    if "$ANSWERALS_MODE"; then
+        total=$(samtools view -c -F 0x100 -L "$CANONICAL_BED" "$BAM")
+    else
+        total=$(samtools view -c -F 0x100 "$BAM")
+    fi
 
     echo -e "${total_non_rRNA_mt}\t${exons}\t${introns}\t${rRNA}\t${mtRNA}\t${LINE}\t${SINE}\t${intergenic}\t${intergenic_near_genes}\t${intergenic_not_near_genes}\t${total}" >> "$SUMMARY"
 
-    samtools view -cF 0x100 "$BAM" > "$SAMPLE_DIR/bam.stat"
-    samtools flagstat "$BAM" >> "$SAMPLE_DIR/bam.stat"
+    if "$ANSWERALS_MODE"; then
+        samtools view -c -F 0x100 -L "$CANONICAL_BED" "$BAM" > "$SAMPLE_DIR/bam.stat"
+        samtools view -bh -L "$CANONICAL_BED" "$BAM" |
+            samtools flagstat - >> "$SAMPLE_DIR/bam.stat"
+    else
+        samtools view -cF 0x100 "$BAM" > "$SAMPLE_DIR/bam.stat"
+        samtools flagstat "$BAM" >> "$SAMPLE_DIR/bam.stat"
+    fi
 
     Rscript "$SCRIPT_DIR/_bam2annotation.r" \
         "$SAMPLE_DIR/bam.summary.txt" "$SAMPLE_DIR/bam2annotation.pdf"
@@ -411,9 +579,15 @@ fi
 if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.htseqcount" ]]; then
     echo "[STEP 7] Gene counting (HTSeq) starting..."
 
-    htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam -r pos \
-        "$BAM" "$GTF" \
-        > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr"
+    if "$ANSWERALS_MODE"; then
+        samtools view -bh -L "$CANONICAL_BED" "$BAM" |
+            htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam - - \
+            > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr"
+    else
+        htseq-count -m intersection-strict -t exon -i gene_id -s reverse -q -f bam -r pos \
+            "$BAM" "$GTF" \
+            > "$SAMPLE_DIR/htseqcount.tab" 2> "$SAMPLE_DIR/htseqcount.stderr"
+    fi
 
     { echo -e "gene_id\tcount"; cat "$SAMPLE_DIR/htseqcount.tab"; } > "$SAMPLE_DIR/htseqcount.tab.tmp"
     mv "$SAMPLE_DIR/htseqcount.tab.tmp" "$SAMPLE_DIR/htseqcount.tab"
@@ -440,7 +614,7 @@ fi
 
 ###########################################
 # STEP 9: LeafCutter junctions
-# AnswerALS workers create per-sample junction files only.
+# AnswerALS workers create per-sample canonical junction files only.
 # Cohort clustering and PSI should run after the full sample array finishes.
 ###########################################
 if "$ANSWERALS_MODE"; then
@@ -457,14 +631,12 @@ if "$ANSWERALS_MODE"; then
 
         LC_JUNC="$LEAFCUTTER_OUT/juncs/${samplename}.junc"
         LC_JUNC_RAW="$LEAFCUTTER_OUT/juncs/${samplename}.all_contigs.junc"
-        LC_JUNC_FILTERED="${LC_JUNC}.tmp.${SLURM_JOB_ID:-$$}"
+        LC_JUNC_FILTERED="$WORK_TMPDIR/${samplename}.canonical.junc"
 
         "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
             "$LC_BAM" \
             "$LC_JUNC_RAW"
 
-        # Keep only junctions on contigs listed in the canonical-only CHROMINFO.
-        # AnswerALS BAMs use unprefixed names, matching genome.sizes.nochr.
         awk '
             NR == FNR { allowed[$1] = 1; next }
             NF && ($1 in allowed)
@@ -483,7 +655,7 @@ if "$ANSWERALS_MODE"; then
         echo "[STEP 9] AnswerALS canonical-contig junction extraction completed."
     fi
 else
-    # Keep the existing TargetALS per-sample LeafCutter workflow.
+    # Keep existing TargetALS per-sample LeafCutter workflow.
     if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]]; then
         echo "[STEP 9] LeafCutter junction quantification starting..."
         LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
