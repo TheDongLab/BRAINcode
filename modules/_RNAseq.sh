@@ -62,19 +62,21 @@ GENOME_FAI="${GENOME_BASE}/Sequence/WholeGenomeFasta/genome.fa.fai"
 GTF="${GENCODE_DIR}/gencode.v49.annotation.gtf"
 REFFLAT="${GENCODE_DIR}/refFlat_cIRS7.txt"
 ANNOT_BEDS="$STAR_GENOME"
-CHROMINFO="${GENCODE_DIR}/genome.sizes"
+CHROMINFO="${STAR_GENOME}/genome.sizes"
 
-# AnswerALS BAM references use contig names without "chr".
-# The converted annotations live with the reference annotations, not in run_records.
+# AnswerALS reference files contain only chromosomes 1–22, X, Y, and MT.
 ANSWERALS_ANNOT_DIR="${GENCODE_DIR}/answerALS_nochr"
+ANSWERALS_CHROMINFO="${STAR_GENOME}/genome.sizes.nochr"
 
 if "$ANSWERALS_MODE"; then
     GTF="${ANSWERALS_ANNOT_DIR}/gencode.v49.annotation.nochr.gtf"
     ANNOT_BEDS="$ANSWERALS_ANNOT_DIR"
+    CHROMINFO="$ANSWERALS_CHROMINFO"
 
     for required in \
         "$GTF" \
         "$CHROMINFO" \
+        "$ANSWERALS_ANNOT_DIR/ncbi_to_ucsc_no_chr.txt" \
         "$ANNOT_BEDS/non_rRNA_mt.sorted.bed" \
         "$ANNOT_BEDS/exons.sorted.bed" \
         "$ANNOT_BEDS/introns.sorted.bed" \
