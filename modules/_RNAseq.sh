@@ -455,17 +455,32 @@ if "$ANSWERALS_MODE"; then
         ln -sf "$BAM" "$LC_BAM"
         [[ ! -f "${BAM}.bai" ]] || ln -sf "${BAM}.bai" "${LC_BAM}.bai"
 
+        LC_JUNC="$LEAFCUTTER_OUT/juncs/${samplename}.junc"
+        LC_JUNC_RAW="$LEAFCUTTER_OUT/juncs/${samplename}.all_contigs.junc"
+        LC_JUNC_FILTERED="${LC_JUNC}.tmp.${SLURM_JOB_ID:-$$}"
+
         "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
             "$LC_BAM" \
-            "$LEAFCUTTER_OUT/juncs/${samplename}.junc"
+            "$LC_JUNC_RAW"
 
-        [[ -s "$LEAFCUTTER_OUT/juncs/${samplename}.junc" ]] || {
-            echo "[ERROR] LeafCutter did not create a non-empty junction file." >&2
+        # Keep only junctions on contigs listed in the canonical-only CHROMINFO.
+        # AnswerALS BAMs use unprefixed names, matching genome.sizes.nochr.
+        awk '
+            NR == FNR { allowed[$1] = 1; next }
+            NF && ($1 in allowed)
+        ' "$CHROMINFO" "$LC_JUNC_RAW" > "$LC_JUNC_FILTERED"
+
+        [[ -s "$LC_JUNC_FILTERED" ]] || {
+            echo "[ERROR] LeafCutter produced no junctions on canonical contigs." >&2
+            echo "[ERROR] Raw junction file retained at: $LC_JUNC_RAW" >&2
             exit 1
         }
 
+        mv "$LC_JUNC_FILTERED" "$LC_JUNC"
+        rm -f "$LC_JUNC_RAW"
+
         touch "$SAMPLE_DIR/.status.RNAseq.leafcutter_junctions"
-        echo "[STEP 9] AnswerALS junction extraction completed."
+        echo "[STEP 9] AnswerALS canonical-contig junction extraction completed."
     fi
 else
     # Keep the existing TargetALS per-sample LeafCutter workflow.
