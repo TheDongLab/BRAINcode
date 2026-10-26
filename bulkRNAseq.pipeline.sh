@@ -8,7 +8,6 @@
 #SBATCH --error=/dev/null
 
 # Submit one RNA-seq worker per sample.
-# For AnswerALS, submit a cohort LeafCutter job after all sample workers succeed.
 
 set -euo pipefail
 
@@ -16,17 +15,12 @@ set -euo pipefail
 # Arguments
 ###########################################
 DRY_RUN=false
-LEAFCUTTER_COHORT=false
 TARGET_USER=""
 
 while (($#)); do
     case "$1" in
         --dry-run)
             DRY_RUN=true
-            shift
-            ;;
-        --leafcutter-cohort)
-            LEAFCUTTER_COHORT=true
             shift
             ;;
         *)
@@ -48,12 +42,6 @@ SCRIPT="$PIPELINE_DIR/_RNAseq.sh"
 ANSWERALS_TISSUE="iPSC_Motor_Neuron"
 ANSWERALS_RNASEQ_DIR="$DATA_DIR/answer_ALS/${ANSWERALS_TISSUE}/RNAseq"
 ANSWERALS_PROCESSED_DIR="$ANSWERALS_RNASEQ_DIR/Processed"
-ANSWERALS_LEAFCUTTER_DIR="$ANSWERALS_RNASEQ_DIR/leafcutter/original_bams"
-
-GENOME_BASE="/home/${TARGET_USER}/donglab/references/genome/Homo_sapiens/UCSC/hg38"
-ANSWERALS_CHROMINFO="$GENOME_BASE/Sequence/STAR/genome.sizes.nochr"
-
-LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
 
 ###########################################
 # Experiments to include
@@ -73,7 +61,6 @@ EXPERIMENTS=(
 ###########################################
 build_master() {
     MASTER=()
-    HAS_ANSWERALS=false
 
     for entry in "${EXPERIMENTS[@]}"; do
         EXP="${entry%%|*}"
@@ -81,8 +68,6 @@ build_master() {
         MODE="$REST"
 
         if [[ "$EXP" == "answer_ALS" && "$MODE" == "answerals" ]]; then
-            HAS_ANSWERALS=true
-
             [[ -d "$ANSWERALS_PROCESSED_DIR" ]] || {
                 echo "[ERROR] AnswerALS RNA-seq directory not found: $ANSWERALS_PROCESSED_DIR" >&2
                 return 1
@@ -147,122 +132,6 @@ build_master() {
         fi
     done
 }
-
-###########################################
-# Shared AnswerALS LeafCutter cohort stage
-###########################################
-run_answerals_leafcutter_cohort() {
-    echo "[LeafCutter] Starting AnswerALS cohort processing."
-
-    [[ -s "$ANSWERALS_CHROMINFO" ]] || {
-        echo "[ERROR] AnswerALS canonical chromosome sizes are missing or empty: $ANSWERALS_CHROMINFO" >&2
-        exit 1
-    }
-
-    set +u
-    source "/home/${TARGET_USER}/donglab/pipelines/modules/miniconda3/etc/profile.d/conda.sh"
-    conda activate RNAseq
-    set -u
-
-    export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
-
-    mkdir -p \
-        "$ANSWERALS_LEAFCUTTER_DIR/juncs" \
-        "$ANSWERALS_LEAFCUTTER_DIR/clusters" \
-        "$ANSWERALS_LEAFCUTTER_DIR/psi"
-
-    JUNC_LIST="$ANSWERALS_LEAFCUTTER_DIR/juncs/juncfile_list.txt"
-    : > "$JUNC_LIST"
-
-    expected=0
-    for entry in "${MASTER[@]}"; do
-        IFS='|' read -r EXP TISSUE SAMPLE MODE BAM <<< "$entry"
-        [[ "$MODE" == "answerals" ]] || continue
-        ((expected += 1))
-
-        OUTDIR="$ANSWERALS_PROCESSED_DIR/$SAMPLE"
-        JUNC="$OUTDIR/leafcutter/juncs/${SAMPLE}.junc"
-
-        [[ -f "$OUTDIR/.status.RNAseq.leafcutter_junctions" && -s "$JUNC" ]] || {
-            echo "[ERROR] Missing or incomplete AnswerALS junction output for $SAMPLE: $JUNC" >&2
-            exit 1
-        }
-
-        # Enforce the canonical-contig rule again at cohort input. This also
-        # cleans up junction files left by earlier runs before the worker
-        # filtered them. Replace each derived .junc file atomically.
-        FILTERED_JUNC="$(mktemp "${JUNC}.tmp.XXXXXX")"
-        awk '
-            NR == FNR { allowed[$1] = 1; next }
-            NF && ($1 in allowed)
-        ' "$ANSWERALS_CHROMINFO" "$JUNC" > "$FILTERED_JUNC"
-
-        [[ -s "$FILTERED_JUNC" ]] || {
-            rm -f "$FILTERED_JUNC"
-            echo "[ERROR] No canonical-contig LeafCutter junctions remain for $SAMPLE: $JUNC" >&2
-            exit 1
-        }
-
-        mv "$FILTERED_JUNC" "$JUNC"
-        printf '%s\n' "$JUNC" >> "$JUNC_LIST"
-    done
-
-    actual=$(wc -l < "$JUNC_LIST")
-    if [[ "$actual" -ne "$expected" || "$actual" -eq 0 ]]; then
-        echo "[ERROR] Expected $expected junction files, found $actual." >&2
-        exit 1
-    fi
-
-    CLUSTER_DIR="$ANSWERALS_LEAFCUTTER_DIR/clusters"
-    PSI_DIR="$ANSWERALS_LEAFCUTTER_DIR/psi"
-
-    # Create the cohort's refined clusters from all per-sample junction files.
-    python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
-        -j "$JUNC_LIST" \
-        -o leafcutter_clusters \
-        -r "$CLUSTER_DIR"
-
-    # Quantify using the refined clusters just created above.
-    python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
-        -j "$JUNC_LIST" \
-        -o leafcutter_clusters \
-        -r "$CLUSTER_DIR"
-
-    CLUSTERS="$CLUSTER_DIR/leafcutter_clusters_refined"
-    [[ -s "$CLUSTERS" ]] || {
-        echo "[ERROR] LeafCutter refined cluster file was not created: $CLUSTERS" >&2
-        exit 1
-    }
-
-    # Produce one PSI file per sample from the shared cohort clusters.
-    for entry in "${MASTER[@]}"; do
-        IFS='|' read -r EXP TISSUE SAMPLE MODE BAM <<< "$entry"
-        [[ "$MODE" == "answerals" ]] || continue
-
-        JUNC="$ANSWERALS_PROCESSED_DIR/$SAMPLE/leafcutter/juncs/${SAMPLE}.junc"
-        PSI="$PSI_DIR/${SAMPLE}.leafcutter.PSI.tsv"
-
-        python "$LEAFCUTTER_BASE/scripts/leafcutter_psi.py" \
-            "$CLUSTERS" "$JUNC" "$PSI"
-
-        {
-            head -n 1 "$PSI"
-            tail -n +2 "$PSI" | sort -k7,7nr
-        } > "$PSI_DIR/${SAMPLE}.leafcutter.PSI.sorted.tsv"
-    done
-
-    touch "$ANSWERALS_LEAFCUTTER_DIR/.status.leafcutter_cohort"
-    echo "[LeafCutter] Cohort processing completed for $actual samples."
-}
-
-###########################################
-# Cohort-only job mode
-###########################################
-if "$LEAFCUTTER_COHORT"; then
-    build_master
-    run_answerals_leafcutter_cohort
-    exit 0
-fi
 
 ###########################################
 # Array task: process one sample
@@ -396,10 +265,6 @@ if "$DRY_RUN"; then
     done
     echo
     echo "Would submit array: --array=1-${COUNT}%99"
-
-    if "$HAS_ANSWERALS"; then
-        echo "Would submit AnswerALS LeafCutter cohort job after the array succeeds."
-    fi
     exit 0
 fi
 
@@ -407,13 +272,5 @@ echo "Submitting array job: 1-${COUNT} (max 99 concurrent)..."
 ARRAY_SUBMISSION=$(sbatch --parsable --array="1-${COUNT}%99" "$0" "$TARGET_USER")
 ARRAY_JOB_ID="${ARRAY_SUBMISSION%%;*}"
 echo "Submitted array job $ARRAY_JOB_ID."
-
-if "$HAS_ANSWERALS"; then
-    echo "Submitting AnswerALS LeafCutter cohort job, dependent on successful array completion..."
-    COHORT_JOB_ID=$(sbatch --parsable \
-        --dependency="afterok:${ARRAY_JOB_ID}" \
-        "$0" --leafcutter-cohort "$TARGET_USER")
-    echo "Submitted LeafCutter cohort job ${COHORT_JOB_ID%%;*}."
-fi
 
 echo "Monitor with: squeue -u $TARGET_USER"
