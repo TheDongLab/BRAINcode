@@ -307,8 +307,7 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.circRNA" ]]; then
 
         if "$ANSWERALS_MODE"; then
             # CIRCexplorer's reference uses UCSC-style names (chr1, chrM).
-            # Keep only canonical AnswerALS endpoints, then translate their
-            # names for CIRCexplorer. The original junction file is untouched.
+            # Keep only canonical AnswerALS endpoints, then translate their names for CIRCexplorer. The original junction file is untouched.
             CIRC_CHIMERIC="$WORK_TMPDIR/STAR.Chimeric.canonical.ucsc.out.junction"
 
             awk -F'\t' -v OFS='\t' '
@@ -615,25 +614,31 @@ if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.normalization" ]]; then
 fi
 
 ###########################################
-# STEP 9: LeafCutter junctions
-# AnswerALS workers create per-sample canonical junction files only.
-# Cohort clustering and PSI should run after the full sample array finishes.
+# STEP 9: LeafCutter junctions, clusters, and per-sample PSI
+# AnswerALS uses canonical-contig junctions, then follows the same per-sample clustering and PSI steps as TargetALS.
 ###########################################
-if "$ANSWERALS_MODE"; then
-    if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter_junctions" ]]; then
-        echo "[STEP 9] Extracting AnswerALS LeafCutter junctions..."
-        LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
-        LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
-        mkdir -p "$LEAFCUTTER_OUT/juncs" "$LEAFCUTTER_OUT/inputs"
+LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
+LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
+JUNC_DIR="$LEAFCUTTER_OUT/juncs"
+CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
+PSI_DIR="$LEAFCUTTER_OUT/psi"
 
-        # bam2junc.sh creates temporary files next to its BAM argument.
+if "$ANSWERALS_MODE"; then
+    if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]]; then
+        echo "[STEP 9] AnswerALS LeafCutter junction, cluster, and PSI processing starting..."
+        mkdir -p "$LEAFCUTTER_OUT/inputs" "$JUNC_DIR" "$CLUSTER_DIR" "$PSI_DIR"
+
+        # bam2junc.sh works on the original BAM. Restrict its output to the
+        # canonical AnswerALS contigs before cluster and PSI calculations.
         LC_BAM="$LEAFCUTTER_OUT/inputs/${samplename}.bam"
         ln -sf "$BAM" "$LC_BAM"
         [[ ! -f "${BAM}.bai" ]] || ln -sf "${BAM}.bai" "${LC_BAM}.bai"
 
-        LC_JUNC="$LEAFCUTTER_OUT/juncs/${samplename}.junc"
-        LC_JUNC_RAW="$LEAFCUTTER_OUT/juncs/${samplename}.all_contigs.junc"
+        LC_JUNC="$JUNC_DIR/${samplename}.junc"
+        LC_JUNC_RAW="$JUNC_DIR/${samplename}.all_contigs.junc"
         LC_JUNC_FILTERED="$WORK_TMPDIR/${samplename}.canonical.junc"
+
+        export PATH="$LEAFCUTTER_BASE/scripts:$LEAFCUTTER_BASE/clustering:$PATH"
 
         "$LEAFCUTTER_BASE/scripts/bam2junc.sh" \
             "$LC_BAM" \
@@ -653,15 +658,36 @@ if "$ANSWERALS_MODE"; then
         mv "$LC_JUNC_FILTERED" "$LC_JUNC"
         rm -f "$LC_JUNC_RAW"
 
-        touch "$SAMPLE_DIR/.status.RNAseq.leafcutter_junctions"
-        echo "[STEP 9] AnswerALS canonical-contig junction extraction completed."
+        # Pass only this sample's canonical junction file to LeafCutter.
+        JUNC_LIST="$JUNC_DIR/juncfile_list.txt"
+        printf '%s\n' "$LC_JUNC" > "$JUNC_LIST"
+
+        python "$LEAFCUTTER_BASE/clustering/leafcutter_cluster.py" \
+            -j "$JUNC_LIST" \
+            -o leafcutter_clusters \
+            -r "$CLUSTER_DIR"
+
+        python "$LEAFCUTTER_BASE/clustering/leafcutter_quant_only.py" \
+            -j "$JUNC_LIST" \
+            -o leafcutter_clusters \
+            -r "$CLUSTER_DIR"
+
+        LC_PSI="$PSI_DIR/${samplename}.leafcutter.PSI.tsv"
+        python "$LEAFCUTTER_BASE/scripts/leafcutter_psi.py" \
+            "$CLUSTER_DIR/leafcutter_clusters_refined" \
+            "$LC_JUNC" \
+            "$LC_PSI"
+
+        { head -n 1 "$LC_PSI" && tail -n +2 "$LC_PSI" | sort -k7,7nr; } \
+            > "$PSI_DIR/${samplename}.leafcutter.PSI.sorted.tsv"
+
+        touch "$SAMPLE_DIR/.status.RNAseq.leafcutter"
+        echo "[STEP 9] AnswerALS canonical-contig LeafCutter processing completed."
     fi
 else
-    # Keep existing TargetALS per-sample LeafCutter workflow.
+    # Keep the existing TargetALS per-sample LeafCutter workflow unchanged.
     if [[ ! -f "$SAMPLE_DIR/.status.RNAseq.leafcutter" ]]; then
         echo "[STEP 9] LeafCutter junction quantification starting..."
-        LEAFCUTTER_BASE="/home/${TARGET_USER}/donglab/pipelines/modules/rnaseq/bin/leafcutter"
-        LEAFCUTTER_OUT="$SAMPLE_DIR/leafcutter"
         JUNC_DIR="$LEAFCUTTER_OUT/juncs"
         CLUSTER_DIR="$LEAFCUTTER_OUT/clusters"
         PSI_DIR="$LEAFCUTTER_OUT/psi"
