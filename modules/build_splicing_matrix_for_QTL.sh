@@ -1,68 +1,96 @@
 #!/bin/bash
 #SBATCH --job-name=build_splicing_matrix
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/build_splicing_matrix.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/build_splicing_matrix.err
+#SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/build_splicing_matrix.out
+#SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/build_splicing_matrix.err
 #SBATCH --time=12:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=160G
 
 set -euo pipefail
 
-# 1. Clear existing Python paths to prevent loading 3.10 libraries
+# Set to target_ALS or answer_ALS before running
+EXPERIMENT="answer_ALS"
+export EXPERIMENT
+
 unset PYTHONPATH
 
-# 2. Load the specific 2024a toolchain and Python 3.12
 module purge
 module load Python/3.12.3-GCCcore-13.3.0
 module load Python-bundle-PyPI/2024.06-GCCcore-13.3.0
 
 python3 - <<'EOF'
+import os
 import pandas as pd
-import numpy as np
 from pathlib import Path
 
 pd.set_option("future.no_silent_downcasting", True)
 
-BASE = Path("/home/zw529/donglab/data/target_ALS")
-OUT  = BASE / "QTL"
+EXPERIMENT = os.environ["EXPERIMENT"]
+BASE = Path("/home/zw529/donglab/data") / EXPERIMENT
+OUT = BASE / "QTL"
 OUT.mkdir(exist_ok=True)
 
 def norm_id(x):
     return str(x).strip().replace("-", "_")
 
-# 1. Metadata
-rna = pd.read_csv(BASE / "targetALS_rnaseq_metadata.csv")
-rna.columns = rna.columns.str.strip().str.lower()
-print(f"RNA samples in metadata: {len(rna)}")
+if EXPERIMENT == "target_ALS":
+    rna = pd.read_csv(BASE / "targetALS_rnaseq_metadata.csv")
+    rna.columns = rna.columns.str.strip().str.lower()
+    print(f"RNA samples in metadata: {len(rna)}")
 
-# 2. Find PSI files
-all_psi = list(BASE.glob("**/leafcutter/psi/*.leafcutter.PSI.tsv"))
-print(f"Found PSI files: {len(all_psi)}")
+    all_psi = list(BASE.glob("**/leafcutter/psi/*.leafcutter.PSI.tsv"))
+    print(f"Found PSI files: {len(all_psi)}")
 
-def find_psi(sample_id):
-    sid_norm = norm_id(sample_id)
-    for p in all_psi:
-        fname_sample = norm_id(p.stem.split(".leafcutter")[0])
-        if sid_norm == fname_sample or sid_norm in fname_sample:
-            return p
-    return None
+    def find_psi(sample_id):
+        sid_norm = norm_id(sample_id)
+        for psi_path in all_psi:
+            fname_sample = norm_id(psi_path.stem.split(".leafcutter")[0])
+            if sid_norm == fname_sample or sid_norm in fname_sample:
+                return psi_path
+        return None
 
-rna["psi_path"] = rna["externalsampleid"].apply(find_psi)
-rna_found = rna[rna["psi_path"].notna()].copy()
-print(f"RNA samples with PSI: {len(rna_found)}")
+    rna["psi_path"] = rna["externalsampleid"].apply(find_psi)
+    rna_found = rna[rna["psi_path"].notna()].copy()
+    print(f"RNA samples with PSI: {len(rna_found)}")
 
-# 3. Build Splicing Matrix
+elif EXPERIMENT == "answer_ALS":
+    # AnswerALS PSI files are inside each donor's processed RNA-seq folder.
+    rna_processed = BASE / "iPSC_Motor_Neuron/RNAseq/Processed"
+    all_psi = sorted(
+        rna_processed.glob("*/leafcutter/psi/*.leafcutter.PSI.tsv")
+    )
+    print(f"Found AnswerALS PSI files: {len(all_psi)}")
+
+    rna_found = pd.DataFrame([
+        {
+            "matrix_sample_id": psi_path.parent.parent.parent.name,
+            "donor_id": psi_path.parent.parent.parent.name,
+            "tissue": "iPSC_Motor_Neuron",
+            "psi_path": psi_path,
+        }
+        for psi_path in all_psi
+    ])
+    print(f"AnswerALS donors with PSI: {len(rna_found)}")
+
+else:
+    raise ValueError("EXPERIMENT must be target_ALS or answer_ALS")
+
+# Build the splicing matrix
 expr = None
 for _, row in rna_found.iterrows():
-    sample = norm_id(row["externalsampleid"])
+    if EXPERIMENT == "target_ALS":
+        sample = norm_id(row["externalsampleid"])
+    else:
+        # Preserve CASE-... IDs to match the AnswerALS joint VCF.
+        sample = str(row["matrix_sample_id"]).strip()
+
     psi = pd.read_csv(row["psi_path"], sep="\t")
 
     if "PSI" not in psi.columns:
         continue
 
-    # unique junction ID
     psi["junction_id"] = (
-        psi["chrom"] + ":" + psi["strand"] + ":" +
+        psi["chrom"].astype(str) + ":" + psi["strand"].astype(str) + ":" +
         psi["start"].astype(str) + "-" + psi["end"].astype(str)
     )
 
@@ -74,24 +102,22 @@ for _, row in rna_found.iterrows():
     else:
         expr = expr.merge(psi, on="junction_id", how="outer")
 
-# IMPORTANT:
-# Missing junction in a sample's refined LeafCutter PSI file stays NA.
-# Do NOT convert missing junctions to PSI=0.
+if expr is None:
+    raise RuntimeError(f"No usable LeafCutter PSI files found for {EXPERIMENT}")
+
+# Missing junctions stay NA; do not convert them to PSI=0.
 expr = expr.infer_objects(copy=False)
 
 print(f"Raw splicing matrix shape: {expr.shape}")
 print(f"Total missing PSI values: {expr.isna().sum().sum()}")
 
-# 4. Variance-Based Filtering
+# Variance-based filtering.
 print("Filtering out low-information junctions...")
 
 junction_ids = expr["junction_id"]
 numeric_data = expr.drop("junction_id", axis=1)
 
-# Calculate variability using only samples where PSI was actually observed
 row_sds = numeric_data.std(axis=1, skipna=True)
-
-# Require at least a few genuine PSI measurements
 n_observed = numeric_data.notna().sum(axis=1)
 
 min_sd_threshold = 0.005
@@ -119,29 +145,35 @@ print(
     f"({dropped_count / original_count * 100:.2f}%)"
 )
 
-# Recombine preserving matrix format
 expr_final = pd.concat(
     [
         filtered_junction_ids.reset_index(drop=True),
-        filtered_numeric.reset_index(drop=True)
+        filtered_numeric.reset_index(drop=True),
     ],
-    axis=1
+    axis=1,
 )
 
-# 5. Output
 expr_final.to_csv(
     OUT / "splicing_matrix.txt",
     sep="\t",
     index=False,
-    na_rep="NA"
+    na_rep="NA",
 )
 
-rna_found[
-    ["externalsampleid", "externalsubjectid", "tissue"]
-].to_csv(
-    OUT / "splicing_sample_metadata.csv",
-    index=False
-)
+if EXPERIMENT == "target_ALS":
+    rna_found[
+        ["externalsampleid", "externalsubjectid", "tissue"]
+    ].to_csv(
+        OUT / "splicing_sample_metadata.csv",
+        index=False,
+    )
+else:
+    rna_found[
+        ["matrix_sample_id", "donor_id", "tissue"]
+    ].to_csv(
+        OUT / "splicing_sample_metadata.csv",
+        index=False,
+    )
 
 print(f"Saved filtered raw splicing matrix to: {OUT}")
 EOF
