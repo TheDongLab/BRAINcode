@@ -7,6 +7,7 @@
 #SBATCH --mem=48G
 
 set -euo pipefail
+shopt -s nullglob
 
 module load Python/3.12.3-GCCcore-13.3.0
 module load BCFtools/1.21-GCC-13.3.0
@@ -129,7 +130,7 @@ elif [[ "$EXPERIMENT" == "answer_ALS" ]]; then
         fi
 
         sidecar="$SIDECAR_DIR/$donor.genotypes_quality.vcf.gz"
-        bcftools view -r "$CHROMS" "${candidates[0]}" -Ou |
+        bcftools view -t "$CHROMS" "${candidates[0]}" -Ou |
             bcftools annotate -x INFO,^FORMAT/GT,FORMAT/GQ -Oz -o "$sidecar"
         tabix -f -p vcf "$sidecar"
 
