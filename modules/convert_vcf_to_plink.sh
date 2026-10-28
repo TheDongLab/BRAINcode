@@ -1,9 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=vcf_to_plink_imputed
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
-#SBATCH --time=12:00:00
-#SBATCH -p day
+#SBATCH --time=16:00:00
 #SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/vcf_to_plink.out
 #SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/vcf_to_plink.err
 
@@ -14,9 +13,43 @@ set -euo pipefail
 #----------------------------------------
 # VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/target_ALS_imputed_filtered_joint.vcf.gz
 # OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
-VCF_IN=/home/zw529/donglab/data/answer_ALS/QTL/answer_ALS_imputed_filtered_joint.vcf.gz
+VCF_IN=/home/zw529/donglab/data/answer_ALS/QTL/joint_genotyped_GQ.vcf.gz   ### imputation not performed on answerALS .vcf; too dense
 OUTDIR=/home/zw529/donglab/data/answer_ALS/QTL/plink
 mkdir -p ${OUTDIR}
+
+#----------------------------------------
+# OPTIONAL ANSWERALS SEX-CHECK FUNCTION
+# Uncomment this function and its call to recreate the AnswerALS metadata PSAM and chrX/chrY sex-check.
+#----------------------------------------
+# answerals_sexcheck() {
+#     local W="${OUTDIR}/sexcheck"
+#     local V="${VCF_IN}"
+#     local M="/home/zw529/donglab/data/answer_ALS/aals_dataportal_datatable.csv"
+#
+#     mkdir -p "$W"
+#     module load BCFtools/1.21-GCC-13.3.0
+#
+#     python3 -c 'import csv,subprocess,pathlib,sys; m=pathlib.Path(sys.argv[1]); v=sys.argv[2]; p=pathlib.Path(sys.argv[3]); r=csv.DictReader(m.open(encoding="utf-8-sig",newline="")); idc=r.fieldnames[0]; sc=next(c for c in r.fieldnames if c.strip().lower()=="sex"); d={x[idc].strip():x[sc].strip().lower() for x in r if x.get(idc)}; ids=subprocess.check_output(["bcftools","query","-l",v],text=True).splitlines(); assert all(i in d for i in ids),"VCF sample missing from metadata"; p.write_text("#IID SEX\n"+"".join("{} {}\n".format(i,{"male":1,"female":2}.get(d[i],0)) for i in ids))' \
+#         "/home/zw529/donglab/data/answer_ALS/aals_dataportal_datatable.csv" \
+#         "$V" "$W/answerALS_sex.psam"
+#
+#     bcftools view -r chrX,chrY -Oz -o "$W/sex_chroms.vcf.gz" "$V"
+#     bcftools index -t "$W/sex_chroms.vcf.gz"
+#     module load PLINK2/avx2_20250707
+#     plink2 --vcf "$W/sex_chroms.vcf.gz" \
+#         --psam "$W/answerALS_sex.psam" \
+#         --split-par hg38 \
+#         --check-sex max-female-xf=0.2 min-male-xf=0.8 \
+#         --out "$W/answerALS_sexcheck"
+# }
+# answerals_sexcheck
+
+# AnswerALS sex comes from the participant metadata
+SEX_PSAM=${OUTDIR}/sexcheck/answerALS_sex.psam
+ANSWERALS_MODE=false
+if [[ "$VCF_IN" == *"/answer_ALS/"* ]]; then
+    ANSWERALS_MODE=true
+fi
 
 # Temp files for Step 0 (if ever uncommented)
 VCF_FILTERED=${OUTDIR}/joint_GQ0_temp.vcf.gz
@@ -52,7 +85,7 @@ MATRIX_PREFIX=${OUTDIR}/joint_all_chrs_matrixEQTL
 # bcftools norm -m -any ${VCF_FILTERED} -O z -o ${VCF_BIALLELIC}
 # bcftools index -t ${VCF_BIALLELIC}
 # rm ${VCF_FILTERED} ${VCF_FILTERED}.tbi
-# VCF_IN=${VCF_BIALLELIC} 
+# VCF_IN=${VCF_BIALLELIC}
 
 #----------------------------------------
 # STEP 1: VCF → PLINK2 IMPORT
@@ -61,11 +94,34 @@ module --force purge
 module load StdEnv
 module load PLINK2/avx2_20250707
 
+# Keep this option documented. TargetALS still uses it below;
+# AnswerALS uses the metadata sex values supplied in SEX_PSAM.
+#     --impute-sex max-female-xf=0.2 min-male-xf=0.8 \
+
 #================================================================================
 # VERSION 1: WITH SEX CHROMOSOMES (ACTIVE)
 #================================================================================
 echo "Importing VCF with Sex Chromosomes..."
-plink2 --vcf ${VCF_IN} \
+
+if "$ANSWERALS_MODE"; then
+    [[ -s "$SEX_PSAM" ]] || {
+        echo "[ERROR] AnswerALS sex PSAM is missing or empty: $SEX_PSAM" >&2
+        echo "[ERROR] Create it with the optional answerals_sexcheck function above." >&2
+        exit 1
+    }
+
+    plink2 --vcf ${VCF_IN} \
+        --psam ${SEX_PSAM} \
+        --chr chr1-22,chrX,chrY,chrM \
+        --split-par hg38 \
+        --set-all-var-ids @:#:\$r:\$a \
+        --new-id-max-allele-len 800 \
+        --vcf-half-call m \
+        --make-pgen \
+        --out ${RAW_PREFIX} \
+        --threads ${SLURM_CPUS_PER_TASK}
+else
+    plink2 --vcf ${VCF_IN} \
         --chr chr1-22,chrX,chrY,chrM \
         --split-par hg38 \
         --set-all-var-ids @:#:\$r:\$a \
@@ -75,10 +131,17 @@ plink2 --vcf ${VCF_IN} \
         --make-pgen \
         --out ${RAW_PREFIX} \
         --threads ${SLURM_CPUS_PER_TASK}
+fi
 
 echo "Running sex-check validation..."
 plink2 --pfile ${RAW_PREFIX} --check-sex max-female-xf=0.2 min-male-xf=0.8 --out ${QC_SAMPLE_PREFIX}
-grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+
+if "$ANSWERALS_MODE"; then
+    # Keep sex-check results for review; ambiguous results are not automatic exclusions.
+    : > ${OUTDIR}/fail_sex.txt
+else
+    grep "PROBLEM" ${QC_SAMPLE_PREFIX}.sexcheck | awk '{print $1, $2}' > ${OUTDIR}/fail_sex.txt || touch ${OUTDIR}/fail_sex.txt
+fi
 
 
 #================================================================================
@@ -129,7 +192,7 @@ plink2 --pfile ${OUTDIR}/temp_variant_filtered \
        --max-alleles 2 \
        --make-pgen \
        --out ${FILTERED_PREFIX}
-       
+
 #----------------------------------------
 # PCA & OUTPUT
 #----------------------------------------
