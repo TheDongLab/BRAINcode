@@ -489,10 +489,33 @@ ANSWERALS_BOUNDARIES
 
         echo "[STEP 5b] Counting linear reads at canonical circRNA boundaries..."
         if "$ANSWERALS_MODE"; then
+            set +e
             samtools view -bh -L "$CANONICAL_BED" "$STAR_BAM" |
                 bedtools coverage -split \
                     -b stdin -a temp.ends.bed -sorted -counts \
                     -g temp.ends.genome > temp.ends.counts
+            step5b_status=("${PIPESTATUS[@]}")
+            set -e
+
+            if (( step5b_status[1] != 0 )); then
+                echo "[ERROR] AnswerALS bedtools coverage failed with exit code ${step5b_status[1]}." >&2
+                exit 1
+            fi
+            if (( step5b_status[0] != 0 && step5b_status[0] != 141 )); then
+                echo "[ERROR] AnswerALS samtools failed with exit code ${step5b_status[0]}." >&2
+                exit 1
+            fi
+            if [[ ! -s temp.ends.counts ]]; then
+                echo "[ERROR] AnswerALS boundary-count output is missing or empty." >&2
+                exit 1
+            fi
+
+            expected_rows=$(wc -l < temp.ends.bed)
+            observed_rows=$(wc -l < temp.ends.counts)
+            if (( observed_rows != expected_rows )); then
+                echo "[ERROR] AnswerALS boundary-count rows do not match: expected $expected_rows, found $observed_rows." >&2
+                exit 1
+            fi
         else
             bedtools coverage -split \
                 -b "$STAR_BAM" -a temp.ends.bed -sorted -counts \
