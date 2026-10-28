@@ -1,21 +1,37 @@
 #!/bin/bash
 #SBATCH --job-name=prep_joint_TPM
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/prep_joint_TPM_%j.err
+#SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/prep_joint_TPM_%j.out
+#SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/prep_joint_TPM_%j.err
 #SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 
 set -euo pipefail
 
+# Set to target_ALS or answer_ALS.
+# TargetALS remains the default for legacy runs.
+EXPERIMENT="${EXPERIMENT:-target_ALS}"
+
 if [ $# -eq 0 ]; then
     echo "Usage: sbatch prepare_joint_TPM_inputs.sh <Tissue_Name>"
+    echo "Example: EXPERIMENT=answer_ALS sbatch prepare_joint_TPM_inputs.sh iPSC_Motor_Neuron"
+    exit 1
+fi
+
+if [[ "$EXPERIMENT" != "target_ALS" && "$EXPERIMENT" != "answer_ALS" ]]; then
+    echo "[ERROR] EXPERIMENT must be target_ALS or answer_ALS."
     exit 1
 fi
 
 TISSUE=$1
-BASE="/home/zw529/donglab/data/target_ALS"
-COV_FILE="$BASE/QTL/covariates.tsv"
+BASE="/home/zw529/donglab/data/${EXPERIMENT}"
+
+if [[ "$EXPERIMENT" == "target_ALS" ]]; then
+    COV_FILE="$BASE/QTL/covariates.tsv"
+else
+    COV_FILE="$BASE/aals_dataportal_datatable.csv"
+fi
+
 OUT_DIR="$BASE/$TISSUE/eQTL"
 FINAL_TPM="$OUT_DIR/joint_TPM_matrix.tsv"
 
@@ -26,10 +42,16 @@ module purge
 module load R/4.4.2-gfbf-2024a
 module load Python/3.12.3-GCCcore-13.3.0
 
+echo "Processing Experiment: $EXPERIMENT"
 echo "Processing Tissue: $TISSUE"
 
 # --- STEP 1: FIND ALL POTENTIAL FILES ---
-if [[ "$TISSUE" == Cortex || "$TISSUE" == Spinal_Cord ]]; then
+if [[ "$EXPERIMENT" == "answer_ALS" ]]; then
+    find "$BASE/$TISSUE/RNAseq/Processed" \
+        -mindepth 2 -maxdepth 2 \
+        -name "normalization.tab" \
+        | sort > "$OUT_DIR/tpm_file_list.txt"
+elif [[ "$TISSUE" == Cortex || "$TISSUE" == Spinal_Cord ]]; then
     if [[ "$TISSUE" == Cortex ]]; then
         tissue_pattern='(^|[^[:alnum:]])cortex([^[:alnum:]]|$)'
     else
@@ -56,35 +78,57 @@ list_file = "$OUT_DIR/tpm_file_list.txt"
 output_file = "$FINAL_TPM"
 covariate_path = "$COV_FILE"
 target_tissue = "$TISSUE"
+experiment = "$EXPERIMENT"
 
 TISSUE_REMAP = {
     'Motor Cortex Lateral': 'Motor_Cortex', 'Motor Cortex Medial': 'Motor_Cortex',
     'Lateral Motor Cortex': 'Motor_Cortex', 'Medial Motor Cortex': 'Motor_Cortex',
-    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex', 
-    'Cortex_Motor_Unspecified': 'Motor_Cortex', 'Cortex_Motor_BA4': 'Motor_Cortex', 
+    'Primary Motor Cortex L': 'Motor_Cortex', 'Primary Motor Cortex M': 'Motor_Cortex',
+    'Cortex_Motor_Unspecified': 'Motor_Cortex', 'Cortex_Motor_BA4': 'Motor_Cortex',
     'BA4 Motor Cortex': 'Motor_Cortex', 'Lateral_motor_cortex': 'Motor_Cortex',
-    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum', 
-    'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Cervical Spinal Cord': 'Cervical_Spinal_Cord', 
-    'Cervical_spinal_cord': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord', 
-    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord', 
-    'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord', 
+    'Frontal Cortex': 'Frontal_Cortex', 'Cerebellum': 'Cerebellum',
+    'Spinal_Cord_Cervical': 'Cervical_Spinal_Cord', 'Cervical Spinal Cord': 'Cervical_Spinal_Cord',
+    'Cervical_spinal_cord': 'Cervical_Spinal_Cord', 'Spinal_cord_Cervical': 'Cervical_Spinal_Cord',
+    'Lumbar Spinal Cord': 'Lumbar_Spinal_Cord', 'Thoracic Spinal Cord': 'Thoracic_Spinal_Cord',
+    'Spinal_Cord_Lumbosacral': 'Lumbar_Spinal_Cord', 'Lumbosacral_Spinal_Cord': 'Lumbar_Spinal_Cord',
     'Lumbar_spinal_cord': 'Lumbar_Spinal_Cord'
 }
 
 # 1. Load Metadata
-meta = pd.read_csv(covariate_path, sep='\t')
-meta.columns = meta.columns.str.strip()
-id_col = 'externalsampleid'
-sub_col = 'externalsubjectid'
+if experiment == "answer_ALS":
+    raw_meta = pd.read_csv(covariate_path, encoding="utf-8-sig")
+    raw_meta.columns = raw_meta.columns.str.strip()
+
+    # The AnswerALS portal table uses the participant ID as its first column
+    # and has a Sex column. The participant ID is also the output matrix ID.
+    id_col = raw_meta.columns[0]
+    sex_cols = [c for c in raw_meta.columns if c.strip().lower() == "sex"]
+    if len(sex_cols) != 1:
+        sys.exit("FATAL: Expected exactly one Sex column in the AnswerALS metadata.")
+
+    meta = pd.DataFrame({
+        "externalsampleid": raw_meta[id_col].astype("string").str.strip(),
+        "externalsubjectid": raw_meta[id_col].astype("string").str.strip(),
+        "tissue": target_tissue,
+        "sex": raw_meta[sex_cols[0]].astype("string").str.strip()
+    })
+else:
+    meta = pd.read_csv(covariate_path, sep="\t")
+    meta.columns = meta.columns.str.strip()
+
+print(f"RNA samples in metadata: {len(meta)}")
+
+id_col = "externalsampleid"
+sub_col = "externalsubjectid"
 
 # 2. Filter for Tissue
-meta['mapped_tissue'] = meta['tissue'].map(TISSUE_REMAP).fillna(meta['tissue'])
+meta["mapped_tissue"] = meta["tissue"].map(TISSUE_REMAP).fillna(meta["tissue"])
 if target_tissue == "Cortex":
-    meta_subset = meta[meta['tissue'].astype('string').str.contains(r'(?:^|[\W_])cortex(?:$|[\W_])', case=False, na=False)].copy()
+    meta_subset = meta[meta["tissue"].astype("string").str.contains(r'(?:^|[\W_])cortex(?:$|[\W_])', case=False, na=False)].copy()
 elif target_tissue == "Spinal_Cord":
-    meta_subset = meta[meta['tissue'].astype('string').str.contains(r'(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])', case=False, na=False)].copy()
+    meta_subset = meta[meta["tissue"].astype("string").str.contains(r'(?:^|[\W_])spinal[\W_]*cord(?:$|[\W_])', case=False, na=False)].copy()
 else:
-    meta_subset = meta[meta['mapped_tissue'] == target_tissue].copy()
+    meta_subset = meta[meta["mapped_tissue"] == target_tissue].copy()
 
 # 3. AGGRESSIVE MAPPING DICTIONARY
 # This maps every possible ID variant (JHU, NEU, SD, SiteID) to the Official Dash-ID
@@ -92,23 +136,23 @@ id_to_official = {}
 id_to_subject = {}
 
 for _, row in meta_subset.iterrows():
-    official_id = str(row[id_col])
-    subject_id = str(row[sub_col])
+    official_id = str(row[id_col]).strip()
+    subject_id = str(row[sub_col]).strip()
     id_to_subject[official_id] = subject_id
-    
+
     # List of columns that might be used as folder names on the cluster
-    potential_cols = [id_col, sub_col, 'sampleid', 'subjectid']
-    
+    potential_cols = [id_col, sub_col, "sampleid", "subjectid"]
+
     for col in potential_cols:
         if col in row and pd.notna(row[col]):
             val = str(row[col]).strip()
             id_to_official[val] = official_id
-            id_to_official[val.replace('-', '_')] = official_id
-            id_to_official[val.replace('_', '-')] = official_id
+            id_to_official[val.replace("-", "_")] = official_id
+            id_to_official[val.replace("_", "-")] = official_id
 
 # 4. Read file list
 try:
-    with open(list_file, 'r') as f:
+    with open(list_file, "r") as f:
         files = [line.strip() for line in f if line.strip()]
 except FileNotFoundError:
     sys.exit(1)
@@ -119,23 +163,23 @@ matched_folders = []
 
 for fpath in files:
     folder_name = Path(fpath).parent.name
-    
+
     # Resolve the folder name to the Official ID
     meta_id = id_to_official.get(folder_name)
-    
+
     if meta_id:
         subject = id_to_subject.get(meta_id)
-        
+
         # DEDUPLICATION: Only take the first sample found for this individual
         if subject in seen_subjects:
             continue
-            
+
         try:
-            df = pd.read_csv(fpath, sep='\t', usecols=['gene_id', 'TPM'])
-            df['gene_id'] = df['gene_id'].astype(str).str.strip().str.split('.').str[0]
-            df = df.drop_duplicates(subset=['gene_id'])
+            df = pd.read_csv(fpath, sep="\t", usecols=["gene_id", "TPM"])
+            df["gene_id"] = df["gene_id"].astype(str).str.strip().str.split(".").str[0]
+            df = df.drop_duplicates(subset=["gene_id"])
             # Rename TPM column to the Official ID so R can match the covariates
-            df = df.set_index('gene_id').rename(columns={'TPM': meta_id})
+            df = df.set_index("gene_id").rename(columns={"TPM": meta_id})
             all_dfs.append(df)
             seen_subjects.add(subject)
             matched_folders.append(folder_name)
@@ -144,16 +188,16 @@ for fpath in files:
 
 if all_dfs:
     print(f"Successfully matched {len(all_dfs)} unique subjects.")
-    print(f"Matched Site IDs include: {matched_folders[:10]}...")
-    
-    joint_df = pd.concat(all_dfs, axis=1, join='outer').fillna(0).infer_objects(copy=False)
-    
+    print(f"Matched folders include: {matched_folders[:10]}...")
+
+    joint_df = pd.concat(all_dfs, axis=1, join="outer").fillna(0).infer_objects(copy=False)
+
     # Filter: Genes present (>0.1 TPM) in at least 20% of samples
     threshold = len(all_dfs) * 0.2
     mask = (joint_df > 0.1).sum(axis=1) >= threshold
     joint_df = joint_df[mask]
-    
-    joint_df.to_csv(output_file, sep='\t')
+
+    joint_df.to_csv(output_file, sep="\t")
     print(f"Final Matrix dimensions: {joint_df.shape}")
 else:
     print("FATAL: No folders matched metadata Site IDs or CGND IDs.")
@@ -163,6 +207,6 @@ EOF
 # --- STEP 3: AUTOMATED QC PLOTTING ---
 echo "Merge complete. Launching R QC script for $TISSUE..."
 # This script joins the matrix by column name to the covariate file's first column.
-Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
+EXPERIMENT="$EXPERIMENT" Rscript /home/zw529/donglab/pipelines/scripts/QTL/_normQC.R "$TISSUE"
 
 echo "Full QC pipeline complete for $TISSUE."
