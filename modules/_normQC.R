@@ -1,12 +1,19 @@
 ###########################################
-# Rscript to generate RLE, clustering,
-# and sex-gene tSNE QC plots
+# Rscript to generate RLE, clustering, and sex-gene tSNE QC plots
 ###########################################
+
+# Defaults to the legacy TargetALS behavior
+# Set EXPERIMENT=answer_ALS in the environment for AnswerALS.
+EXPERIMENT <- Sys.getenv("EXPERIMENT", unset="target_ALS")
 
 args <- commandArgs(TRUE)
 
 if(length(args) < 1) {
   stop("Usage: Rscript _normQC.R <Tissue_Name>")
+}
+
+if(!EXPERIMENT %in% c("target_ALS", "answer_ALS")) {
+  stop("EXPERIMENT must be target_ALS or answer_ALS.")
 }
 
 if(!require(ape)) install.packages("ape", repos="http://cran.us.r-project.org")
@@ -19,7 +26,7 @@ library(Rtsne)
 
 TISSUE <- args[1]
 
-BASE_DIR <- "~/donglab/data/target_ALS"
+BASE_DIR <- path.expand(file.path("~/donglab/data", EXPERIMENT))
 TISSUE_DIR <- file.path(BASE_DIR, TISSUE, "eQTL")
 
 TPMfile <- file.path(TISSUE_DIR, "joint_TPM_matrix.tsv")
@@ -30,35 +37,110 @@ if(!file.exists(TPMfile)) {
   stop(paste("Error: TPM matrix not found at", TPMfile))
 }
 
+message(paste("Experiment:", EXPERIMENT))
 message(paste("Processing Tissue:", TISSUE))
 message(paste("Input File:", TPMfile))
 message(paste("Output File:", outputfile))
 
 tpm <- read.table(TPMfile, header=TRUE, check.names=FALSE, row.names=1, sep="\t")
 
-exclude_samples <- c(
-  "CGND-HRA-03028","CGND-HRA-03029","CGND-HRA-03030",
-  "CGND-HRA-03031","CGND-HRA-03032","CGND-HRA-03033"
-)
+if(EXPERIMENT == "target_ALS") {
+  exclude_samples <- c(
+    "CGND-HRA-03028","CGND-HRA-03029","CGND-HRA-03030",
+    "CGND-HRA-03031","CGND-HRA-03032","CGND-HRA-03033"
+  )
 
-tpm <- tpm[, !colnames(tpm) %in% exclude_samples]
+  tpm <- tpm[, !colnames(tpm) %in% exclude_samples, drop=FALSE]
+}
 
 message(paste("# Data dimensions:", nrow(tpm), "genes x", ncol(tpm), "samples"))
 
 message("Loading and remapping metadata...")
 
-covariate <- read.delim(
-  file.path(BASE_DIR, "QTL/covariates.tsv"),
-  header=TRUE,
-  sep="\t",
-  stringsAsFactors=FALSE,
-  check.names=FALSE,
-  quote="",
-  fill=TRUE
+if(EXPERIMENT == "target_ALS") {
+
+  covariate <- read.delim(
+    file.path(BASE_DIR, "QTL/covariates.tsv"),
+    header=TRUE,
+    sep="\t",
+    stringsAsFactors=FALSE,
+    check.names=FALSE,
+    quote="",
+    fill=TRUE
+  )
+
+  if(nrow(covariate) < 1) {
+    stop("Metadata file is empty or malformed.")
+  }
+
+} else {
+
+  answerals_metadata_file <- file.path(BASE_DIR, "aals_dataportal_datatable.csv")
+
+  if(!file.exists(answerals_metadata_file)) {
+    stop(paste("AnswerALS metadata file not found at", answerals_metadata_file))
+  }
+
+  answerals_metadata <- read.csv(
+    answerals_metadata_file,
+    header=TRUE,
+    stringsAsFactors=FALSE,
+    check.names=FALSE,
+    fileEncoding="UTF-8-BOM"
+  )
+
+  names(answerals_metadata) <- trimws(sub("^\ufeff", "", names(answerals_metadata)))
+
+  if(nrow(answerals_metadata) < 1 || ncol(answerals_metadata) < 1) {
+    stop("AnswerALS metadata file is empty or malformed.")
+  }
+
+  id_col <- names(answerals_metadata)[1]
+  sex_cols <- which(tolower(trimws(names(answerals_metadata))) == "sex")
+
+  if(length(sex_cols) != 1) {
+    stop("Expected exactly one Sex column in the AnswerALS metadata.")
+  }
+
+  answerals_ids <- trimws(as.character(answerals_metadata[[id_col]]))
+  answerals_sex <- tolower(trimws(as.character(answerals_metadata[[sex_cols]])))
+
+  answerals_sex <- ifelse(
+    answerals_sex == "male", "Male",
+    ifelse(answerals_sex == "female", "Female", NA_character_)
+  )
+
+  covariate <- data.frame(
+    externalsampleid=answerals_ids,
+    externalsubjectid=answerals_ids,
+    tissue=TISSUE,
+    sex=answerals_sex,
+    stringsAsFactors=FALSE
+  )
+
+  covariate <- covariate[
+    !is.na(covariate$externalsampleid) &
+      covariate$externalsampleid != "",
+    ,
+    drop=FALSE
+  ]
+}
+
+required_metadata_columns <- c(
+  "externalsampleid",
+  "externalsubjectid",
+  "tissue",
+  "sex"
 )
 
-if(nrow(covariate) < 1) {
-  stop("Metadata file is empty or malformed.")
+missing_metadata_columns <- setdiff(required_metadata_columns, names(covariate))
+if(length(missing_metadata_columns) > 0) {
+  stop(
+    paste(
+      "Metadata is missing required columns:",
+      paste(missing_metadata_columns, collapse=", ")
+    )
+  )
 }
 
 TISSUE_REMAP <- list(
@@ -97,7 +179,18 @@ if(TISSUE == "Cortex") {
 } else {
   meta_sub <- covariate[covariate$mapped_tissue == TISSUE, ]
 }
+
 meta_idx <- match(colnames(tpm), meta_sub$externalsampleid)
+
+unmatched_samples <- colnames(tpm)[is.na(meta_idx)]
+if(length(unmatched_samples) > 0) {
+  message(
+    paste(
+      "Warning: TPM samples not matched to metadata:",
+      paste(head(unmatched_samples, 20), collapse=", ")
+    )
+  )
+}
 
 sex <- meta_sub$sex[meta_idx]
 subject <- meta_sub$externalsubjectid[meta_idx]
@@ -148,7 +241,12 @@ sampleDists[is.na(sampleDists)] <- 1
 hc <- hclust(as.dist(sampleDists), method="complete")
 tree <- as.phylo(hc)
 
-prefixes <- gsub("^([^-^_]+).*", "\\1", tree$tip.label)
+if(EXPERIMENT == "answer_ALS") {
+  prefixes <- rep("AnswerALS", length(tree$tip.label))
+} else {
+  prefixes <- gsub("^([^-^_]+).*", "\\1", tree$tip.label)
+}
+
 unique_prefixes <- sort(unique(prefixes))
 
 base_colors <- c(
@@ -270,8 +368,8 @@ if(length(sex_idx) >= 2) {
 
   plot_cols <- ifelse(sex_pca == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
-  
-   pca_table <- data.frame(
+
+  pca_table <- data.frame(
     Sample=pca_samples,
     Sex=sex_pca,
     PC1=pc1,
