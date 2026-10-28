@@ -4,16 +4,18 @@
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH -p day
-#SBATCH --output=/home/zw529/donglab/data/target_ALS/QTL/vcf_to_plink.out
-#SBATCH --error=/home/zw529/donglab/data/target_ALS/QTL/vcf_to_plink.err
+#SBATCH --output=/home/zw529/donglab/data/answer_ALS/QTL/vcf_to_plink.out
+#SBATCH --error=/home/zw529/donglab/data/answer_ALS/QTL/vcf_to_plink.err
 
 set -euo pipefail
 
 #----------------------------------------
 # PATHS & PREFIXES
 #----------------------------------------
-VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/target_ALS_imputed_filtered_joint.vcf.gz
-OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
+# VCF_IN=/home/zw529/donglab/data/target_ALS/QTL/target_ALS_imputed_filtered_joint.vcf.gz
+# OUTDIR=/home/zw529/donglab/data/target_ALS/QTL/plink
+VCF_IN=/home/zw529/donglab/data/answer_ALS/QTL/answer_ALS_imputed_filtered_joint.vcf.gz
+OUTDIR=/home/zw529/donglab/data/answer_ALS/QTL/plink
 mkdir -p ${OUTDIR}
 
 # Temp files for Step 0 (if ever uncommented)
