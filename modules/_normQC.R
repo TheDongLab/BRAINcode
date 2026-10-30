@@ -1,5 +1,5 @@
 ###########################################
-# Rscript to generate RLE, clustering, and sex-gene tSNE QC plots
+# Rscript to generate RLE, clustering, and sex-gene PCA QC plots
 ###########################################
 
 # Defaults to the legacy TargetALS behavior
@@ -23,6 +23,7 @@ if(!require(Rtsne)) install.packages("Rtsne", repos="http://cran.us.r-project.or
 library(ape)
 library(reshape2)
 library(Rtsne)
+library(DESeq2)
 
 TISSUE <- args[1]
 
@@ -32,6 +33,10 @@ TISSUE_DIR <- file.path(BASE_DIR, TISSUE, "eQTL")
 TPMfile <- file.path(TISSUE_DIR, "joint_TPM_matrix.tsv")
 outputfile <- file.path(TISSUE_DIR, paste0(TISSUE, "_QC_Plots.pdf"))
 mismatch_file <- file.path(TISSUE_DIR, "potential_sex_mismatches.txt")
+genotype_mismatch_file <- file.path(
+  TISSUE_DIR,
+  "WGS_sex_metadata_mismatches.txt"
+)
 
 if(!file.exists(TPMfile)) {
   stop(paste("Error: TPM matrix not found at", TPMfile))
@@ -42,7 +47,13 @@ message(paste("Processing Tissue:", TISSUE))
 message(paste("Input File:", TPMfile))
 message(paste("Output File:", outputfile))
 
-tpm <- read.table(TPMfile, header=TRUE, check.names=FALSE, row.names=1, sep="\t")
+tpm <- read.table(
+  TPMfile,
+  header=TRUE,
+  check.names=FALSE,
+  row.names=1,
+  sep="\t"
+)
 
 if(EXPERIMENT == "target_ALS") {
   exclude_samples <- c(
@@ -75,7 +86,10 @@ if(EXPERIMENT == "target_ALS") {
 
 } else {
 
-  answerals_metadata_file <- file.path(BASE_DIR, "aals_dataportal_datatable.csv")
+  answerals_metadata_file <- file.path(
+    BASE_DIR,
+    "aals_dataportal_datatable.csv"
+  )
 
   if(!file.exists(answerals_metadata_file)) {
     stop(paste("AnswerALS metadata file not found at", answerals_metadata_file))
@@ -89,21 +103,27 @@ if(EXPERIMENT == "target_ALS") {
     fileEncoding="UTF-8-BOM"
   )
 
-  names(answerals_metadata) <- trimws(sub("^\ufeff", "", names(answerals_metadata)))
+  names(answerals_metadata) <- trimws(
+    sub("^\ufeff", "", names(answerals_metadata))
+  )
 
   if(nrow(answerals_metadata) < 1 || ncol(answerals_metadata) < 1) {
     stop("AnswerALS metadata file is empty or malformed.")
   }
 
   id_col <- names(answerals_metadata)[1]
-  sex_cols <- which(tolower(trimws(names(answerals_metadata))) == "sex")
+  sex_cols <- which(
+    tolower(trimws(names(answerals_metadata))) == "sex"
+  )
 
   if(length(sex_cols) != 1) {
     stop("Expected exactly one Sex column in the AnswerALS metadata.")
   }
 
   answerals_ids <- trimws(as.character(answerals_metadata[[id_col]]))
-  answerals_sex <- tolower(trimws(as.character(answerals_metadata[[sex_cols]])))
+  answerals_sex <- tolower(
+    trimws(as.character(answerals_metadata[[sex_cols]]))
+  )
 
   answerals_sex <- ifelse(
     answerals_sex == "male", "Male",
@@ -133,7 +153,11 @@ required_metadata_columns <- c(
   "sex"
 )
 
-missing_metadata_columns <- setdiff(required_metadata_columns, names(covariate))
+missing_metadata_columns <- setdiff(
+  required_metadata_columns,
+  names(covariate)
+)
+
 if(length(missing_metadata_columns) > 0) {
   stop(
     paste(
@@ -173,9 +197,23 @@ covariate$mapped_tissue <- sapply(covariate$tissue, function(x) {
 })
 
 if(TISSUE == "Cortex") {
-  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])cortex([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
+  meta_sub <- covariate[
+    !is.na(covariate$tissue) &
+      grepl(
+        "(^|[^[:alnum:]])cortex([^[:alnum:]]|$)",
+        covariate$tissue,
+        ignore.case=TRUE
+      ),
+  ]
 } else if(TISSUE == "Spinal_Cord") {
-  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
+  meta_sub <- covariate[
+    !is.na(covariate$tissue) &
+      grepl(
+        "(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)",
+        covariate$tissue,
+        ignore.case=TRUE
+      ),
+  ]
 } else {
   meta_sub <- covariate[covariate$mapped_tissue == TISSUE, ]
 }
@@ -194,6 +232,118 @@ if(length(unmatched_samples) > 0) {
 
 sex <- meta_sub$sex[meta_idx]
 subject <- meta_sub$externalsubjectid[meta_idx]
+
+###########################################
+# AnswerALS WGS sex-check calls
+###########################################
+
+genotype_sex <- setNames(character(0), character(0))
+
+if(EXPERIMENT == "answer_ALS") {
+
+  pfile_prefix <- file.path(
+    BASE_DIR,
+    "QTL/plink/joint_all_chrs_filtered"
+  )
+
+  required_pfile <- paste0(
+    pfile_prefix,
+    c(".pgen", ".pvar", ".psam")
+  )
+
+  missing_pfile <- required_pfile[!file.exists(required_pfile)]
+  if(length(missing_pfile) > 0) {
+    stop(
+      paste(
+        "AnswerALS PLINK files are missing:",
+        paste(missing_pfile, collapse=", ")
+      )
+    )
+  }
+
+  sexcheck_candidates <- c(
+    file.path(
+      BASE_DIR,
+      "QTL/plink/sexcheck/answerALS_sexcheck.sexcheck"
+    ),
+    file.path(
+      BASE_DIR,
+      "QTL/plink/joint_samples_qc.sexcheck"
+    ),
+    file.path(
+      BASE_DIR,
+      "QTL/plink/joint_all_chrs_raw.sexcheck"
+    )
+  )
+
+  sexcheck_candidates <- sexcheck_candidates[
+    file.exists(sexcheck_candidates)
+  ]
+
+  if(length(sexcheck_candidates) == 0) {
+    stop(
+      paste(
+        "No AnswerALS PLINK sex-check report found. Checked:",
+        paste(
+          c(
+            file.path(
+              BASE_DIR,
+              "QTL/plink/sexcheck/answerALS_sexcheck.sexcheck"
+            ),
+            file.path(
+              BASE_DIR,
+              "QTL/plink/joint_samples_qc.sexcheck"
+            ),
+            file.path(
+              BASE_DIR,
+              "QTL/plink/joint_all_chrs_raw.sexcheck"
+            )
+          ),
+          collapse=", "
+        )
+      )
+    )
+  }
+
+  sexcheck_file <- sexcheck_candidates[1]
+  message(paste("Using WGS sex-check report:", sexcheck_file))
+
+  sexcheck <- read.table(
+    sexcheck_file,
+    header=TRUE,
+    check.names=FALSE,
+    comment.char="",
+    stringsAsFactors=FALSE
+  )
+
+  sexcheck_names <- toupper(sub("^#", "", names(sexcheck)))
+  iid_col <- match("IID", sexcheck_names)
+  snpsex_col <- match("SNPSEX", sexcheck_names)
+
+  if(is.na(iid_col) || is.na(snpsex_col)) {
+    stop(
+      "PLINK sex-check report must contain IID and SNPSEX columns."
+    )
+  }
+
+  snpsex <- trimws(as.character(sexcheck[[snpsex_col]]))
+  called_sex <- ifelse(
+    snpsex == "1", "Male",
+    ifelse(snpsex == "2", "Female", NA_character_)
+  )
+
+  genotype_sex <- setNames(
+    called_sex,
+    trimws(as.character(sexcheck[[iid_col]]))
+  )
+
+  message(
+    paste(
+      "WGS sex-check calls matched to TPM samples:",
+      sum(colnames(tpm) %in% names(genotype_sex))
+    )
+  )
+}
 
 pdf(outputfile, width=12, height=10)
 
@@ -315,13 +465,13 @@ if(EXPERIMENT == "answer_ALS") {
 }
 
 ###########################################
-# 3. Sex Gene PCA
+# 3. Sex-Gene Expression PCA
 ###########################################
 
-message("Generating sex-gene PCA plot...")
+message("Generating sex-gene expression PCA plot...")
 
 SEX_GENE_MAP <- c(
-  "ENSG00000229807", # XIST
+  # "ENSG00000229807", # XIST
   "ENSG00000129824", # RPS4Y1
   "ENSG00000280969", # RPS4Y2
   "ENSG00000012817", # KDM5D
@@ -338,6 +488,8 @@ pca_table_file <- file.path(
   TISSUE_DIR,
   paste0(TISSUE, "_sex_gene_PCA_coordinates.txt")
 )
+
+expression_flagged_samples <- character(0)
 
 if(length(sex_idx) >= 2) {
 
@@ -376,7 +528,7 @@ if(length(sex_idx) >= 2) {
 
     dists <- sqrt(
       (coords[,1] - coords[i,1])^2 +
-      (coords[,2] - coords[i,2])^2
+        (coords[,2] - coords[i,2])^2
     )
 
     nn <- order(dists)[2:11]
@@ -396,17 +548,31 @@ if(length(sex_idx) >= 2) {
   }
 
   flagged <- unique(flagged)
+  expression_flagged_samples <- pca_samples[flagged]
 
   plot_cols <- ifelse(sex_pca == "Male", "blue3", "firebrick2")
   plot_cols[is.na(plot_cols)] <- "gray50"
 
-  pca_table <- data.frame(
-    Sample=pca_samples,
-    Sex=sex_pca,
-    PC1=pc1,
-    PC2=pc2,
-    Flagged=ifelse(seq_along(pc1) %in% flagged, "YES", "NO")
-  )
+  if(EXPERIMENT == "answer_ALS") {
+    pca_table <- data.frame(
+      Sample=pca_samples,
+      MetadataSex=sex_pca,
+      WGS_SNPSEX=unname(genotype_sex[pca_samples]),
+      PC1=pc1,
+      PC2=pc2,
+      ExpressionNeighborFlag=ifelse(
+        seq_along(pc1) %in% flagged, "YES", "NO"
+      )
+    )
+  } else {
+    pca_table <- data.frame(
+      Sample=pca_samples,
+      Sex=sex_pca,
+      PC1=pc1,
+      PC2=pc2,
+      Flagged=ifelse(seq_along(pc1) %in% flagged, "YES", "NO")
+    )
+  }
 
   write.table(
     pca_table,
@@ -431,7 +597,7 @@ if(length(sex_idx) >= 2) {
       round(100 * summary(pca_res)$importance[2,2], 1),
       "%)"
     ),
-    main=paste(TISSUE, "Sex Gene PCA")
+    main=paste(TISSUE, "Sex-Gene Expression PCA")
   )
 
   grid(lty="dotted", col="gray80")
@@ -446,8 +612,6 @@ if(length(sex_idx) >= 2) {
 
   if(length(flagged) > 0) {
 
-    flagged_samples <- pca_samples[flagged]
-
     points(
       pc1[flagged],
       pc2[flagged],
@@ -459,14 +623,14 @@ if(length(sex_idx) >= 2) {
     text(
       pc1[flagged],
       pc2[flagged],
-      labels=flagged_samples,
+      labels=pca_samples[flagged],
       pos=4,
       cex=0.55,
       col=plot_cols[flagged]
     )
 
     write.table(
-      flagged_samples,
+      expression_flagged_samples,
       file=mismatch_file,
       quote=FALSE,
       row.names=FALSE,
@@ -475,23 +639,381 @@ if(length(sex_idx) >= 2) {
 
     message(
       paste(
-        "Potential sex mismatches:",
-        paste(flagged_samples, collapse=", ")
+        "Potential expression-based sex mismatches:",
+        paste(expression_flagged_samples, collapse=", ")
       )
     )
 
   } else {
 
     file.create(mismatch_file)
-    message("No potential sex mismatches detected.")
+    message("No expression-based sex mismatches detected.")
   }
 
 } else {
 
-  message("Warning: Fewer than 2 sex genes found. Skipping PCA plot.")
+  message("Fewer than 2 sex genes found. Skipping expression PCA plot.")
+}
+
+###########################################
+# 4. AnswerALS WGS Sex-Chromosome Genotype PCA
+###########################################
+
+if(EXPERIMENT == "answer_ALS") {
+
+  message("Generating WGS sex-chromosome genotype PCA plot...")
+
+  plink2_bin <- Sys.getenv("PLINK2_BIN", unset="")
+  if(!nzchar(plink2_bin)) {
+    plink2_bin <- unname(Sys.which("plink2"))
+  }
+
+  if(!nzchar(plink2_bin)) {
+    stop(
+      paste(
+        "PLINK2 was not found on PATH.",
+        "Load PLINK2/avx2_20250707 before running _normQC.R,",
+        "or set PLINK2_BIN to the plink2 executable."
+      )
+    )
+  }
+
+  genotype_pca_prefix <- file.path(
+    tempdir(),
+    paste0("answerALS_sexchr_pca_", Sys.getpid())
+  )
+
+  plink_args <- c(
+    "--pfile", pfile_prefix,
+    "--chr", "chrX,chrY",
+    "--pca", "10",
+    "--out", genotype_pca_prefix
+  )
+
+  plink_output <- suppressWarnings(
+    system2(
+      plink2_bin,
+      args=plink_args,
+      stdout=TRUE,
+      stderr=TRUE
+    )
+  )
+
+  plink_status <- attr(plink_output, "status")
+  if(!is.null(plink_status) && plink_status != 0) {
+    stop(
+      paste(
+        "PLINK2 genotype PCA failed:",
+        paste(tail(plink_output, 20), collapse="\n")
+      )
+    )
+  }
+
+  eigenvec_file <- paste0(genotype_pca_prefix, ".eigenvec")
+  if(!file.exists(eigenvec_file)) {
+    stop(
+      paste(
+        "PLINK2 did not create the expected eigenvector file:",
+        eigenvec_file
+      )
+    )
+  }
+
+  genotype_pca <- read.table(
+    eigenvec_file,
+    header=TRUE,
+    check.names=FALSE,
+    comment.char="",
+    stringsAsFactors=FALSE
+  )
+
+  eigen_names <- toupper(sub("^#", "", names(genotype_pca)))
+  iid_col <- match("IID", eigen_names)
+  pc1_col <- match("PC1", eigen_names)
+  pc2_col <- match("PC2", eigen_names)
+
+  if(any(is.na(c(iid_col, pc1_col, pc2_col)))) {
+    stop("PLINK2 eigenvector file must contain IID, PC1, and PC2 columns.")
+  }
+
+  genotype_ids <- trimws(as.character(genotype_pca[[iid_col]]))
+  genotype_pc1 <- as.numeric(genotype_pca[[pc1_col]])
+  genotype_pc2 <- as.numeric(genotype_pca[[pc2_col]])
+
+  metadata_sex <- sex[match(genotype_ids, colnames(tpm))]
+  inferred_sex <- unname(genotype_sex[genotype_ids])
+
+  has_metadata <- !is.na(metadata_sex) & metadata_sex %in% c("Male", "Female")
+  has_genotype_call <- !is.na(inferred_sex)
+  genotype_discordant <- has_metadata &
+    has_genotype_call &
+    metadata_sex != inferred_sex
+
+  genotype_colors <- ifelse(
+    inferred_sex == "Male", "blue3",
+    ifelse(inferred_sex == "Female", "firebrick2", "gray50")
+  )
+
+  plot(
+    genotype_pc1,
+    genotype_pc2,
+    col=genotype_colors,
+    pch=19,
+    xlab="WGS sex-chromosome PC1",
+    ylab="WGS sex-chromosome PC2",
+    main=paste(TISSUE, "WGS Sex-Chromosome Genotype PCA")
+  )
+
+  grid(lty="dotted", col="gray80")
+
+  if(any(genotype_discordant)) {
+    points(
+      genotype_pc1[genotype_discordant],
+      genotype_pc2[genotype_discordant],
+      pch=1,
+      cex=1.7,
+      lwd=1.5,
+      col="black"
+    )
+  }
+
+  legend(
+    "topright",
+    legend=c(
+      "WGS inferred male",
+      "WGS inferred female",
+      "No WGS sex call",
+      "Metadata/WGS disagreement"
+    ),
+    col=c("blue3","firebrick2","gray50","black"),
+    pch=c(19,19,19,1),
+    bty="n",
+    cex=0.8
+  )
+
+  genotype_pca_table <- data.frame(
+    Sample=genotype_ids,
+    MetadataSex=metadata_sex,
+    WGS_SNPSEX=inferred_sex,
+    PC1=genotype_pc1,
+    PC2=genotype_pc2,
+    MetadataGenotypeMismatch=ifelse(
+      genotype_discordant, "YES", "NO"
+    )
+  )
+
+  write.table(
+    genotype_pca_table,
+    file=file.path(
+      TISSUE_DIR,
+      paste0(TISSUE, "_WGS_sexchr_PCA_coordinates.txt")
+    ),
+    sep="\t",
+    quote=FALSE,
+    row.names=FALSE
+  )
+
+  genotype_mismatches <- genotype_ids[genotype_discordant]
+
+  write.table(
+    genotype_mismatches,
+    file=genotype_mismatch_file,
+    quote=FALSE,
+    row.names=FALSE,
+    col.names=FALSE
+  )
+
+  message(
+    paste(
+      "WGS genotype PCA samples:",
+      length(genotype_ids),
+      "| metadata/WGS sex disagreements:",
+      length(genotype_mismatches)
+    )
+  )
+}
+
+###########################################
+# AnswerALS: PCA using top 500 HVGs
+# Raw counts come from each current donor's normalization.tab.
+###########################################
+
+if(EXPERIMENT == "answer_ALS") {
+  message("Generating AnswerALS top-500-HVG PCA...")
+
+  processed_dir <- file.path(BASE_DIR, TISSUE, "RNAseq", "Processed")
+  count_paths <- file.path(processed_dir, colnames(tpm), "normalization.tab")
+  has_counts <- file.exists(count_paths) & file.info(count_paths)$size > 0
+
+  if(any(!has_counts)) {
+    message(
+      "No normalization.tab for ",
+      sum(!has_counts),
+      " TPM-matrix samples; they will be omitted from this PCA."
+    )
+  }
+
+  pca_samples <- colnames(tpm)[has_counts]
+  count_paths <- count_paths[has_counts]
+
+  if(length(pca_samples) < 3) {
+    stop("Fewer than 3 samples have normalization.tab files for the HVG PCA.")
+  }
+
+  count_vectors <- lapply(seq_along(count_paths), function(i) {
+    tab <- read.delim(
+      count_paths[i],
+      header=TRUE,
+      sep="\t",
+      stringsAsFactors=FALSE,
+      check.names=FALSE
+    )
+
+    if(!all(c("gene_id", "raw_count") %in% names(tab))) {
+      stop(paste("Missing gene_id/raw_count columns in", count_paths[i]))
+    }
+
+    gene_id <- sub("\\.[0-9]+$", "", as.character(tab$gene_id))
+    raw_count <- suppressWarnings(as.numeric(tab$raw_count))
+    keep <- !is.na(gene_id) & gene_id != "" &
+      !grepl("^__", gene_id) &
+      is.finite(raw_count)
+
+    if(!any(keep)) {
+      stop(paste("No usable gene counts in", count_paths[i]))
+    }
+
+    summed <- rowsum(
+      matrix(raw_count[keep], ncol=1),
+      group=gene_id[keep],
+      reorder=FALSE
+    )
+
+    setNames(as.integer(round(summed[, 1])), rownames(summed))
+  })
+
+  all_genes <- sort(unique(unlist(lapply(count_vectors, names))))
+  count_matrix <- matrix(
+    0L,
+    nrow=length(all_genes),
+    ncol=length(pca_samples),
+    dimnames=list(all_genes, pca_samples)
+  )
+
+  for(i in seq_along(count_vectors)) {
+    v <- count_vectors[[i]]
+    count_matrix[names(v), i] <- v
+  }
+
+  # Match the paper's low-expression filter: remove genes averaging <1 raw count/sample.
+  keep_genes <- rowMeans(count_matrix) >= 1
+  count_matrix <- count_matrix[keep_genes, , drop=FALSE]
+
+  if(nrow(count_matrix) < 500) {
+    stop("Fewer than 500 genes remain after the mean raw-count >= 1 filter.")
+  }
+
+  col_data <- data.frame(row.names=colnames(count_matrix))
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData=count_matrix,
+    colData=col_data,
+    design=~1
+  )
+  dds <- DESeq2::estimateSizeFactors(dds)
+  vst_data <- DESeq2::varianceStabilizingTransformation(dds, blind=TRUE)
+  vst_matrix <- SummarizedExperiment::assay(vst_data)
+
+  gene_variance <- apply(vst_matrix, 1, var)
+  gene_variance <- gene_variance[is.finite(gene_variance)]
+  hvg_genes <- names(sort(gene_variance, decreasing=TRUE))[1:500]
+
+  hvg_pca <- prcomp(
+    t(vst_matrix[hvg_genes, , drop=FALSE]),
+    center=TRUE,
+    scale.=FALSE
+  )
+
+  hvg_samples <- rownames(hvg_pca$x)
+  hvg_groups <- sub("-.*$", "", hvg_samples)
+  group_colors <- c(CASE="#E41A1C", CTRL="#377EB8")
+  point_colors <- unname(group_colors[hvg_groups])
+  point_colors[is.na(point_colors)] <- "gray50"
+
+  hvg_coords <- data.frame(
+    Sample=hvg_samples,
+    Group=hvg_groups,
+    PC1=hvg_pca$x[, 1],
+    PC2=hvg_pca$x[, 2],
+    stringsAsFactors=FALSE
+  )
+
+  write.table(
+    hvg_coords,
+    file=file.path(TISSUE_DIR, paste0(TISSUE, "_top500_HVG_PCA_coordinates.txt")),
+    sep="\t",
+    quote=FALSE,
+    row.names=FALSE
+  )
+
+  write.table(
+    data.frame(
+      gene_id=hvg_genes,
+      vst_variance=gene_variance[hvg_genes]
+    ),
+    file=file.path(TISSUE_DIR, paste0(TISSUE, "_top500_HVGs.txt")),
+    sep="\t",
+    quote=FALSE,
+    row.names=FALSE
+  )
+
+  plot(
+    hvg_pca$x[, 1],
+    hvg_pca$x[, 2],
+    col=point_colors,
+    pch=19,
+    xlab=paste0(
+      "PC1 (",
+      round(100 * summary(hvg_pca)$importance[2, 1], 1),
+      "%)"
+    ),
+    ylab=paste0(
+      "PC2 (",
+      round(100 * summary(hvg_pca)$importance[2, 2], 1),
+      "%)"
+    ),
+    main=paste(TISSUE, "Top 500 HVG PCA")
+  )
+
+  grid(lty="dotted", col="gray80")
+
+  present_groups <- intersect(c("CASE", "CTRL"), unique(hvg_groups))
+  legend(
+    "topright",
+    legend=present_groups,
+    col=group_colors[present_groups],
+    pch=19,
+    bty="n"
+  )
+
+  message(
+    "Top-500-HVG PCA used ",
+    length(hvg_samples),
+    " samples and ",
+    length(hvg_genes),
+    " genes."
+  )
 }
 
 dev.off()
 
 message(paste("QC Complete. PDF saved to:", outputfile))
-message(paste("Mismatch file:", mismatch_file))
+message(paste("Expression mismatch file:", mismatch_file))
+
+if(EXPERIMENT == "answer_ALS") {
+  message(
+    paste(
+      "WGS genotype mismatch file:",
+      genotype_mismatch_file
+    )
+  )
+}
