@@ -815,9 +815,9 @@ if(EXPERIMENT == "answer_ALS") {
 
   legend(
     "topright",
-    legend=c("Male","Female","Unknown", "Potential sex mismatch"),
-    col=c("blue3","firebrick2","gray50", "black"),
-    pch=c(19, 19, 19, 1),
+    legend=c("Male","Female","Unknown"),
+    col=c("blue3","firebrick2","gray50"),
+    pch=c(19, 19, 19),
     bty="n"
   )
 
