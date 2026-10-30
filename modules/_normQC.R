@@ -756,14 +756,17 @@ if(EXPERIMENT == "answer_ALS") {
   )
 
   hvg_samples <- rownames(hvg_pca$x)
-  hvg_groups <- sub("-.*$", "", hvg_samples)
-  group_colors <- c(CASE="#E41A1C", CTRL="#377EB8")
-  point_colors <- unname(group_colors[hvg_groups])
-  point_colors[is.na(point_colors)] <- "gray50"
+  hvg_sex <- sex[match(hvg_samples, colnames(tpm))]
+  hvg_sex[is.na(hvg_sex)] <- "Unknown"
+
+  point_colors <- ifelse(
+    hvg_sex == "Male", "blue3",
+    ifelse(hvg_sex == "Female", "firebrick2", "gray50")
+  )
 
   hvg_coords <- data.frame(
     Sample=hvg_samples,
-    Group=hvg_groups,
+    Sex=hvg_sex,
     PC1=hvg_pca$x[, 1],
     PC2=hvg_pca$x[, 2],
     stringsAsFactors=FALSE
@@ -808,11 +811,10 @@ if(EXPERIMENT == "answer_ALS") {
 
   grid(lty="dotted", col="gray80")
 
-  present_groups <- intersect(c("CASE", "CTRL"), unique(hvg_groups))
   legend(
     "topright",
-    legend=present_groups,
-    col=group_colors[present_groups],
+    legend=c("Male","Female","Unknown"),
+    col=c("blue3","firebrick2","gray50"),
     pch=19,
     bty="n"
   )
