@@ -811,13 +811,37 @@ if(EXPERIMENT == "answer_ALS") {
 
   grid(lty="dotted", col="gray80")
 
+  hvg_mismatch <- hvg_samples %in% expression_flagged_samples
+
   legend(
     "topright",
-    legend=c("Male","Female","Unknown"),
-    col=c("blue3","firebrick2","gray50"),
-    pch=19,
+    legend=c("Male","Female","Unknown", "Potential sex mismatch"),
+    col=c("blue3","firebrick2","gray50", "black"),
+    pch=c(19, 19, 19, 1),
     bty="n"
   )
+
+  if(any(hvg_mismatch)) {
+    points(
+      hvg_pca$x[hvg_mismatch, 1],
+      hvg_pca$x[hvg_mismatch, 2],
+      pch=1,
+      cex=1.5,
+      lwd=1.5,
+      col="black"
+    )
+
+    text(
+      hvg_pca$x[hvg_mismatch, 1],
+      hvg_pca$x[hvg_mismatch, 2],
+      labels=hvg_samples[hvg_mismatch],
+      pos=4,
+      cex=0.42,
+      col="black",
+      offset=0.25,
+      xpd=NA
+    )
+  }
 
   message(
     "Top-500-HVG PCA used ",
