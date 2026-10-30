@@ -97,41 +97,17 @@ if(EXPERIMENT == "target_ALS") {
 
   id_col <- names(answerals_metadata)[1]
   sex_cols <- which(tolower(trimws(names(answerals_metadata))) == "sex")
-  group_cols <- which(
-    gsub("[^[:alnum:]]", "", tolower(names(answerals_metadata))) == "subjectgroup"
-  )
 
   if(length(sex_cols) != 1) {
     stop("Expected exactly one Sex column in the AnswerALS metadata.")
   }
 
-  if(length(group_cols) != 1) {
-    stop("Expected exactly one Subject Group column in the AnswerALS metadata.")
-  }
-
   answerals_ids <- trimws(as.character(answerals_metadata[[id_col]]))
-
-  answerals_sex <- tolower(
-    trimws(as.character(answerals_metadata[[sex_cols]]))
-  )
+  answerals_sex <- tolower(trimws(as.character(answerals_metadata[[sex_cols]])))
 
   answerals_sex <- ifelse(
     answerals_sex == "male", "Male",
     ifelse(answerals_sex == "female", "Female", NA_character_)
-  )
-
-  answerals_group <- tolower(
-    trimws(as.character(answerals_metadata[[group_cols]]))
-  )
-
-  answerals_case_control <- ifelse(
-    is.na(answerals_group) | answerals_group == "",
-    "Other",
-    ifelse(
-      answerals_group == "als",
-      "Case",
-      ifelse(answerals_group == "healthy control", "Control", "Other")
-    )
   )
 
   covariate <- data.frame(
@@ -139,7 +115,6 @@ if(EXPERIMENT == "target_ALS") {
     externalsubjectid=answerals_ids,
     tissue=TISSUE,
     sex=answerals_sex,
-    case_control=answerals_case_control,
     stringsAsFactors=FALSE
   )
 
@@ -198,23 +173,9 @@ covariate$mapped_tissue <- sapply(covariate$tissue, function(x) {
 })
 
 if(TISSUE == "Cortex") {
-  meta_sub <- covariate[
-    !is.na(covariate$tissue) &
-      grepl(
-        "(^|[^[:alnum:]])cortex([^[:alnum:]]|$)",
-        covariate$tissue,
-        ignore.case=TRUE
-      ),
-  ]
+  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])cortex([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
 } else if(TISSUE == "Spinal_Cord") {
-  meta_sub <- covariate[
-    !is.na(covariate$tissue) &
-      grepl(
-        "(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)",
-        covariate$tissue,
-        ignore.case=TRUE
-      ),
-  ]
+  meta_sub <- covariate[!is.na(covariate$tissue) & grepl("(^|[^[:alnum:]])spinal[^[:alnum:]]*cord([^[:alnum:]]|$)", covariate$tissue, ignore.case=TRUE), ]
 } else {
   meta_sub <- covariate[covariate$mapped_tissue == TISSUE, ]
 }
@@ -233,10 +194,6 @@ if(length(unmatched_samples) > 0) {
 
 sex <- meta_sub$sex[meta_idx]
 subject <- meta_sub$externalsubjectid[meta_idx]
-
-if(EXPERIMENT == "answer_ALS") {
-  case_control <- meta_sub$case_control[meta_idx]
-}
 
 pdf(outputfile, width=12, height=10)
 
@@ -285,17 +242,20 @@ hc <- hclust(as.dist(sampleDists), method="complete")
 tree <- as.phylo(hc)
 
 if(EXPERIMENT == "answer_ALS") {
+  groups <- sub("-.*$", "", tree$tip.label)
 
-  tip_group <- case_control[match(tree$tip.label, colnames(tpm))]
-  tip_group[is.na(tip_group)] <- "Other"
+  unknown_groups <- setdiff(unique(groups), c("CASE", "CTRL"))
+  if(length(unknown_groups) > 0) {
+    stop(
+      paste(
+        "Unexpected AnswerALS sample ID prefixes in clustering plot:",
+        paste(unknown_groups, collapse=", ")
+      )
+    )
+  }
 
-  group_colors <- c(
-    "Case"="#E41A1C",
-    "Control"="#377EB8",
-    "Other"="gray60"
-  )
-
-  tip_colors <- unname(group_colors[tip_group])
+  group_colors <- c(CASE="#E41A1C", CTRL="#377EB8")
+  tip_colors <- unname(group_colors[groups])
 
   plot(
     tree,
@@ -303,23 +263,19 @@ if(EXPERIMENT == "answer_ALS") {
     cex=.35,
     lab4ut="axial",
     tip.color=tip_colors,
-    main=paste(TISSUE, "Clustering (ALS vs Healthy Control)")
+    main=paste(TISSUE, "Clustering (CASE vs CTRL)")
   )
-
-  shown_groups <- c("Case", "Control", "Other")
-  shown_groups <- shown_groups[shown_groups %in% tip_group]
 
   legend(
     "bottomleft",
-    legend=shown_groups,
-    col=group_colors[shown_groups],
-    pch=19,
+    legend=c("CASE", "CTRL"),
+    fill=group_colors[c("CASE", "CTRL")],
     cex=0.7,
-    bty="n"
+    bty="n",
+    border="black"
   )
 
 } else {
-
   prefixes <- gsub("^([^-^_]+).*", "\\1", tree$tip.label)
   unique_prefixes <- sort(unique(prefixes))
 
